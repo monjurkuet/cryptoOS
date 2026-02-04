@@ -1,0 +1,44 @@
+# cryptoOS Dependencies
+
+# Core
+requests>=2.31.0
+httpx>=0.25.0
+pydantic>=2.5.0
+
+# Data Processing
+pandas>=2.1.0
+numpy>=1.26.0
+orjson>=3.9.0
+
+# Async
+aiohttp>=3.9.0
+asyncio>=3.4.0
+
+# Configuration
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+
+# Logging
+loguru>=0.7.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+httpx>=0.25.0
+
+# Type Checking
+mypy>=1.7.0
+types-requests>=2.31.0
+
+# Code Quality
+ruff>=0.1.0
+black>=23.0.0
+isort>=5.12.0
+
+# Documentation
+mkdocs>=1.5.0
+mkdocstrings>=0.23.0
+
+# API Clients
+websockets>=12.0

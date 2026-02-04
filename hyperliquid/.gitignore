@@ -1,0 +1,69 @@
+# Hyperliquid Data Repository - .gitignore
+
+# Data directory (large files, downloaded separately)
+data/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Editor/IDE
+.vscode/
+.idea/
+*.sublime-*
+*.sublime-project
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# Environment
+.env
+.env.local
+*.env
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+
+# Large binary files (if any)
+*.sqlite3
+*.db
+*.mdb
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+# Package files (if any)
+*.tar
+*.tar.gz
+*.zip
