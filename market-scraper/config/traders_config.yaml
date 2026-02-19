@@ -1,0 +1,122 @@
+# Trader Selection Configuration
+# Controls how traders are scored, filtered, and tagged
+
+# Scoring Algorithm Weights (should sum to 100 for proper weighting)
+scoring:
+  weights:
+    all_time_roi: 30      # 30% weight on all-time ROI
+    month_roi: 25         # 25% weight on month ROI
+    week_roi: 20          # 20% weight on week ROI
+    account_value: 15     # 15% weight on account value
+    volume: 10            # 10% weight on trading volume
+
+  # Bonus points
+  consistency_bonus: 5    # +5 points if all timeframes positive
+
+  # ROI multipliers (how much to multiply ROI by for score)
+  roi_multipliers:
+    all_time: 30          # max 30 points
+    month: 50             # max 25 points
+    week: 100             # max 20 points (can be -10)
+
+# Account Value Scoring Tiers
+account_value_tiers:
+  - threshold: 10000000   # $10M+
+    points: 15
+  - threshold: 5000000    # $5M+
+    points: 12
+  - threshold: 1000000    # $1M+
+    points: 8
+  - threshold: 100000     # $100K+
+    points: 4
+  - threshold: 0
+    points: 0
+
+# Volume Scoring Tiers (monthly volume)
+volume_tiers:
+  - threshold: 100000000  # $100M+
+    points: 10
+  - threshold: 50000000   # $50M+
+    points: 7
+  - threshold: 10000000   # $10M+
+    points: 4
+  - threshold: 1000000    # $1M+
+    points: 2
+  - threshold: 0
+    points: 0
+
+# Filter Criteria - Traders must match ALL filters
+filters:
+  min_score: 50              # Minimum score to be tracked (0-100+)
+  max_count: 500             # Maximum traders to track
+  min_account_value: 10000   # Minimum account value ($10K)
+
+  # Optional: Require specific performance
+  require_positive:
+    all_time: false          # Require positive all-time ROI
+    month: false             # Require positive month ROI
+    week: false              # Require positive week ROI
+
+  # Optional: Exclude traders
+  exclude:
+    addresses: []            # List of addresses to exclude
+    tags: []                 # List of tags to exclude
+
+# Tag Configuration
+tags:
+  whale:
+    threshold: 10000000      # Account value >= $10M
+  large:
+    threshold: 1000000       # Account value >= $1M
+  top_performer:
+    min_score: 80            # Score >= 80
+  elite:
+    min_score: 90            # Score >= 90
+  consistent:
+    require_positive:
+      - day
+      - week
+      - month                # All timeframes positive
+  high_performer:
+    all_time_roi: 1.0        # 100%+ all-time ROI
+  high_volume:
+    monthly_volume: 100000000  # $100M+ monthly volume
+  medium_volume:
+    monthly_volume: 10000000   # $10M+ monthly volume
+
+# Position Inference Configuration
+position_inference:
+  enabled: true
+  confidence_threshold: 0.5  # Minimum confidence to consider
+
+  # Indicators of active position
+  indicators:
+    day_roi_threshold: 0.0001      # 0.01% day ROI indicates position
+    pnl_ratio_threshold: 0.001     # 0.1% PnL/account ratio
+    day_volume_threshold: 100000   # $100K daily volume
+
+# Storage Configuration
+storage:
+  # How often to refresh tracked traders (seconds)
+  refresh_interval: 3600  # 1 hour
+
+  # Keep history of leaderboard snapshots
+  keep_snapshots: true
+
+  # Keep score history for trend analysis
+  keep_score_history: false
+
+  # Days to keep historical data (deprecated, use retention below)
+  retention_days: 30
+
+  # Per-collection retention (days) - automatic deletion via MongoDB TTL indexes
+  retention:
+    leaderboard_history: 90    # Leaderboard snapshots
+    trader_positions: 30       # Position snapshots
+    trader_scores: 90          # Score history
+    signals: 30                # Trading signals
+    trader_signals: 30         # Per-trader signals
+    mark_prices: 30            # Mark price data
+    trades: 7                  # Raw trade data
+    orderbook: 7               # Orderbook snapshots
+    candles: 30                # OHLCV candles

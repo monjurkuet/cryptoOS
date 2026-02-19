@@ -1,0 +1,135 @@
+[project]
+name = "market-scraper"
+version = "0.1.0"
+description = "Real-time cryptocurrency market data scraper with event-driven architecture"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.8.0",
+    "aiosignal>=1.3.1",
+    "anyio>=3.7.0",
+    "attrs>=23.1.0",
+    "certifi>=2023.5.7",
+    "charset-normalizer>=3.2.0",
+    "click>=8.1.5",
+    "colorama>=0.4.6",
+    "exceptiongroup>=1.1.2",
+    "frozenlist>=1.4.0",
+    "idna>=3.4",
+    "multidict>=6.0.4",
+    "python-dateutil>=2.8.2",
+    "pytz>=2023.3",
+    "pyyaml>=6.0",
+    "six>=1.16.0",
+    "sniffio>=1.3.0",
+    "starlette>=0.31.0",
+    "typing_extensions>=4.7.1",
+    "yarl>=1.9.2",
+    "motor>=3.3.0",
+    "pymongo>=4.6.0",
+    "redis>=5.0.0",
+    "numpy>=1.25.0",
+    "pandas>=2.0.0",
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=23.0.0",
+    "httpx>=0.25.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "websockets>=12.0",
+    "pydantic-settings>=2.13.0",
+    "prometheus-client>=0.24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.3.1",
+    "black>=23.7.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "types-python-dateutil>=2.8.19",
+    "types-pytz>=2023.3",
+    "pre-commit>=3.4.0",
+    "aiohttp-devtools>=1.1",
+]
+
+[project.scripts]
+market-scraper = "market_scraper.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "e2e: End-to-end tests",
+    "slow: Slow tests",
+]
+
+[tool.coverage.run]
+source = ["src/market_scraper"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if __name__ == .__main__.:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # Pyflakes
+    "I",  # isort
+    "N",  # pep8-naming
+    "D",  # pydocstyle
+    "UP", # pyupgrade
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = ["D100", "D104", "D107"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict = true
+namespace_packages = true
+explicit_package_bases = true
+
+[tool.black]
+target-version = ["py311"]
+line-length = 100
+include = '\.pyi?$'

@@ -1,0 +1,182 @@
+# src/market_scraper/config/traders_config.py
+
+"""Trader configuration loader.
+
+This module provides YAML-based configuration for trader selection,
+scoring weights, and filter criteria.
+"""
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+class ScoringWeights(BaseModel):
+    """Scoring weight configuration.
+
+    Weights determine how much each factor contributes to the overall score.
+    Should ideally sum to 100 for proper percentage weighting.
+    """
+
+    all_time_roi: float = 30
+    month_roi: float = 25
+    week_roi: float = 20
+    account_value: float = 15
+    volume: float = 10
+
+
+class ScoringConfig(BaseModel):
+    """Scoring algorithm configuration."""
+
+    weights: ScoringWeights = Field(default_factory=ScoringWeights)
+    consistency_bonus: float = 5
+    roi_multipliers: dict[str, float] = {
+        "all_time": 30,
+        "month": 50,
+        "week": 100,
+    }
+
+
+class TierConfig(BaseModel):
+    """Tier-based scoring configuration.
+
+    Used for account value and volume scoring tiers.
+    """
+
+    threshold: float
+    points: float
+
+
+class FilterConfig(BaseModel):
+    """Filter criteria for trader selection.
+
+    Traders must match ALL filter criteria to be selected.
+    """
+
+    min_score: float = 50
+    max_count: int = 500
+    min_account_value: float = 10000
+    require_positive: dict[str, bool] = Field(default_factory=dict)
+    exclude: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class TagConfig(BaseModel):
+    """Tag configuration for automatic trader tagging."""
+
+    whale: dict[str, Any] = Field(default_factory=lambda: {"threshold": 10_000_000})
+    large: dict[str, Any] = Field(default_factory=lambda: {"threshold": 1_000_000})
+    top_performer: dict[str, Any] = Field(default_factory=lambda: {"min_score": 80})
+    elite: dict[str, Any] = Field(default_factory=lambda: {"min_score": 90})
+    consistent: dict[str, Any] = Field(
+        default_factory=lambda: {"require_positive": ["day", "week", "month"]}
+    )
+    high_performer: dict[str, Any] = Field(default_factory=lambda: {"all_time_roi": 1.0})
+    high_volume: dict[str, Any] = Field(
+        default_factory=lambda: {"monthly_volume": 100_000_000}
+    )
+    medium_volume: dict[str, Any] = Field(
+        default_factory=lambda: {"monthly_volume": 10_000_000}
+    )
+
+
+class PositionInferenceConfig(BaseModel):
+    """Position inference configuration.
+
+    Controls how the system infers likely active positions from leaderboard data.
+    """
+
+    enabled: bool = True
+    confidence_threshold: float = 0.5
+    indicators: dict[str, float] = {
+        "day_roi_threshold": 0.0001,
+        "pnl_ratio_threshold": 0.001,
+        "day_volume_threshold": 100_000,
+    }
+
+
+class RetentionConfig(BaseModel):
+    """Per-collection retention configuration in days.
+
+    Controls how long data is kept before automatic deletion via MongoDB TTL indexes.
+    """
+
+    leaderboard_history: int = Field(default=90, description="Days to keep leaderboard history")
+    trader_positions: int = Field(default=30, description="Days to keep position snapshots")
+    trader_scores: int = Field(default=90, description="Days to keep score history")
+    signals: int = Field(default=30, description="Days to keep trading signals")
+    trader_signals: int = Field(default=30, description="Days to keep trader signals")
+    mark_prices: int = Field(default=30, description="Days to keep mark prices")
+    trades: int = Field(default=7, description="Days to keep trade data")
+    orderbook: int = Field(default=7, description="Days to keep orderbook snapshots")
+    candles: int = Field(default=30, description="Days to keep candle data")
+
+
+class StorageConfig(BaseModel):
+    """Storage configuration for leaderboard data."""
+
+    refresh_interval: int = 3600
+    keep_snapshots: bool = True
+    keep_score_history: bool = False
+    retention_days: int = 30  # Global default (deprecated, use retention below)
+    retention: RetentionConfig = Field(default_factory=RetentionConfig)
+
+
+class TradersConfig(BaseModel):
+    """Complete trader configuration.
+
+    This is the main configuration class that contains all settings
+    for trader selection, scoring, and storage.
+    """
+
+    scoring: ScoringConfig = Field(default_factory=ScoringConfig)
+    account_value_tiers: list[TierConfig] = [
+        TierConfig(threshold=10_000_000, points=15),
+        TierConfig(threshold=5_000_000, points=12),
+        TierConfig(threshold=1_000_000, points=8),
+        TierConfig(threshold=100_000, points=4),
+        TierConfig(threshold=0, points=0),
+    ]
+    volume_tiers: list[TierConfig] = [
+        TierConfig(threshold=100_000_000, points=10),
+        TierConfig(threshold=50_000_000, points=7),
+        TierConfig(threshold=10_000_000, points=4),
+        TierConfig(threshold=1_000_000, points=2),
+        TierConfig(threshold=0, points=0),
+    ]
+    filters: FilterConfig = Field(default_factory=FilterConfig)
+    tags: TagConfig = Field(default_factory=TagConfig)
+    position_inference: PositionInferenceConfig = Field(
+        default_factory=PositionInferenceConfig
+    )
+    storage: StorageConfig = Field(default_factory=StorageConfig)
+
+
+def load_traders_config(config_path: str | Path | None = None) -> TradersConfig:
+    """Load trader configuration from YAML file.
+
+    Args:
+        config_path: Path to config file. Defaults to config/traders_config.yaml
+
+    Returns:
+        TradersConfig instance with loaded or default values
+    """
+    if config_path is None:
+        # Try multiple default locations
+        possible_paths = [
+            Path("config/traders_config.yaml"),
+            Path("traders_config.yaml"),
+            Path.home() / ".config" / "market_scraper" / "traders_config.yaml",
+        ]
+        config_path = next((p for p in possible_paths if p.exists()), possible_paths[0])
+    else:
+        config_path = Path(config_path)
+
+    if not config_path.exists():
+        return TradersConfig()
+
+    with open(config_path) as f:
+        data = yaml.safe_load(f) or {}
+
+    return TradersConfig(**data)
