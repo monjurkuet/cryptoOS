@@ -11,6 +11,7 @@ from typing import Any
 
 import structlog
 
+from market_scraper.config.market_config import MarketConfig, TagConfig
 from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -88,42 +89,51 @@ def calculate_trader_score(trader: dict[str, Any]) -> float:
     return round(score, 2)
 
 
-def get_trader_tags(trader: dict[str, Any], score: float) -> list[str]:
+def get_trader_tags(
+    trader: dict[str, Any], score: float, tags_config: TagConfig | None = None
+) -> list[str]:
     """Generate tags for a trader based on their metrics.
 
     Args:
         trader: Trader data dictionary
         score: Calculated trader score
+        tags_config: Tag configuration from market_config (optional, uses defaults if not provided)
 
     Returns:
         List of applicable tags
     """
     tags = []
 
+    # Use provided config or create default
+    if tags_config is None:
+        tags_config = TagConfig()
+
     account_value = float(trader.get("accountValue", 0))
     performances = parse_window_performances(trader.get("windowPerformances", {}))
 
-    # Score-based tags
-    if score >= 80:
+    # Score-based tags (using config)
+    if score >= tags_config.top_performer.get("min_score", 80):
         tags.append("top_performer")
-    if score >= 90:
+    if score >= tags_config.elite.get("min_score", 90):
         tags.append("elite")
 
-    # Size-based tags
-    if account_value >= 10_000_000:
+    # Size-based tags (using config)
+    if account_value >= tags_config.whale.get("threshold", 10_000_000):
         tags.append("whale")
-    elif account_value >= 1_000_000:
+    elif account_value >= tags_config.large.get("threshold", 1_000_000):
         tags.append("large")
 
-    # Consistency tags
+    # Consistency tags (using config)
     all_time_roi = extract_roi(performances, "allTime")
     month_roi = extract_roi(performances, "month")
     week_roi = extract_roi(performances, "week")
 
-    if all_time_roi > 0 and month_roi > 0 and week_roi > 0:
+    required_positive = tags_config.consistent.get("require_positive", ["day", "week", "month"])
+    if all(performances.get(t, {}).get("roi", 0) > 0 for t in required_positive):
         tags.append("consistent")
 
-    if all_time_roi > 1.0:  # 100%+ all-time ROI
+    # High performer tag (using config)
+    if all_time_roi >= tags_config.high_performer.get("all_time_roi", 1.0):
         tags.append("high_performer")
 
     return tags
@@ -141,6 +151,7 @@ class TraderScoringProcessor(Processor):
         config: HyperliquidSettings | None = None,
         min_score: float = 50.0,
         max_count: int = 500,
+        tags_config: TagConfig | None = None,
     ) -> None:
         """Initialize the processor.
 
@@ -149,11 +160,13 @@ class TraderScoringProcessor(Processor):
             config: Optional Hyperliquid settings
             min_score: Minimum score threshold
             max_count: Maximum traders to return
+            tags_config: Tag configuration from market_config
         """
         super().__init__(event_bus)
         self._config = config
         self._min_score = min_score
         self._max_count = max_count
+        self._tags_config = tags_config or TagConfig()
 
         # Stats
         self._processed = 0
@@ -197,7 +210,7 @@ class TraderScoringProcessor(Processor):
 
             if score >= self._min_score:
                 address = trader.get("ethAddress", "")
-                tags = get_trader_tags(trader, score)
+                tags = get_trader_tags(trader, score, self._tags_config)
 
                 scored_traders.append(
                     {

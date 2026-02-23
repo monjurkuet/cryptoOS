@@ -10,6 +10,7 @@ from typing import Any
 
 import structlog
 
+from market_scraper.config.market_config import PositionInferenceConfig
 from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -99,20 +100,32 @@ class PositionInferenceProcessor(Processor):
         self,
         event_bus: EventBus,
         config: HyperliquidSettings | None = None,
+        position_inference_config: PositionInferenceConfig | None = None,
     ) -> None:
         """Initialize the processor.
 
         Args:
             event_bus: Event bus for publishing inferred position events
             config: Optional Hyperliquid settings
+            position_inference_config: Optional position inference configuration from market_config
         """
         super().__init__(event_bus)
         self._config = config
 
-        # Thresholds from config or defaults
-        self._day_roi_threshold = DEFAULT_DAY_ROI_THRESHOLD
-        self._day_pnl_threshold = DEFAULT_DAY_PNL_THRESHOLD
-        self._day_volume_threshold = DEFAULT_DAY_VOLUME_THRESHOLD
+        # Use provided config or defaults
+        if position_inference_config:
+            self._enabled = position_inference_config.enabled
+            self._confidence_threshold = position_inference_config.confidence_threshold
+            indicators = position_inference_config.indicators
+            self._day_roi_threshold = indicators.get("day_roi_threshold", 0.0001)
+            self._day_pnl_threshold = indicators.get("pnl_ratio_threshold", 0.001)
+            self._day_volume_threshold = indicators.get("day_volume_threshold", 100_000)
+        else:
+            self._enabled = True
+            self._confidence_threshold = 0.5
+            self._day_roi_threshold = 0.0001
+            self._day_pnl_threshold = 0.001
+            self._day_volume_threshold = 100_000
 
         # Stats
         self._processed = 0

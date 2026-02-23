@@ -3,7 +3,7 @@
 """Lifecycle manager for orchestrating all system components."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -16,6 +16,8 @@ from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
 from market_scraper.event_bus.memory_bus import MemoryEventBus
 from market_scraper.event_bus.redis_bus import RedisEventBus
+from market_scraper.orchestration.health import ComponentType, HealthMonitor
+from market_scraper.orchestration.scheduler import Scheduler
 from market_scraper.processors.position_inference import PositionInferenceProcessor
 from market_scraper.processors.signal_generation import SignalGenerationProcessor
 from market_scraper.processors.trader_scoring import TraderScoringProcessor
@@ -62,6 +64,10 @@ class LifecycleManager:
         # Processors
         self._processors: list[Any] = []
 
+        # Scheduler and Health Monitor
+        self._scheduler: Scheduler | None = None
+        self._health_monitor: HealthMonitor | None = None
+
     @property
     def is_ready(self) -> bool:
         """Check if startup is complete and system is ready."""
@@ -106,12 +112,7 @@ class LifecycleManager:
             await self._subscribe_storage_handler()
             logger.info("storage_handler_subscribed")
 
-            # 3.5 Candle storage handler - DISABLED (using backfill instead)
-            # await self._subscribe_candle_handler()
-            # logger.info("candle_handler_subscribed")
-            logger.info("candle_handler_disabled_using_backfill")
-
-            # 3.6 Run candle backfill
+            # 3.1 Run candle backfill
             await self._run_candle_backfill()
             logger.info("candle_backfill_complete")
 
@@ -126,6 +127,14 @@ class LifecycleManager:
             # 6. Initialize Leaderboard Collector
             await self._init_leaderboard_collector()
             logger.info("leaderboard_collector_initialized")
+
+            # 7. Initialize Scheduler
+            await self._init_scheduler()
+            logger.info("scheduler_initialized")
+
+            # 8. Initialize Health Monitor
+            await self._init_health_monitor()
+            logger.info("health_monitor_initialized")
 
             self._started = True
             self._startup_complete = True
@@ -175,14 +184,29 @@ class LifecycleManager:
         """Graceful shutdown of all components.
 
         Order (reverse of startup):
-        1. Leaderboard Collector
-        2. Collector Manager
-        3. Processors
-        4. Repository
-        5. Event Bus
+        1. Health Monitor
+        2. Scheduler
+        3. Leaderboard Collector
+        4. Collector Manager
+        5. Processors
+        6. Repository
+        7. Event Bus
         """
         start_time = datetime.now(UTC)
         logger.info("lifecycle_shutdown_begin")
+
+        # Stop health monitor
+        if self._health_monitor:
+            self._health_monitor = None
+            logger.info("health_monitor_stopped")
+
+        # Stop scheduler
+        if self._scheduler:
+            try:
+                await self._scheduler.stop()
+            except Exception as e:
+                logger.error("scheduler_stop_error", error=str(e), exc_info=True)
+            self._scheduler = None
 
         # Stop leaderboard collector
         if self._leaderboard_collector:
@@ -231,12 +255,14 @@ class LifecycleManager:
     async def _init_event_bus(self) -> None:
         """Initialize event bus based on configuration."""
         redis_url = self._settings.redis.url
+        logger.debug("init_event_bus_checking", redis_url=redis_url)
 
-        if redis_url and redis_url != "redis://localhost:6379":
-            # Use Redis event bus if URL is configured
+        if redis_url:
+            # Try to use Redis event bus if URL is configured (including default)
             try:
                 self._event_bus = RedisEventBus(redis_url=redis_url)
                 await self._event_bus.connect()
+                logger.info("redis_event_bus_initialized", url=redis_url)
                 return
             except Exception as e:
                 logger.warning(
@@ -244,9 +270,10 @@ class LifecycleManager:
                     error=str(e),
                 )
 
-        # Default to memory event bus
+        # Default to memory event bus if Redis not configured or failed
         self._event_bus = MemoryEventBus()
         await self._event_bus.connect()
+        logger.info("memory_event_bus_initialized")
 
     async def _init_repository(self) -> None:
         """Initialize repository based on configuration."""
@@ -298,74 +325,6 @@ class LifecycleManager:
         # Subscribe to all events
         await self._event_bus.subscribe("*", storage_handler)
 
-    async def _subscribe_candle_handler(self) -> None:
-        """Subscribe candle storage handler to OHLCV events."""
-        if not self._event_bus:
-            raise RuntimeError("Event bus not initialized")
-
-        async def candle_handler(event: StandardEvent) -> None:
-            """Handle OHLCV events by storing them in candle collections."""
-            if event.event_type != "ohlcv":
-                return
-
-            if not self._repository:
-                return
-
-            try:
-                payload = event.payload
-                if not isinstance(payload, dict):
-                    return
-
-                symbol = payload.get("symbol", "").upper()
-                interval = payload.get("interval", "")
-                if not symbol or not interval:
-                    return
-
-                # Create candle document
-                from datetime import datetime
-
-                from market_scraper.storage.models import Candle
-
-                timestamp = payload.get("timestamp")
-                if isinstance(timestamp, str):
-                    timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                elif not isinstance(timestamp, datetime):
-                    return
-
-                candle = Candle(
-                    t=timestamp,
-                    o=float(payload.get("open", 0)),
-                    h=float(payload.get("high", 0)),
-                    l=float(payload.get("low", 0)),
-                    c=float(payload.get("close", 0)),
-                    v=float(payload.get("volume", 0)),
-                )
-
-                # Store to the specific candle collection
-                if hasattr(self._repository, "store_candle"):
-                    await self._repository.store_candle(candle, symbol, interval)
-                    logger.debug(
-                        "candle_saved",
-                        symbol=symbol,
-                        interval=interval,
-                        timestamp=timestamp.isoformat(),
-                        open=payload.get("open"),
-                        high=payload.get("high"),
-                        low=payload.get("low"),
-                        close=payload.get("close"),
-                        volume=payload.get("volume"),
-                    )
-
-            except Exception as e:
-                logger.error(
-                    "candle_handler_error",
-                    event_id=event.event_id,
-                    error=str(e),
-                    exc_info=True,
-                )
-
-        await self._event_bus.subscribe("ohlcv", candle_handler)
-
     async def _run_candle_backfill(self) -> None:
         """Run historical candle backfill on startup."""
         from market_scraper.connectors.hyperliquid.client import HyperliquidClient
@@ -406,10 +365,14 @@ class LifecycleManager:
 
         config = self._settings.hyperliquid
 
+        # Load market configuration
+        market_config = load_market_config()
+
         # Position Inference Processor
         position_inference = PositionInferenceProcessor(
             event_bus=self._event_bus,
             config=config,
+            position_inference_config=market_config.position_inference,
         )
         await position_inference.start()
         self._processors.append(position_inference)
@@ -423,12 +386,13 @@ class LifecycleManager:
 
         await self._event_bus.subscribe("leaderboard", position_inference_handler)
 
-        # Trader Scoring Processor
+        # Trader Scoring Processor (using config for filters and tags)
         trader_scoring = TraderScoringProcessor(
             event_bus=self._event_bus,
             config=config,
-            min_score=50.0,
-            max_count=500,
+            min_score=market_config.filters.min_score,
+            max_count=market_config.filters.max_count,
+            tags_config=market_config.tags,
         )
         await trader_scoring.start()
         self._processors.append(trader_scoring)
@@ -470,10 +434,14 @@ class LifecycleManager:
             logger.info("hyperliquid_collector_disabled")
             return
 
+        # Load market configuration from YAML
+        market_config = load_market_config()
+
         self._collector_manager = CollectorManager(
             event_bus=self._event_bus,
             config=self._settings.hyperliquid,
             collectors=["candles"],  # Only candles collector implemented currently
+            buffer_config=market_config.buffer,
         )
 
         await self._collector_manager.start()
@@ -503,6 +471,145 @@ class LifecycleManager:
         )
 
         await self._leaderboard_collector.start()
+
+    async def _init_scheduler(self) -> None:
+        """Initialize the scheduler with configured tasks."""
+        market_config = load_market_config()
+        scheduler_config = market_config.scheduler
+
+        if not scheduler_config.enabled:
+            logger.info("scheduler_disabled")
+            return
+
+        self._scheduler = Scheduler()
+
+        # Register tasks from config
+        tasks = scheduler_config.tasks
+
+        # Leaderboard refresh task
+        if "leaderboard_refresh" in tasks and tasks["leaderboard_refresh"].enabled:
+            leaderboard_config = tasks["leaderboard_refresh"]
+            interval = timedelta(seconds=leaderboard_config.interval_seconds)
+
+            async def refresh_leaderboard():
+                if self._leaderboard_collector and self._leaderboard_collector._running:
+                    try:
+                        await self._leaderboard_collector.fetch_now()
+                    except Exception as e:
+                        logger.error("leaderboard_refresh_error", error=str(e))
+
+            self._scheduler.schedule("leaderboard_refresh", interval, refresh_leaderboard)
+            logger.info(
+                "scheduler_task_registered",
+                task="leaderboard_refresh",
+                interval=leaderboard_config.interval_seconds,
+            )
+
+        # Health check task
+        if "health_check" in tasks and tasks["health_check"].enabled:
+            health_config = tasks["health_check"]
+            interval = timedelta(seconds=health_config.interval_seconds)
+
+            async def check_health():
+                try:
+                    await self.health_check()
+                except Exception as e:
+                    logger.error("health_check_error", error=str(e))
+
+            self._scheduler.schedule("health_check", interval, check_health)
+            logger.info(
+                "scheduler_task_registered",
+                task="health_check",
+                interval=health_config.interval_seconds,
+            )
+
+        # Data cleanup task
+        if "data_cleanup" in tasks and tasks["data_cleanup"].enabled:
+            cleanup_config = tasks["data_cleanup"]
+            interval = timedelta(seconds=cleanup_config.interval_seconds)
+
+            async def cleanup_data():
+                logger.info("data_cleanup_task_executed")
+
+            self._scheduler.schedule("data_cleanup", interval, cleanup_data)
+            logger.info(
+                "scheduler_task_registered",
+                task="data_cleanup",
+                interval=cleanup_config.interval_seconds,
+            )
+
+        # Connector health task
+        if "connector_health" in tasks and tasks["connector_health"].enabled:
+            connector_health_config = tasks["connector_health"]
+            interval = timedelta(seconds=connector_health_config.interval_seconds)
+
+            async def check_connector_health():
+                try:
+                    # Get health for each on-chain connector
+                    from market_scraper.api.dependencies import get_connector_factory
+
+                    factory = get_connector_factory()
+                    connectors = await factory.get_all_connectors()
+
+                    for connector in connectors:
+                        try:
+                            health = await connector.health_check()
+                            status = health.get("status", "unknown")
+                            logger.debug(
+                                "connector_health_check",
+                                connector=connector.name,
+                                status=status,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "connector_health_check_failed",
+                                connector=getattr(connector, "name", "unknown"),
+                                error=str(e),
+                            )
+                except Exception as e:
+                    logger.error("connector_health_task_error", error=str(e))
+
+            self._scheduler.schedule("connector_health", interval, check_connector_health)
+            logger.info(
+                "scheduler_task_registered",
+                task="connector_health",
+                interval=connector_health_config.interval_seconds,
+            )
+
+        # Start the scheduler
+        await self._scheduler.start()
+
+    async def _init_health_monitor(self) -> None:
+        """Initialize the health monitor."""
+        if not self._scheduler:
+            logger.warning("health_monitor_no_scheduler")
+            return
+
+        market_config = load_market_config()
+        scheduler_config = market_config.scheduler
+
+        if not scheduler_config.enabled:
+            logger.info("health_monitor_disabled")
+            return
+
+        self._health_monitor = HealthMonitor(self._scheduler)
+
+        # Register components for health monitoring
+        if self._event_bus:
+            self._health_monitor.register_component("event_bus", ComponentType.EVENT_BUS)
+        if self._repository:
+            self._health_monitor.register_component("repository", ComponentType.STORAGE)
+        if self._collector_manager:
+            self._health_monitor.register_component("collector_manager", ComponentType.CONNECTOR)
+        if self._leaderboard_collector:
+            self._health_monitor.register_component("leaderboard", ComponentType.CONNECTOR)
+
+        for i, _processor in enumerate(self._processors):
+            self._health_monitor.register_component(f"processor_{i}", ComponentType.PROCESSOR)
+
+        logger.info(
+            "health_monitor_components_registered", count=len(self._health_monitor._components)
+        )
 
     # --- Public API Methods ---
 

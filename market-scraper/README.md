@@ -173,15 +173,15 @@ uv run python -m market_scraper traders untrack <address>
 
 ## Configuration
 
-Configuration is via environment variables or `.env` file:
+Configuration is via environment variables or `.env` file, plus YAML for advanced settings:
 
 ```bash
 # MongoDB (required for persistence)
 MONGO__URL=mongodb://localhost:27017
 MONGO__DATABASE=market_scraper
 
-# Redis (optional, for distributed setups)
-REDIS__URL=redis://localhost:6379/0
+# Redis (optional, for distributed setups - now default when available)
+REDIS__URL=redis://localhost:6379
 
 # Hyperliquid Settings
 HYPERLIQUID__ENABLED=true
@@ -190,6 +190,62 @@ HYPERLIQUID__SYMBOL=BTC           # Only save data for this symbol
 # API
 API_HOST=0.0.0.0
 API_PORT=8000
+```
+
+### YAML Configuration (Advanced)
+
+The system uses `config/market_config.yaml` for advanced configuration:
+
+```bash
+# View current configuration
+uv run python -m market_scraper config
+```
+
+### Scheduler Configuration
+
+The scheduler runs periodic background tasks. Configure in `config/market_config.yaml`:
+
+```yaml
+scheduler:
+  enabled: true
+  tasks:
+    leaderboard_refresh:
+      enabled: true
+      interval_seconds: 3600  # 1 hour
+    health_check:
+      enabled: true
+      interval_seconds: 600  # 10 minutes
+    connector_health:
+      enabled: true
+      interval_seconds: 600  # 10 minutes
+    data_cleanup:
+      enabled: false  # Use MongoDB TTL indexes instead
+```
+
+### Position Inference Configuration
+
+Configure position inference thresholds:
+
+```yaml
+position_inference:
+  enabled: true
+  confidence_threshold: 0.5
+  indicators:
+    day_roi_threshold: 0.0001
+    pnl_ratio_threshold: 0.001
+    day_volume_threshold: 100000
+```
+
+### Buffer Configuration
+
+Configure event buffering for MongoDB writes:
+
+```yaml
+buffer:
+  flush_interval: 50.0      # Seconds between flushes
+  max_size: 100              # Max events before forced flush
+  broadcast_batch_size: 100
+  broadcast_batch_timeout_ms: 10.0
 ```
 
 ### Symbol Filtering
@@ -205,28 +261,34 @@ HYPERLIQUID__SYMBOL=ETH uv run python -m market_scraper server
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Market Scraper v2                        │
+│                        Market Scraper v2                         │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│  │ Collectors  │───▶│  Event Bus  │───▶│ Processors  │        │
-│  │             │    │ (Memory/    │    │             │        │
-│  │ - Candles   │    │  Redis)     │    │ - Scoring   │        │
-│  │ - Traders   │    └──────┬──────┘    │ - Signals   │        │
-│  │ - On-Chain  │           │           │ - Positions │        │
-│  └─────────────┘           │           └──────┬──────┘        │
-│                            ▼                  │               │
-│                    ┌─────────────┐            │               │
-│                    │   Storage   │◀───────────┘               │
-│                    │ (Repository)│                            │
-│                    └──────┬──────┘                            │
-│                           │                                    │
-│                           ▼                                    │
-│                    ┌─────────────┐                             │
-│                    │  REST API   │                             │
-│                    │  (FastAPI)  │                             │
-│                    └─────────────┘                             │
-│                                                                 │
+│                                                                  │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
+│  │ Collectors  │───▶│  Event Bus  │───▶│ Processors  │         │
+│  │             │    │ (Memory/    │    │             │         │
+│  │ - Candles   │    │  Redis)     │    │ - Scoring   │         │
+│  │ - Leaderboard    └──────┬──────┘    │ - Signals   │         │
+│  │             │           │           │ - Positions  │         │
+│  └─────────────┘           │           └──────┬──────┘         │
+│                            ▼                  │                  │
+│                    ┌─────────────┐            │                  │
+│                    │   Storage   │◀───────────┘                  │
+│                    │ (Repository)│                              │
+│                    └──────┬──────┘                              │
+│                           │                                      │
+│                           ▼                                      │
+│                    ┌─────────────┐                              │
+│                    │  REST API   │                              │
+│                    │  (FastAPI)  │                              │
+│                    └─────────────┘                              │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  Background Tasks (Scheduler)                            │   │
+│  │  - Leaderboard Refresh  - Health Check                  │   │
+│  │  - Connector Health   - Data Cleanup                    │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

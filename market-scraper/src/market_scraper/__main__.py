@@ -148,19 +148,22 @@ async def run_server(args: argparse.Namespace) -> int:
 
     settings = get_settings()
 
+    # Default to 1 worker if not specified
+    workers = getattr(settings, "api_workers", 1) or 1
+
     logger.info(
         "starting_server",
         host=args.host,
         port=args.port,
         symbol=settings.hyperliquid.symbol,
-        workers=settings.api_workers,
+        workers=workers,
     )
 
     config = uvicorn.Config(
         "market_scraper.api.main:app",
         host=args.host,
         port=args.port,
-        workers=settings.api_workers,
+        workers=workers,
         log_level="info",
     )
     server = uvicorn.Server(config)

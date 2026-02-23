@@ -17,6 +17,7 @@ from market_scraper.api.routes import (
     traders,
     websocket,
 )
+from market_scraper.api.dependencies import get_connector_factory
 from market_scraper.core.config import get_settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
 
@@ -47,6 +48,13 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("api_shutting_down")
+
+    # Close all connectors
+    try:
+        connector_factory = get_connector_factory()
+        await connector_factory.close_all()
+    except Exception as e:
+        logger.warning("connector_close_error", error=str(e))
 
     # Cancel background startup if still running
     if not startup_task.done():

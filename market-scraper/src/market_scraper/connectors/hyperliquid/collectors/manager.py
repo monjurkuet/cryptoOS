@@ -11,6 +11,7 @@ import structlog
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from market_scraper.config.market_config import BufferConfig
 from market_scraper.connectors.hyperliquid.collectors.base import BaseCollector
 from market_scraper.connectors.hyperliquid.collectors.candles import CandlesCollector
 from market_scraper.core.config import HyperliquidSettings
@@ -34,6 +35,7 @@ class CollectorManager:
         event_bus: EventBus,
         config: HyperliquidSettings,
         collectors: list[str] | None = None,
+        buffer_config: BufferConfig | None = None,
     ) -> None:
         """Initialize the collector manager.
 
@@ -41,9 +43,11 @@ class CollectorManager:
             event_bus: Event bus for publishing events
             config: Hyperliquid settings
             collectors: List of collector names to enable (default: all)
+            buffer_config: Buffer configuration for collectors
         """
         self.event_bus = event_bus
         self.config = config
+        self._buffer_config = buffer_config or BufferConfig()
         self._ws: Any = None
         self._running = False
         self._reconnect_attempts = 0
@@ -68,6 +72,7 @@ class CollectorManager:
                 self._collectors[name] = collector_classes[name](
                     event_bus=self.event_bus,
                     config=self.config,
+                    buffer_config=self._buffer_config,
                 )
                 logger.info("collector_initialized", collector=name)
             else:

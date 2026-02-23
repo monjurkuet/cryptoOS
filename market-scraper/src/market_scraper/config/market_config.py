@@ -167,6 +167,27 @@ class CandleBackfillConfig(BaseModel):
     )
 
 
+class SchedulerTaskConfig(BaseModel):
+    """Configuration for a single scheduled task."""
+
+    enabled: bool = Field(default=True, description="Enable this scheduled task")
+    interval_seconds: int = Field(default=60, description="Interval between task executions")
+
+
+class SchedulerConfig(BaseModel):
+    """Scheduler configuration for periodic background tasks.
+
+    Controls the task scheduler that runs periodic jobs like
+    leaderboard refresh, health checks, and data cleanup.
+    """
+
+    enabled: bool = Field(default=True, description="Enable the scheduler")
+    tasks: dict[str, SchedulerTaskConfig] = Field(
+        default_factory=dict,
+        description="Periodic tasks configuration",
+    )
+
+
 class MarketConfig(BaseModel):
     """Complete market configuration.
 
@@ -195,6 +216,7 @@ class MarketConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     buffer: BufferConfig = Field(default_factory=BufferConfig)
     candle_backfill: CandleBackfillConfig = Field(default_factory=CandleBackfillConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
 
 def load_market_config(config_path: str | Path | None = None) -> MarketConfig:

@@ -104,13 +104,9 @@ class Settings(BaseSettings):
     # Hyperliquid connector settings
     hyperliquid: HyperliquidSettings = Field(default_factory=HyperliquidSettings)
 
-    # Connectors
-    connectors_config_path: str = Field(default="config/connectors.yaml")
-
     # API
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8000)
-    api_workers: int = Field(default=1)
 
 
 @lru_cache

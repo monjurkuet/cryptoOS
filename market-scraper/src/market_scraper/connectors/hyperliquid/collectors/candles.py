@@ -7,6 +7,7 @@ from typing import Any
 
 import structlog
 
+from market_scraper.config.market_config import BufferConfig
 from market_scraper.connectors.hyperliquid.collectors.base import BaseCollector
 from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
@@ -26,14 +27,20 @@ class CandlesCollector(BaseCollector):
     # Supported intervals
     INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
-    def __init__(self, event_bus: EventBus, config: HyperliquidSettings) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        config: HyperliquidSettings,
+        buffer_config: BufferConfig | None = None,
+    ) -> None:
         """Initialize the candles collector.
 
         Args:
             event_bus: Event bus for publishing events
             config: Hyperliquid settings
+            buffer_config: Buffer configuration for event flushing
         """
-        super().__init__(event_bus, config)
+        super().__init__(event_bus, config, buffer_config)
         self._active_intervals: set[str] = set()
 
     @property

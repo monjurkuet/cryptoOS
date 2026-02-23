@@ -125,7 +125,7 @@ buffer:
   # How often to automatically flush buffered events to database (seconds)
   # Lower values = more frequent writes, lower latency
   # Higher values = fewer writes, better throughput
-  flush_interval: 5.0
+  flush_interval: 50.0
 
   # Maximum number of events to buffer before forced flush
   # Lower values = more frequent writes
@@ -166,3 +166,31 @@ candle_backfill:
   # Smart backfill: only fetch data that doesn't exist in DB
   # Queries latest candle timestamp and fetches from there to now
   incremental: true
+
+# Scheduler Configuration
+# Controls periodic background tasks
+scheduler:
+  enabled: true
+
+  # Periodic tasks configuration
+  tasks:
+    # Leaderboard refresh - fetch latest trader rankings
+    leaderboard_refresh:
+      enabled: true
+      interval_seconds: 3600  # 1 hour
+
+    # Health check - verify all components are healthy
+    health_check:
+      enabled: true
+      interval_seconds: 600  # 1 minute
+
+    # Data cleanup - remove old data based on retention settings
+    data_cleanup:
+      enabled: false  # Disabled by default (use MongoDB TTL indexes instead)
+      interval_seconds: 86400  # 24 hours
+
+    # Connector health - check on-chain connector status
+    connector_health:
+      enabled: true
+      interval_seconds: 600  # 5 minutes
+

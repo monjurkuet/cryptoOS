@@ -113,8 +113,8 @@ See [DATA_STORAGE.md](docs/DATA_STORAGE.md) for complete schema details.
 MONGO__URL=mongodb://localhost:27017
 MONGO__DATABASE=market_scraper
 
-# Redis (optional)
-REDIS__URL=redis://localhost:6379/0
+# Redis (default when available)
+REDIS__URL=redis://localhost:6379
 
 # Hyperliquid
 HYPERLIQUID__SYMBOL=BTC
@@ -126,13 +126,29 @@ API_PORT=8000
 
 ### YAML Configuration
 
-Trader scoring and filtering is configured via YAML:
+Advanced settings are configured via `config/market_config.yaml`:
 
-```bash
-config/market_config.yaml
-```
+| Section | Description |
+|---------|-------------|
+| `scoring` | Trader scoring weights and multipliers |
+| `filters` | Trader filtering (min_score, max_count) |
+| `tags` | Trader tag thresholds |
+| `position_inference` | Position inference thresholds |
+| `storage` | Data retention settings |
+| `buffer` | Event buffering configuration |
+| `candle_backfill` | Historical data backfill settings |
+| `scheduler` | Periodic background task configuration |
 
-See [Trader Filter Guide](docs/TRADER_FILTER_GUIDES.md) for configuration options.
+### Scheduler Tasks
+
+| Task | Default Interval | Description |
+|------|------------------|--------------|
+| `leaderboard_refresh` | 3600s (1 hour) | Refresh trader leaderboard |
+| `health_check` | 600s (10 min) | System health monitoring |
+| `connector_health` | 600s (10 min) | On-chain connector health |
+| `data_cleanup` | disabled | Data cleanup (use TTL indexes) |
+
+See [Trader Filter Guide](docs/TRADER_FILTER_GUIDES.md) for complete configuration options.
 
 ---
 
