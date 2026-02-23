@@ -279,18 +279,21 @@ curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&start_time=2
 
 ## WebSocket Real-Time Updates
 
-For real-time price updates, connect to WebSocket:
+For real-time trader and signal updates, connect to WebSocket:
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8000/ws?channel=market');
+const ws = new WebSocket('ws://localhost:8000/ws?channel=traders');
 
 ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
-    // data.event_type = 'ohlcv'
-    // data.payload = { symbol, interval, open, high, low, close, volume }
-    console.log('Price update:', data.payload.c);
+    // data.event_type = 'position_update' or 'signal'
+    console.log('Update:', data);
 };
 ```
+
+Available channels:
+- `traders` - Trader position and score updates
+- `signals` - Trading signal alerts
 
 ---
 
@@ -303,7 +306,7 @@ ws.onmessage = (event) => {
 | **Volume data** | `/api/v1/markets/{symbol}/history` | Use `candles[].v` |
 | **Price range** | `/api/v1/markets/{symbol}/history` | Use `candles[].h` and `.l` |
 | **OHLC data** | `/api/v1/markets/{symbol}/history` | Full candle data |
-| **Real-time updates** | `/ws?channel=market` | WebSocket |
+| **Real-time updates** | `/ws?channel=traders` | WebSocket |
 
 ---
 

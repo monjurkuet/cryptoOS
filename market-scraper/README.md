@@ -12,10 +12,9 @@ A production-ready market data system that collects real-time data from Hyperliq
 
 | Collector | Description | Storage Optimization |
 |-----------|-------------|---------------------|
-| **Candles** | OHLCV candle data (1m, 5m, 15m, 1h, 4h, 1d) | Standard |
+| **Candles** | OHLCV candle data (1m, 5m, 15m, 1h, 4h, 1d) via HTTP backfill | Standard |
 | **Leaderboard** | Top trader rankings (hourly) | Standard |
-| **Trader WS** | Real-time position tracking | 85% reduction (event-driven saves) |
-| **Trader Orders** | Order lifecycle tracking | Standard |
+| **Trader WS** | Real-time position tracking via WebSocket | 85% reduction (event-driven saves) |
 
 **Note:** Individual trades and orderbook data are NOT collected. The system focuses on trader positions for signal generation, not market microstructure. Price data comes from OHLCV candles.
 
@@ -23,13 +22,9 @@ A production-ready market data system that collects real-time data from Hyperliq
 
 | Processor | Description |
 |-----------|-------------|
-| **MarketDataProcessor** | Normalizes and validates market data |
-| **CandleProcessor** | Aggregates trades into OHLCV candles |
-| **MetricsProcessor** | System performance metrics |
 | **PositionInferenceProcessor** | Infers trader positions from leaderboard (89% accuracy) |
 | **TraderScoringProcessor** | Multi-factor trader scoring |
 | **SignalGenerationProcessor** | BUY/SELL/NEUTRAL signal generation |
-| **PositionDetectionProcessor** | Detects position changes (open/close/increase/decrease) |
 
 ### On-Chain Data Connectors
 
@@ -107,7 +102,6 @@ A production-ready market data system that collects real-time data from Hyperliq
 #### WebSocket
 | Endpoint | Description |
 |----------|-------------|
-| `/ws?channel=market` | Real-time trade/orderbook updates |
 | `/ws?channel=traders` | Trader position/score updates |
 | `/ws?channel=signals` | Trading signal alerts |
 
@@ -184,7 +178,7 @@ Configuration is via environment variables or `.env` file:
 ```bash
 # MongoDB (required for persistence)
 MONGO__URL=mongodb://localhost:27017
-MONGO__DATABASE=cryptodata
+MONGO__DATABASE=market_scraper
 
 # Redis (optional, for distributed setups)
 REDIS__URL=redis://localhost:6379/0

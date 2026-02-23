@@ -46,7 +46,7 @@ Edit `.env` with your settings:
 ```bash
 # MongoDB connection (required)
 MONGO__URL=mongodb://localhost:27017
-MONGO__DATABASE=cryptodata
+MONGO__DATABASE=market_scraper
 
 # Redis connection (optional)
 REDIS__URL=redis://localhost:6379/0
@@ -154,10 +154,10 @@ asyncio.run(main())
 
 ```javascript
 // Connect to WebSocket
-const ws = new WebSocket('ws://localhost:8000/ws?channel=market');
+const ws = new WebSocket('ws://localhost:8000/ws?channel=traders');
 
 ws.onopen = () => {
-    console.log('Connected to market data stream');
+    console.log('Connected to trader data stream');
 };
 
 ws.onmessage = (event) => {
@@ -167,7 +167,6 @@ ws.onmessage = (event) => {
 ```
 
 Available channels:
-- `market` - Trade and orderbook updates
 - `traders` - Trader position and score updates
 - `signals` - Trading signal alerts
 

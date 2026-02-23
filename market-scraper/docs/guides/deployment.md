@@ -259,7 +259,7 @@ To verify TTL indexes are working:
 
 ```bash
 # Check TTL indexes
-mongosh cryptodata --eval "
+mongosh market_scraper --eval "
   db.trader_positions.getIndexes().forEach(i => {
     if (i.expireAfterSeconds) print(i.name, ':', i.expireAfterSeconds / 86400, 'days');
   });

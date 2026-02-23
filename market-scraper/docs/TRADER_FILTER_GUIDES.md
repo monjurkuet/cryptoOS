@@ -783,7 +783,7 @@ storage:
 
 ```bash
 # Check TTL indexes in MongoDB
-mongosh cryptodata --eval "
+mongosh market_scraper --eval "
   db.trader_positions.getIndexes().forEach(i => {
     if (i.expireAfterSeconds) print(i.name, ':', i.expireAfterSeconds / 86400, 'days');
   });

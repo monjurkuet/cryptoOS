@@ -30,9 +30,9 @@ The Market Scraper Framework follows an event-driven, hexagonal (ports and adapt
                     │                                                              │
                     │  ┌────────────────┐  ┌───────────────┐  ┌────────────┐   │
                     │  │   Orchestration │  │  Event Bus    │  │  Processors │   │
-                    │  │  - Lifecycle    │  │  (Pub/Sub)    │  │  - Market   │   │
-                    │  │  - Scheduler    │  │  - Redis      │  │  - Candle   │   │
-                    │  │  - Health       │  │  - Memory     │  │  - Metrics  │   │
+                    │  │  - Lifecycle    │  │  (Pub/Sub)    │  │  - Position │   │
+                    │  │  - Scheduler    │  │  - Redis      │  │  - Scoring  │   │
+                    │  │  - Health       │  │  - Memory     │  │  - Signals  │   │
                     │  └────────┬────────┘  └───────┬───────┘  └──────┬─────┘   │
                     │           │                   │                 │         │
                     └───────────┼───────────────────┼─────────────────┼─────────┘

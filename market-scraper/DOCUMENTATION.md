@@ -43,14 +43,6 @@ Complete documentation for the Market Scraper v2 system.
 
 ---
 
-## Implementation Plans
-
-| Document | Description | Status |
-|----------|-------------|--------|
-| [On-Chain Metrics Plan](docs/ONCHAIN_METRICS_IMPLEMENTATION_PLAN.md) | Bitcoin on-chain metrics implementation | ✅ Completed |
-
----
-
 ## API Reference
 
 Interactive API documentation available at runtime:
@@ -73,7 +65,6 @@ Interactive API documentation available at runtime:
 
 | Channel | Endpoint | Description |
 |---------|----------|-------------|
-| Market | `/ws?channel=market` | Trade and orderbook updates |
 | Traders | `/ws?channel=traders` | Position and score updates |
 | Signals | `/ws?channel=signals` | Trading signal alerts |
 
@@ -91,8 +82,6 @@ Interactive API documentation available at runtime:
 
 | Collection | Pattern | Description |
 |------------|---------|-------------|
-| `{symbol}_trades` | `btc_trades` | Trade data |
-| `{symbol}_orderbook` | `btc_orderbook` | Orderbook snapshots |
 | `{symbol}_candles_{interval}` | `btc_candles_1m` | OHLCV candles |
 
 ### Trader Data
@@ -122,14 +111,13 @@ See [DATA_STORAGE.md](docs/DATA_STORAGE.md) for complete schema details.
 ```bash
 # MongoDB
 MONGO__URL=mongodb://localhost:27017
-MONGO__DATABASE=cryptodata
+MONGO__DATABASE=market_scraper
 
 # Redis (optional)
 REDIS__URL=redis://localhost:6379/0
 
 # Hyperliquid
 HYPERLIQUID__SYMBOL=BTC
-HYPERLIQUID__TRADE_MIN_USD=1000.0
 
 # API
 API_HOST=0.0.0.0

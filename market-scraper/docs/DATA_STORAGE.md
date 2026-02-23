@@ -18,7 +18,7 @@ from market_scraper.storage.mongo_repository import MongoRepository
 # Connect to MongoDB
 repo = MongoRepository(
     connection_string="mongodb://localhost:27017",
-    database_name="cryptodata"
+    database_name="market_scraper"
 )
 await repo.connect()
 ```
@@ -26,7 +26,7 @@ await repo.connect()
 Configuration via environment:
 ```bash
 MONGO__URL=mongodb://localhost:27017
-MONGO__DATABASE=cryptodata
+MONGO__DATABASE=market_scraper
 ```
 
 ---
@@ -274,8 +274,6 @@ storage:
     signals: 30
     trader_signals: 30
     mark_prices: 30
-    trades: 7
-    orderbook: 7
     candles: 30
 ```
 
@@ -290,8 +288,6 @@ storage:
 | `signals` | 30 days | Signal performance tracking |
 | `trader_signals` | 30 days | Per-trader signal history |
 | `mark_prices` | 30 days | Price reference data |
-| `trades` | 7 days | High-volume data, short retention |
-| `orderbook` | 7 days | High-volume data, short retention |
 | `candles` | 30 days | OHLCV for backtesting |
 
 ### How TTL Works
@@ -304,7 +300,7 @@ storage:
 ### Verify TTL Indexes
 
 ```bash
-mongosh cryptodata --eval "
+mongosh market_scraper --eval "
   db.trader_positions.getIndexes().forEach(i => {
     if (i.expireAfterSeconds)
       print(i.name, ':', i.expireAfterSeconds / 86400, 'days');
@@ -362,8 +358,6 @@ Short field names minimize document size:
 
 Data is filtered at the source to reduce storage:
 
-- **Trades**: Only saves trades ≥ $1,000 USD
-- **Orderbook**: Only saves when price changes ≥ 1%
 - **Trader positions**: Event-driven saves (only on change)
 
 ### Bulk Operations
@@ -371,9 +365,6 @@ Data is filtered at the source to reduce storage:
 Use bulk methods for better performance:
 
 ```python
-# Efficient bulk trade insert
-await repo.store_trades_bulk(trades, symbol="BTC")
-
 # Use upsert for idempotent operations
 await repo.upsert_tracked_trader(trader)
 ```
@@ -426,12 +417,6 @@ stats = await repo.get_signal_stats(
 Useful queries for data exploration:
 
 ```javascript
-// Recent trades over $10k
-db.btc_trades.find({ usd: { $gt: 10000 } }).sort({ t: -1 }).limit(100)
-
-// Large buy orders
-db.btc_trades.find({ side: "B", usd: { $gt: 50000 } }).sort({ t: -1 })
-
 // Top 10 traders by score
 db.tracked_traders.find({ active: true }).sort({ score: -1 }).limit(10)
 
@@ -442,7 +427,6 @@ db.tracked_traders.find({ tags: "whale", active: true })
 db.signals.find({ rec: "BUY" }).sort({ t: -1 }).limit(20)
 
 // Collection sizes
-db.btc_trades.stats()
 db.trader_positions.stats()
 ```
 
@@ -454,16 +438,16 @@ db.trader_positions.stats()
 
 ```bash
 # Export specific collection
-mongodump --db=cryptodata --collection=tracked_traders --out=backup/
+mongodump --db=market_scraper --collection=tracked_traders --out=backup/
 
 # Export entire database
-mongodump --db=cryptodata --out=backup/
+mongodump --db=market_scraper --out=backup/
 ```
 
 ### Import Collections
 
 ```bash
-mongorestore --db=cryptodata backup/cryptodata/
+mongorestore --db=market_scraper backup/market_scraper/
 ```
 
 ---
@@ -481,10 +465,10 @@ health = await repo.health_check()
 
 ```javascript
 // Get collection statistics
-db.btc_trades.stats()
+db.trader_positions.stats()
 
 // Index usage
-db.btc_trades.aggregate([{ $indexStats: {} }])
+db.trader_positions.aggregate([{ $indexStats: {} }])
 ```
 
 ---

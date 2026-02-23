@@ -435,8 +435,6 @@ async def run_config(args: argparse.Namespace) -> int:
     print(f"  Symbol: {settings.hyperliquid.symbol}")
     print(f"  API URL: {settings.hyperliquid.api_url}")
     print(f"  WS URL: {settings.hyperliquid.ws_url}")
-    print(f"  Min Trade USD: ${settings.hyperliquid.trade_min_usd}")
-    print(f"  Orderbook Threshold: {settings.hyperliquid.orderbook_price_threshold * 100}%")
 
     return 0
 
