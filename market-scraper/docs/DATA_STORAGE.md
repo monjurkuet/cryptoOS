@@ -33,6 +33,34 @@ MONGO__DATABASE=cryptodata
 
 ## Collections
 
+### Events Collection
+
+#### `events`
+
+Catch-all event storage for debugging and audit purposes. All events (except `leaderboard`) are stored here via `MongoRepository.store()`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event_id` | str | Unique event identifier (indexed, unique) |
+| `event_type` | str | Event type (indexed) |
+| `source` | str | Source connector name (indexed) |
+| `timestamp` | datetime | Event timestamp (indexed, TTL) |
+| `correlation_id` | str | Correlation ID for tracing (indexed) |
+| `payload` | dict | Event payload data |
+
+**Indexes:**
+```javascript
+{ "timestamp": -1, "event_type": 1, "source": 1 }
+{ "payload.symbol": 1, "timestamp": -1 }
+{ "correlation_id": 1 }
+{ "event_id": 1 } (unique)
+{ "timestamp": 1 } (TTL)
+```
+
+**Note:** This is a catch-all audit log. Specialized collections (signals, trader_positions, etc.) provide optimized storage for specific data types. The events collection is primarily for debugging and has a short retention period (7 days by default).
+
+---
+
 ### Market Data Collections
 
 #### `{symbol}_candles_{interval}` (e.g., `btc_candles_1m`)
@@ -234,18 +262,37 @@ Historical snapshots of the Hyperliquid leaderboard.
 
 ## Retention Policies
 
-MongoDB TTL indexes automatically delete old documents. Retention is configurable in `config/traders_config.yaml`:
+MongoDB TTL indexes automatically delete old documents. Retention is configurable in `config/market_config.yaml`:
 
 ```yaml
 storage:
   retention:
-    leaderboard_history: 90   # Days
+    events: 7                  # Raw events (catch-all audit log)
+    leaderboard_history: 90    # Days
     trader_positions: 30
     trader_scores: 90
     signals: 30
     trader_signals: 30
+    mark_prices: 30
+    trades: 7
+    orderbook: 7
     candles: 30
 ```
+
+### Retention Rationale
+
+| Collection | Retention | Rationale |
+|------------|-----------|-----------|
+| `events` | 7 days | Catch-all audit log; specialized collections exist for most data |
+| `leaderboard_history` | 90 days | Long-term trend analysis |
+| `trader_positions` | 30 days | Medium-term position history |
+| `trader_scores` | 90 days | Score trend analysis |
+| `signals` | 30 days | Signal performance tracking |
+| `trader_signals` | 30 days | Per-trader signal history |
+| `mark_prices` | 30 days | Price reference data |
+| `trades` | 7 days | High-volume data, short retention |
+| `orderbook` | 7 days | High-volume data, short retention |
+| `candles` | 30 days | OHLCV for backtesting |
 
 ### How TTL Works
 

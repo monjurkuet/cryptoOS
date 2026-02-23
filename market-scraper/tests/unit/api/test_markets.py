@@ -1,10 +1,10 @@
 # tests/unit/api/test_markets.py
 
-import pytest
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from httpx import AsyncClient, ASGITransport
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.mark.asyncio
@@ -17,13 +17,13 @@ async def test_list_markets():
                 "symbol": "BTC-USD",
                 "source": "hyperliquid",
                 "last_price": 50000.0,
-                "last_update": datetime.utcnow(),
+                "last_update": datetime.now(UTC),
             },
             {
                 "symbol": "ETH-USD",
                 "source": "hyperliquid",
                 "last_price": 3000.0,
-                "last_update": datetime.utcnow(),
+                "last_update": datetime.now(UTC),
             },
         ]
     )
@@ -49,7 +49,7 @@ async def test_get_market():
         return_value={
             "symbol": "BTC-USD",
             "latest_candle": {
-                "t": datetime.utcnow().isoformat(),
+                "t": datetime.now(UTC).isoformat(),
                 "o": 49900.0,
                 "h": 50100.0,
                 "l": 49800.0,
@@ -93,7 +93,7 @@ async def test_get_market_history():
     mock_lifecycle.get_market_history = AsyncMock(
         return_value=[
             {
-                "t": datetime.utcnow().isoformat(),
+                "t": datetime.now(UTC).isoformat(),
                 "o": 50000.0,
                 "h": 50100.0,
                 "l": 49900.0,

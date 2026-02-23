@@ -10,7 +10,7 @@ from typing import Any
 import structlog
 
 from market_scraper import __version__
-from market_scraper.core.config import get_settings, Settings
+from market_scraper.core.config import get_settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
 
 logger = structlog.get_logger(__name__)
@@ -137,11 +137,13 @@ async def run_server(args: argparse.Namespace) -> int:
     # Override symbol if provided
     if args.symbol:
         import os
+
         os.environ["HYPERLIQUID__SYMBOL"] = args.symbol
 
     # Set environment variable to disable collectors if requested
     if args.no_collectors:
         import os
+
         os.environ["HYPERLIQUID__ENABLED"] = "false"
 
     settings = get_settings()
@@ -384,7 +386,6 @@ async def run_health(args: argparse.Namespace) -> int:
     await lifecycle.startup()
 
     health = await lifecycle.health_check()
-    detailed = await lifecycle.get_detailed_health()
 
     print("\nSystem Health:")
     print("-" * 50)

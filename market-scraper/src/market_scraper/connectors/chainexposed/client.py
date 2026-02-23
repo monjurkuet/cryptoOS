@@ -160,20 +160,11 @@ class ChainExposedClient:
         Returns:
             Parsed data dictionary
         """
-        # Find all x arrays
-        x_pattern = r'x:\s*\[(.*?)\]'
-        y_pattern = r'y:\s*\[(.*?)\]'
-        name_pattern = r'name:\s*["\']([^"\']+)["\']'
-
         # Extract raw arrays (need to handle the content carefully)
-        # Use a more robust approach: find all trace objects
-
-        # Pattern to match Plotly trace objects
-        trace_pattern = r'\{[^{}]*x:\s*\[[^\]]*\][^{}]*y:\s*\[[^\]]*\][^{}]*\}'
 
         # Simpler approach: extract x and y arrays separately, then match by index
-        x_matches = re.findall(r'x:\s*\[(.*?)\]', html, re.DOTALL)
-        y_matches = re.findall(r'y:\s*\[(.*?)\]', html, re.DOTALL)
+        x_matches = re.findall(r"x:\s*\[(.*?)\]", html, re.DOTALL)
+        y_matches = re.findall(r"y:\s*\[(.*?)\]", html, re.DOTALL)
         name_matches = re.findall(r'name:\s*["\']([^"\']+)["\']', html)
 
         if not x_matches or not y_matches:
@@ -182,7 +173,7 @@ class ChainExposedClient:
         # Parse the arrays
         all_traces = {}
 
-        for i, (x_raw, y_raw) in enumerate(zip(x_matches, y_matches)):
+        for i, (x_raw, y_raw) in enumerate(zip(x_matches, y_matches, strict=False)):
             try:
                 dates = self._parse_string_array(x_raw)
                 values = self._parse_value_array(y_raw)
@@ -256,9 +247,7 @@ class ChainExposedClient:
                     items.append(None)
         return items
 
-    def _find_main_trace(
-        self, all_traces: dict[str, dict], metric_name: str
-    ) -> dict[str, Any]:
+    def _find_main_trace(self, all_traces: dict[str, dict], metric_name: str) -> dict[str, Any]:
         """Find the main data trace from multiple traces.
 
         Some metrics have multiple traces (e.g., HODL Waves has multiple bands).
@@ -282,7 +271,7 @@ class ChainExposedClient:
         # Priority 1: Look for "7d MA" or moving average traces (most reliable)
         for name, data in all_traces.items():
             name_lower = name.lower()
-            if "7d ma" in name_lower or "ma" in name_lower:
+            if "7d ma" in name_lower or "ma" in name_lower:  # noqa: SIM102
                 # Ensure it's not a price trace
                 if "price" not in name_lower:
                     return {**data, "trace_name": name}
@@ -306,11 +295,14 @@ class ChainExposedClient:
                 continue
             values = [v for v in data.get("values", []) if v is not None]
             if values:
-                avg = sum(values[-30:]) / len(values[-30:]) if len(values) >= 30 else sum(values) / len(values)
+                avg = (
+                    sum(values[-30:]) / len(values[-30:])
+                    if len(values) >= 30
+                    else sum(values) / len(values)
+                )
                 # Check if average is in expected range
-                if metric_name.upper() in ["SOPR", "NUPL", "MVRV", "DORMANCY"]:
-                    if 0 < avg < 10:  # Reasonable range for these metrics
-                        return {**data, "trace_name": name}
+                if metric_name.upper() in ["SOPR", "NUPL", "MVRV", "DORMANCY"] and 0 < avg < 10:
+                    return {**data, "trace_name": name}
 
         # Fallback: Look for trace with most non-null values (excluding Price)
         best_trace = None

@@ -3,12 +3,14 @@
 """Base collector class for Hyperliquid data collection."""
 
 import asyncio
+import contextlib
 import time
 from abc import ABC, abstractmethod
 from typing import Any
 
 import structlog
 
+from market_scraper.config.market_config import BufferConfig
 from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -34,20 +36,26 @@ class BaseCollector(ABC):
         self,
         event_bus: EventBus,
         config: HyperliquidSettings,
+        buffer_config: BufferConfig | None = None,
     ) -> None:
         """Initialize the collector.
 
         Args:
             event_bus: Event bus for publishing events
             config: Hyperliquid settings (includes symbol filter)
+            buffer_config: Buffer and flush configuration
         """
         self.event_bus = event_bus
         self.config = config
         self.symbol = config.symbol  # Only save this symbol's data
         self._running = False
+
+        # Buffer configuration
+        buffer_config = buffer_config or BufferConfig()
         self._buffer: list[StandardEvent] = []
+        self._flush_interval: float = buffer_config.flush_interval
+        self._buffer_max_size: int = buffer_config.max_size
         self._last_flush: float = time.time()
-        self._flush_interval: float = 5.0  # Flush buffer every 5 seconds
         self._flush_task: asyncio.Task | None = None
 
         # Metrics
@@ -75,6 +83,8 @@ class BaseCollector(ABC):
             "collector_started",
             collector=self.name,
             symbol=self.symbol,
+            flush_interval=self._flush_interval,
+            buffer_max_size=self._buffer_max_size,
         )
 
     async def stop(self) -> None:
@@ -82,10 +92,8 @@ class BaseCollector(ABC):
         self._running = False
         if self._flush_task:
             self._flush_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._flush_task
-            except asyncio.CancelledError:
-                pass
         await self._flush_buffer()
         logger.info(
             "collector_stopped",
@@ -127,7 +135,7 @@ class BaseCollector(ABC):
                 self._events_emitted += len(events)
 
                 # Flush if buffer is large
-                if len(self._buffer) >= 100:
+                if len(self._buffer) >= self._buffer_max_size:
                     await self._flush_buffer()
             else:
                 self._messages_filtered += 1
@@ -158,13 +166,21 @@ class BaseCollector(ABC):
         try:
             count = await self.event_bus.publish_bulk(events)
 
-            # Log sample event data for visibility
-            sample = events[0].payload if events else {}
-            logger.info(
+            # Aggregate by interval for better visibility
+            intervals: dict[str, int] = {}
+            for event in events:
+                interval = (
+                    event.payload.get("interval", "unknown")
+                    if isinstance(event.payload, dict)
+                    else "unknown"
+                )
+                intervals[interval] = intervals.get(interval, 0) + 1
+
+            logger.debug(
                 "buffer_flushed",
                 collector=self.name,
                 events_published=count,
-                sample_data=sample,
+                intervals=intervals,
             )
         except Exception as e:
             logger.error(
@@ -172,6 +188,7 @@ class BaseCollector(ABC):
                 collector=self.name,
                 error=str(e),
                 events_lost=len(events),
+                exc_info=True,
             )
 
     def get_metrics(self) -> dict[str, int]:

@@ -2,7 +2,8 @@
 
 """Response parsers for Blockchain.info data."""
 
-from datetime import datetime, timezone
+import contextlib
+from datetime import UTC, datetime
 from typing import Any
 
 from market_scraper.connectors.blockchain_info.config import BlockchainChartType
@@ -40,17 +41,15 @@ def parse_chart_response(
     if latest is None:
         raise ValueError(f"No values in chart response for {chart_type.value}")
 
-    timestamp = datetime.fromtimestamp(latest["x"], tz=timezone.utc)
+    timestamp = datetime.fromtimestamp(latest["x"], tz=UTC)
     value = latest["y"]
 
     # Calculate change from previous period if available
     previous = values[-2] if len(values) > 1 else None
     change_24h = None
     if previous:
-        try:
+        with contextlib.suppress(TypeError, ZeroDivisionError):
             change_24h = ((value - previous["y"]) / previous["y"]) * 100
-        except (TypeError, ZeroDivisionError):
-            pass
 
     return StandardEvent.create(
         event_type="blockchain_chart",
@@ -92,7 +91,7 @@ def parse_chart_historical(
 
     for point in values:
         try:
-            timestamp = datetime.fromtimestamp(point["x"], tz=timezone.utc)
+            timestamp = datetime.fromtimestamp(point["x"], tz=UTC)
             event = StandardEvent.create(
                 event_type="blockchain_chart_historical",
                 source=source,
@@ -130,7 +129,7 @@ def parse_simple_query_response(
         payload={
             "metric_name": metric_name,
             "value": value,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         },
     )
 
@@ -160,7 +159,7 @@ def parse_all_charts_response(
             continue
 
         latest = values[-1]
-        timestamp = datetime.fromtimestamp(latest["x"], tz=timezone.utc)
+        timestamp = datetime.fromtimestamp(latest["x"], tz=UTC)
 
         if latest_timestamp is None or timestamp > latest_timestamp:
             latest_timestamp = timestamp
@@ -203,7 +202,7 @@ def parse_current_metrics(
         event_type="blockchain_current_metrics",
         source=source,
         payload={
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "hash_rate_ghs": metrics.get("hash_rate"),
             "difficulty": metrics.get("difficulty"),
             "block_height": metrics.get("block_count"),

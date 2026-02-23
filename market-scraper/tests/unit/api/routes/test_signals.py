@@ -2,12 +2,12 @@
 
 """Tests for signal API routes."""
 
-import pytest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 from market_scraper.api.routes.signals import router
 
@@ -50,7 +50,7 @@ class TestListSignals:
         """Test successful list signals response."""
         mock_repository.get_signals.return_value = [
             {
-                "t": datetime.utcnow(),
+                "t": datetime.now(UTC),
                 "symbol": "BTC",
                 "rec": "BUY",
                 "conf": 0.85,
@@ -64,10 +64,7 @@ class TestListSignals:
             }
         ]
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/signals")
 
         assert response.status_code == 200
@@ -82,13 +79,9 @@ class TestListSignals:
         """Test list signals with filters."""
         mock_repository.get_signals.return_value = []
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get(
-                "/api/v1/signals",
-                params={"hours": 48, "limit": 50, "recommendation": "BUY"}
+                "/api/v1/signals", params={"hours": 48, "limit": 50, "recommendation": "BUY"}
             )
 
         assert response.status_code == 200
@@ -99,10 +92,7 @@ class TestListSignals:
         """Test list signals when repository is not available."""
         mock_lifecycle.repository = None
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/signals")
 
         assert response.status_code == 503
@@ -115,7 +105,7 @@ class TestGetCurrentSignal:
     async def test_get_current_signal_success(self, app, mock_repository) -> None:
         """Test successful get current signal response."""
         mock_repository.get_current_signal.return_value = {
-            "t": datetime.utcnow(),
+            "t": datetime.now(UTC),
             "symbol": "BTC",
             "rec": "BUY",
             "conf": 0.85,
@@ -128,10 +118,7 @@ class TestGetCurrentSignal:
             "price": 50000,
         }
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/signals/current")
 
         assert response.status_code == 200
@@ -145,10 +132,7 @@ class TestGetCurrentSignal:
         """Test get current signal when no data available."""
         mock_repository.get_current_signal.return_value = None
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/signals/current")
 
         assert response.status_code == 200
@@ -173,14 +157,8 @@ class TestGetSignalStats:
             "avg_long_bias": 0.55,
         }
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/v1/signals/stats",
-                params={"hours": 24}
-            )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/v1/signals/stats", params={"hours": 24})
 
         assert response.status_code == 200
         data = response.json()
@@ -203,10 +181,7 @@ class TestGetSignalStats:
             "avg_long_bias": 0.0,
         }
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/signals/stats")
 
         assert response.status_code == 200
@@ -220,13 +195,9 @@ class TestGetSignal:
     @pytest.mark.asyncio
     async def test_get_signal_not_found(self, app, mock_repository) -> None:
         """Test get signal when signal not found."""
-        # This endpoint still uses direct DB access for ObjectId lookup
-        mock_repository._db = None
+        mock_repository.get_signal_by_id.return_value = None
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/signals/507f1f77bcf86cd799439011")
 
         assert response.status_code == 404

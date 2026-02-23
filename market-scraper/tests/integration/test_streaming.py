@@ -4,13 +4,14 @@
 
 import asyncio
 import json
-import pytest
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
+
+import pytest
 
 from market_scraper.core.events import EventType, MarketDataPayload, StandardEvent
 from market_scraper.event_bus.memory_bus import MemoryEventBus
-from market_scraper.streaming import WebSocketServer, SubscriptionManager
+from market_scraper.streaming import SubscriptionManager, WebSocketServer
 
 
 class TestStreamingIntegration:
@@ -108,7 +109,7 @@ class TestStreamingIntegration:
             symbol="BTC-USD",
             price=50000.0,
             volume=1.5,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         event = StandardEvent.create(
             event_type=EventType.TRADE,

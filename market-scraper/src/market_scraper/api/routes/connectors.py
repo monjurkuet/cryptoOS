@@ -1,6 +1,5 @@
 # src/market_scraper/api/routes/connectors.py
 
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException

@@ -1,25 +1,25 @@
 """MongoDB repository implementation for the Market Scraper Framework."""
 
-import structlog
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import motor.motor_asyncio
+import structlog
 
 from market_scraper.core.events import StandardEvent
 from market_scraper.core.exceptions import StorageError
 from market_scraper.core.types import Symbol, Timeframe
 from market_scraper.storage.base import DataRepository, QueryFilter
 from market_scraper.storage.models import (
-    Trade,
-    Orderbook,
     Candle,
+    CollectionName,
+    Orderbook,
+    TrackedTrader,
+    Trade,
     TraderPosition,
     TraderScore,
-    TrackedTrader,
-    TradingSignal,
     TraderSignal,
-    CollectionName,
+    TradingSignal,
 )
 
 logger = structlog.get_logger(__name__)
@@ -60,6 +60,9 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If connection fails.
         """
+        start_time = datetime.now(UTC)
+        logger.info("mongodb_connecting", database=self._database_name)
+
         try:
             self._client = motor.motor_asyncio.AsyncIOMotorClient(
                 self._connection_string,
@@ -71,13 +74,18 @@ class MongoRepository(DataRepository):
 
             # Create indexes
             await self._create_indexes()
+
+            duration_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info("mongodb_connected", duration_ms=round(duration_ms, 2))
         except Exception as e:
+            logger.error("mongodb_connect_failed", error=str(e), exc_info=True)
             raise StorageError(f"Failed to connect to MongoDB: {e}") from e
 
     async def disconnect(self) -> None:
         """Close MongoDB connection."""
         if self._client:
             self._client.close()
+            logger.info("mongodb_disconnected")
         self._connected = False
         self._client = None
         self._db = None
@@ -127,6 +135,7 @@ class MongoRepository(DataRepository):
 
         # Global collections with TTL indexes
         ttl_collections = [
+            ("events", "timestamp", retention.events),
             (CollectionName.LEADERBOARD_HISTORY, "t", retention.leaderboard_history),
             (CollectionName.TRADER_POSITIONS, "t", retention.trader_positions),
             (CollectionName.TRADER_SCORES, "t", retention.trader_scores),
@@ -167,44 +176,34 @@ class MongoRepository(DataRepository):
             )
 
             # Trader scores - compound index
-            await self._db[CollectionName.TRADER_SCORES].create_index(
-                [("eth", 1), ("t", -1)]
-            )
+            await self._db[CollectionName.TRADER_SCORES].create_index([("eth", 1), ("t", -1)])
 
             # Tracked traders - unique index on eth address
-            await self._db[CollectionName.TRACKED_TRADERS].create_index(
-                [("eth", 1)], unique=True
-            )
+            await self._db[CollectionName.TRACKED_TRADERS].create_index([("eth", 1)], unique=True)
             await self._db[CollectionName.TRACKED_TRADERS].create_index([("score", -1)])
             await self._db[CollectionName.TRACKED_TRADERS].create_index([("active", 1)])
 
             # Signals - symbol and time
-            await self._db[CollectionName.SIGNALS].create_index(
-                [("symbol", 1), ("t", -1)]
-            )
+            await self._db[CollectionName.SIGNALS].create_index([("symbol", 1), ("t", -1)])
 
             # Trader signals - compound indexes
-            await self._db[CollectionName.TRADER_SIGNALS].create_index(
-                [("eth", 1), ("t", -1)]
-            )
-            await self._db[CollectionName.TRADER_SIGNALS].create_index(
-                [("symbol", 1), ("t", -1)]
-            )
+            await self._db[CollectionName.TRADER_SIGNALS].create_index([("eth", 1), ("t", -1)])
+            await self._db[CollectionName.TRADER_SIGNALS].create_index([("symbol", 1), ("t", -1)])
 
             logger.info("model_indexes_created")
         except Exception as e:
-            logger.warning("model_index_creation_failed", error=str(e))
+            logger.warning("model_index_creation_failed", error=str(e), exc_info=True)
 
     def _get_retention_config(self) -> Any:
         """Get retention configuration from traders config."""
         try:
-            from market_scraper.config.traders_config import load_traders_config
+            from market_scraper.config.market_config import load_market_config
 
-            config = load_traders_config()
+            config = load_market_config()
             return config.storage.retention
         except Exception:
             # Return default retention config
-            from market_scraper.config.traders_config import RetentionConfig
+            from market_scraper.config.market_config import RetentionConfig
 
             return RetentionConfig()
 
@@ -468,9 +467,9 @@ class MongoRepository(DataRepository):
             }
 
         try:
-            start = datetime.utcnow()
+            start = datetime.now(UTC)
             await self._db.command("ping")
-            latency = (datetime.utcnow() - start).total_seconds() * 1000
+            latency = (datetime.now(UTC) - start).total_seconds() * 1000
 
             # Get collection stats
             try:
@@ -619,9 +618,49 @@ class MongoRepository(DataRepository):
         except Exception as e:
             raise StorageError(f"Failed to store candle: {e}") from e
 
-    async def get_latest_candle(
-        self, symbol: str, interval: str
-    ) -> dict[str, Any] | None:
+    async def store_candles_bulk(
+        self,
+        candles: list[Candle],
+        symbol: str,
+        interval: str,
+    ) -> int:
+        """Store multiple candles efficiently using bulk write with upsert.
+
+        Args:
+            candles: List of candles to store
+            symbol: Trading symbol (e.g., "BTC")
+            interval: Candle interval (e.g., "1h")
+
+        Returns:
+            Number of candles inserted/modified
+
+        Raises:
+            StorageError: If not connected or storage fails
+        """
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        if not candles:
+            return 0
+
+        try:
+            from pymongo import UpdateOne
+
+            collection = self._db[CollectionName.candles(symbol, interval)]
+            operations = [
+                UpdateOne(
+                    {"t": candle.t},
+                    {"$set": candle.model_dump()},
+                    upsert=True,
+                )
+                for candle in candles
+            ]
+            result = await collection.bulk_write(operations, ordered=False)
+            return result.upserted_count + result.modified_count
+        except Exception as e:
+            raise StorageError(f"Failed to store candles bulk: {e}") from e
+
+    async def get_latest_candle(self, symbol: str, interval: str) -> dict[str, Any] | None:
         """Get the latest candle for a symbol and interval.
 
         Args:
@@ -815,48 +854,6 @@ class MongoRepository(DataRepository):
         except Exception as e:
             raise StorageError(f"Failed to upsert tracked trader: {e}") from e
 
-    async def get_tracked_traders(
-        self,
-        min_score: float = 0,
-        tag: str | None = None,
-        limit: int = 100,
-    ) -> list[TrackedTrader]:
-        """Get tracked traders.
-
-        Args:
-            min_score: Minimum score filter.
-            tag: Filter by tag.
-            limit: Maximum results.
-
-        Returns:
-            List of tracked traders.
-
-        Raises:
-            StorageError: If not connected.
-        """
-        if self._db is None:
-            raise StorageError("Not connected to MongoDB")
-
-        try:
-            collection = self._db[CollectionName.TRACKED_TRADERS]
-            query: dict[str, Any] = {"active": True}
-
-            if min_score > 0:
-                query["score"] = {"$gte": min_score}
-            if tag:
-                query["tags"] = tag
-
-            cursor = collection.find(query).sort("score", -1).limit(limit)
-            docs = await cursor.to_list(length=limit)
-
-            traders = []
-            for doc in docs:
-                doc.pop("_id", None)
-                traders.append(TrackedTrader.model_validate(doc))
-            return traders
-        except Exception as e:
-            raise StorageError(f"Failed to get tracked traders: {e}") from e
-
     async def store_signal(self, signal: TradingSignal) -> bool:
         """Store a trading signal.
 
@@ -882,20 +879,20 @@ class MongoRepository(DataRepository):
     async def get_signals(
         self,
         symbol: str,
-        start: datetime | None = None,
-        end: datetime | None = None,
+        start_time: datetime | None = None,
+        recommendation: str | None = None,
         limit: int = 100,
-    ) -> list[TradingSignal]:
+    ) -> list[dict[str, Any]]:
         """Get signals for a symbol.
 
         Args:
             symbol: Trading symbol.
-            start: Start time filter.
-            end: End time filter.
+            start_time: Optional start time filter.
+            recommendation: Filter by recommendation (BUY, SELL, NEUTRAL).
             limit: Maximum results.
 
         Returns:
-            List of signals.
+            List of signal dictionaries.
 
         Raises:
             StorageError: If not connected.
@@ -907,12 +904,11 @@ class MongoRepository(DataRepository):
             collection = self._db[CollectionName.SIGNALS]
             query: dict[str, Any] = {"symbol": symbol}
 
-            if start or end:
-                query["t"] = {}
-                if start:
-                    query["t"]["$gte"] = start
-                if end:
-                    query["t"]["$lte"] = end
+            if start_time:
+                query["t"] = {"$gte": start_time}
+
+            if recommendation:
+                query["rec"] = recommendation
 
             cursor = collection.find(query).sort("t", -1).limit(limit)
             docs = await cursor.to_list(length=limit)
@@ -920,7 +916,7 @@ class MongoRepository(DataRepository):
             signals = []
             for doc in docs:
                 doc.pop("_id", None)
-                signals.append(TradingSignal.model_validate(doc))
+                signals.append(doc)
             return signals
         except Exception as e:
             raise StorageError(f"Failed to get signals: {e}") from e
@@ -978,20 +974,18 @@ class MongoRepository(DataRepository):
     async def get_trader_signals(
         self,
         address: str,
-        start: datetime | None = None,
-        end: datetime | None = None,
+        start_time: datetime,
         limit: int = 50,
-    ) -> list[TraderSignal]:
+    ) -> list[dict[str, Any]]:
         """Get signals for a specific trader.
 
         Args:
             address: Trader Ethereum address.
-            start: Start time filter.
-            end: End time filter.
+            start_time: Start time for signals.
             limit: Maximum results.
 
         Returns:
-            List of trader signals.
+            List of signal dictionaries.
 
         Raises:
             StorageError: If not connected.
@@ -1001,14 +995,7 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRADER_SIGNALS]
-            query: dict[str, Any] = {"eth": address}
-
-            if start or end:
-                query["t"] = {}
-                if start:
-                    query["t"]["$gte"] = start
-                if end:
-                    query["t"]["$lte"] = end
+            query: dict[str, Any] = {"eth": address, "t": {"$gte": start_time}}
 
             cursor = collection.find(query).sort("t", -1).limit(limit)
             docs = await cursor.to_list(length=limit)
@@ -1016,7 +1003,7 @@ class MongoRepository(DataRepository):
             signals = []
             for doc in docs:
                 doc.pop("_id", None)
-                signals.append(TraderSignal.model_validate(doc))
+                signals.append(doc)
             return signals
         except Exception as e:
             raise StorageError(f"Failed to get trader signals: {e}") from e
@@ -1292,6 +1279,33 @@ class MongoRepository(DataRepository):
         except Exception as e:
             raise StorageError(f"Failed to get signal stats: {e}") from e
 
+    async def get_signal_by_id(self, signal_id: str) -> dict[str, Any] | None:
+        """Get a signal by its ID.
+
+        Args:
+            signal_id: Signal ObjectId as string.
+
+        Returns:
+            Signal dictionary or None if not found.
+
+        Raises:
+            StorageError: If not connected or query fails.
+        """
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            from bson import ObjectId
+
+            collection = self._db[CollectionName.SIGNALS]
+            doc = await collection.find_one({"_id": ObjectId(signal_id)})
+            if doc:
+                doc["id"] = str(doc.pop("_id"))
+            return doc
+        except Exception as e:
+            logger.debug("get_signal_by_id_error", signal_id=signal_id, error=str(e))
+            return None
+
     async def track_trader(
         self,
         address: str,
@@ -1318,7 +1332,7 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRACKED_TRADERS]
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
 
             doc = {
                 "eth": address,
@@ -1360,7 +1374,7 @@ class MongoRepository(DataRepository):
             collection = self._db[CollectionName.TRACKED_TRADERS]
             result = await collection.update_one(
                 {"eth": address},
-                {"$set": {"active": False, "updated_at": datetime.utcnow()}},
+                {"$set": {"active": False, "updated_at": datetime.now(UTC)}},
             )
             return result.modified_count > 0 or result.matched_count > 0
         except Exception as e:

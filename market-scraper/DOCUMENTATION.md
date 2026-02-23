@@ -81,6 +81,12 @@ Interactive API documentation available at runtime:
 
 ## Data Models
 
+### Events
+
+| Collection | Description |
+|------------|-------------|
+| `events` | Catch-all audit log (7-day retention) |
+
 ### Market Data
 
 | Collection | Pattern | Description |
@@ -135,7 +141,7 @@ API_PORT=8000
 Trader scoring and filtering is configured via YAML:
 
 ```bash
-config/traders_config.yaml
+config/market_config.yaml
 ```
 
 See [Trader Filter Guide](docs/TRADER_FILTER_GUIDES.md) for configuration options.
@@ -169,6 +175,22 @@ src/market_scraper/
 ├── storage/          # MongoDB repository
 └── streaming/        # WebSocket server
 ```
+
+---
+
+## Input Validation
+
+The API enforces strict input validation:
+
+### Ethereum Addresses
+- Must match pattern: `^0x[a-fA-F0-9]{40}$`
+- Example: `0x6859da14835424957a1e6b397d8026b1d9ff7e1e`
+- Invalid format returns HTTP 400 with descriptive error
+
+### MongoDB ObjectIds
+- Must be 24-character hexadecimal string
+- Example: `507f1f77bcf86cd799439011`
+- Invalid format returns HTTP 400 with descriptive error
 
 ---
 

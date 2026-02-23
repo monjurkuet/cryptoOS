@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 import websockets
-from websockets.server import WebSocketServerProtocol
+from websockets.server import ServerConnection
 
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -120,7 +120,7 @@ class WebSocketServer:
 
     async def _handle_connection(
         self,
-        websocket: WebSocketServerProtocol,
+        websocket: ServerConnection,
         path: str,
     ) -> None:
         """Handle a new WebSocket connection.
@@ -145,13 +145,13 @@ class WebSocketServer:
                 except json.JSONDecodeError:
                     await self._send_error(websocket, "Invalid JSON format")
                     self._logger.warning(
-                        "Invalid JSON received",
+                        "invalid_json_received",
                         client_id=client_id,
                         message_preview=str(message)[:100],
                     )
                 except Exception as e:
                     self._logger.error(
-                        "Error handling message",
+                        "message_handle_error",
                         client_id=client_id,
                         error=str(e),
                         exc_info=True,
@@ -159,14 +159,15 @@ class WebSocketServer:
                     await self._send_error(websocket, f"Internal error: {str(e)}")
         except websockets.exceptions.ConnectionClosed:
             self._logger.debug(
-                "Connection closed by client",
+                "connection_closed",
                 client_id=client_id,
             )
         except Exception as e:
             self._logger.error(
-                "Connection error",
+                "connection_error",
                 client_id=client_id,
                 error=str(e),
+                exc_info=True,
             )
         finally:
             # Clean up subscriptions when client disconnects
@@ -175,7 +176,7 @@ class WebSocketServer:
 
     async def _handle_message(
         self,
-        websocket: WebSocketServerProtocol,
+        websocket: ServerConnection,
         message: str,
     ) -> None:
         """Handle incoming WebSocket message.
@@ -208,14 +209,14 @@ class WebSocketServer:
         else:
             await self._send_error(websocket, f"Unknown action: {action}")
             self._logger.warning(
-                "Unknown action received",
+                "unknown_action",
                 client_id=client_id,
                 action=action,
             )
 
     async def _handle_subscribe(
         self,
-        websocket: WebSocketServerProtocol,
+        websocket: ServerConnection,
         data: dict[str, Any],
     ) -> None:
         """Handle subscribe action.
@@ -260,7 +261,7 @@ class WebSocketServer:
 
     async def _handle_unsubscribe(
         self,
-        websocket: WebSocketServerProtocol,
+        websocket: ServerConnection,
         data: dict[str, Any],
     ) -> None:
         """Handle unsubscribe action.
@@ -347,7 +348,7 @@ class WebSocketServer:
         error_count = sum(1 for r in results if isinstance(r, Exception))
         if error_count > 0:
             self._logger.warning(
-                "Broadcast errors",
+                "broadcast_errors",
                 symbol=symbol,
                 event_type=event_type,
                 subscriber_count=len(clients),
@@ -356,7 +357,7 @@ class WebSocketServer:
 
     async def _send_ack(
         self,
-        websocket: WebSocketServerProtocol,
+        websocket: ServerConnection,
         action: str,
         data: dict[str, Any],
     ) -> None:
@@ -379,7 +380,7 @@ class WebSocketServer:
 
     async def _send_error(
         self,
-        websocket: WebSocketServerProtocol,
+        websocket: ServerConnection,
         error: str,
     ) -> None:
         """Send error message.

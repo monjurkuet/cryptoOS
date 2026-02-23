@@ -58,16 +58,12 @@ class RedisEventBus(EventBus):
                 await self._listener_task
 
         if self._pubsub:
-            try:
+            with suppress(Exception):
                 await self._pubsub.aclose()
-            except Exception:
-                pass  # Ignore errors during cleanup
 
         if self._redis:
-            try:
+            with suppress(Exception):
                 await self._redis.aclose()
-            except Exception:
-                pass  # Ignore errors during cleanup
 
     async def publish(
         self,
@@ -179,7 +175,7 @@ class RedisEventBus(EventBus):
                 # Use get_message with timeout to allow checking _running periodically
                 message = await asyncio.wait_for(
                     self._pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                    timeout=2.0
+                    timeout=2.0,
                 )
 
                 if message is None:
@@ -218,7 +214,7 @@ class RedisEventBus(EventBus):
                 except Exception:
                     self._metrics["errors"] += 1
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # No message received, check _running and continue
                 continue
             except asyncio.CancelledError:

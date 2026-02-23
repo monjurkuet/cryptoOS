@@ -74,6 +74,7 @@ A production-ready market data system that collects real-time data from Hyperliq
 | GET | `/api/v1/signals` | Signal history |
 | GET | `/api/v1/signals/current` | Current aggregated signal |
 | GET | `/api/v1/signals/stats` | Signal statistics |
+| GET | `/api/v1/signals/{id}` | Signal by ID (24-char hex) |
 
 #### Connectors
 | Method | Endpoint | Description |
@@ -288,6 +289,20 @@ uv run pytest tests/unit/
 uv run pytest tests/integration/
 uv run pytest tests/e2e/
 ```
+
+## Input Validation
+
+The API validates inputs for security and data integrity:
+
+### Ethereum Addresses
+- Format: `0x` followed by 40 hexadecimal characters
+- Example: `0x6859da14835424957a1e6b397d8026b1d9ff7e1e`
+- Invalid format returns HTTP 400
+
+### Signal IDs
+- Format: 24-character hexadecimal string (MongoDB ObjectId)
+- Example: `507f1f77bcf86cd799439011`
+- Invalid format returns HTTP 400
 
 ## Documentation
 

@@ -168,12 +168,14 @@ class CBBIClient:
             try:
                 ts = int(ts_str)
                 if ts >= cutoff_time:
-                    historical.append({
-                        "timestamp": ts,
-                        "date": time.strftime("%Y-%m-%d", time.gmtime(ts)),
-                        "index_value": value,
-                        "components": self._extract_components_at_time(data, ts),
-                    })
+                    historical.append(
+                        {
+                            "timestamp": ts,
+                            "date": time.strftime("%Y-%m-%d", time.gmtime(ts)),
+                            "index_value": value,
+                            "components": self._extract_components_at_time(data, ts),
+                        }
+                    )
             except (ValueError, TypeError):
                 continue
 
@@ -218,10 +220,12 @@ class CBBIClient:
         historical = []
         for ts_str, value in component_data.items():
             try:
-                historical.append({
-                    "timestamp": int(ts_str),
-                    "value": value,
-                })
+                historical.append(
+                    {
+                        "timestamp": int(ts_str),
+                        "value": value,
+                    }
+                )
             except (ValueError, TypeError):
                 continue
 
@@ -276,9 +280,7 @@ class CBBIClient:
                 "message": str(e),
             }
 
-    def _extract_components_at_time(
-        self, data: dict[str, Any], timestamp: int
-    ) -> dict[str, float]:
+    def _extract_components_at_time(self, data: dict[str, Any], timestamp: int) -> dict[str, float]:
         """Extract all component values at a specific timestamp.
 
         Args:

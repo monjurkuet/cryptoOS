@@ -1,111 +1,28 @@
 # Deployment Guide
 
-This guide covers deploying the Market Scraper Framework in production using Docker.
+This guide covers deploying the Market Scraper Framework in production.
 
-## Docker Deployment
+## Prerequisites
 
-### Development vs Production
+- Python 3.11+
+- MongoDB 7+
+- Redis 7+
+- uv (Python package manager)
 
-| Aspect | Development | Production |
-|--------|-------------|------------|
-| Services | docker-compose.yml | examples/docker-compose.prod.yml |
-| Restart Policy | no | unless-stopped |
-| Log Driver | default | json-file with rotation |
-| Health Checks | optional | required |
-| Resource Limits | none | recommended |
-
-## Quick Production Start
+## Quick Start
 
 ```bash
-# Copy production example
-cp examples/docker-compose.prod.yml docker-compose.prod.yml
+# Install dependencies
+uv sync
 
-# Start production stack
-docker-compose -f docker-compose.prod.yml up -d
-```
+# Copy environment template
+cp .env.example .env
 
-## Production Docker Compose
+# Edit environment variables
+vim .env
 
-The production configuration includes:
-
-- **Market Scraper API**: Main application
-- **Redis**: Event bus and caching
-- **MongoDB**: Data persistence
-- **Nginx** (optional): Reverse proxy and SSL termination
-
-```yaml
-version: '3.8'
-
-services:
-  market-scraper:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: market-scraper-api
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    environment:
-      - REDIS__URL=redis://redis:6379
-      - MONGO__URL=mongodb://mongodb:27017
-      - MONGO__DATABASE=market_scraper
-      - ENVIRONMENT=production
-      - DEBUG=false
-    depends_on:
-      redis:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-
-  redis:
-    image: redis:7-alpine
-    container_name: market-scraper-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
-  mongodb:
-    image: mongo:7
-    container_name: market-scraper-mongodb
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb-data:/data/db
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
-volumes:
-  redis-data:
-  mongodb-data:
+# Run the server
+./run_server.sh
 ```
 
 ## Environment Configuration
@@ -119,13 +36,11 @@ ENVIRONMENT=production
 DEBUG=false
 
 # Redis
-REDIS__URL=redis://redis:6379
+REDIS__URL=redis://localhost:6379
 
 # MongoDB
-MONGO__URL=mongodb://mongodb:27017
+MONGO__URL=mongodb://localhost:27017
 MONGO__DATABASE=market_scraper
-MONGO_USER=admin
-MONGO_PASSWORD=your-secure-password
 
 # API
 API_HOST=0.0.0.0
@@ -135,37 +50,53 @@ API_PORT=8000
 ### Security Considerations
 
 1. **Use strong passwords**: Generate random passwords for MongoDB
-2. **Enable SSL/TLS**: Use Nginx with HTTPS
-3. **Restrict access**: Use Docker networks
-4. **Secrets management**: Consider using Docker secrets or external secrets management
+2. **Enable SSL/TLS**: Use a reverse proxy with HTTPS
+3. **Restrict access**: Use firewall rules to limit access
+4. **Secrets management**: Use environment files with restricted permissions
 
-## Production Build
+## Production Deployment
 
-### Dockerfile
+### Using systemd
 
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-RUN pip install uv
-
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
-
-COPY src/ ./src/
-
-ENV PYTHONPATH=/app
-
-EXPOSE 8000
-
-CMD ["uvicorn", "market_scraper.api:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-### Building the Image
+Create a systemd service file:
 
 ```bash
-docker build -t market-scraper:latest .
+sudo vim /etc/systemd/system/market-scraper.service
+```
+
+```ini
+[Unit]
+Description=Market Scraper API
+After=network.target mongodb.service redis.service
+
+[Service]
+Type=simple
+User=market
+Group=market
+WorkingDirectory=/opt/market-scraper
+Environment="PATH=/opt/market-scraper/.venv/bin"
+ExecStart=/opt/market-scraper/.venv/bin/uvicorn market_scraper.api:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable market-scraper
+sudo systemctl start market-scraper
+```
+
+### Using the run script
+
+The `run_server.sh` script handles startup:
+
+```bash
+./run_server.sh
 ```
 
 ## Monitoring
@@ -192,79 +123,64 @@ curl http://localhost:8000/metrics
 
 ### Logging
 
-```bash
-# View logs
-docker-compose logs -f market-scraper
+Logs are written to stdout/stderr. View with:
 
-# View last 100 lines
-docker-compose logs --tail=100 market-scraper
+```bash
+# systemd logs
+journalctl -u market-scraper -f
+
+# Or if running directly
+./run_server.sh 2>&1 | tee server.log
 ```
 
 ## Troubleshooting
 
-### Container Won't Start
+### Service Won't Start
 
 ```bash
 # Check logs
-docker-compose logs market-scraper
+journalctl -u market-scraper -n 100
 
 # Check if ports are in use
-netstat -tulpn | grep 8000
+ss -tulpn | grep 8000
 ```
 
 ### Can't Connect to Services
 
 ```bash
-# Verify containers are running
-docker-compose ps
+# Verify MongoDB is running
+systemctl status mongodb
 
-# Check network connectivity
-docker-compose exec market-scraper ping redis
+# Verify Redis is running
+systemctl status redis
+
+# Test connections
+redis-cli ping
+mongosh --eval "db.adminCommand('ping')"
 ```
 
 ### Performance Issues
 
 1. **Check resource usage**:
    ```bash
-   docker stats
+   htop
    ```
 
-2. **Increase memory limits** in docker-compose.yml
-
-3. **Enable query logging** for MongoDB:
+2. **Check MongoDB performance**:
    ```bash
-   docker-compose exec mongodb mongosh -u admin -p password --eval "db.setLogLevel(1)"
+   mongosh --eval "db.serverStatus().connections"
+   ```
+
+3. **Check Redis memory**:
+   ```bash
+   redis-cli info memory
    ```
 
 ### Database Issues
 
 1. **MongoDB connection refused**: Check MONGO__URL and authentication
 2. **MongoDB slow queries**: Check indexes and query patterns
-3. **Redis memory issues**: Increase --maxmemory or adjust eviction policy
-
-## Scaling
-
-### Horizontal Scaling
-
-Run multiple API instances:
-
-```bash
-docker-compose up -d --scale market-scraper=3
-```
-
-Use a load balancer (like Nginx) to distribute traffic.
-
-### Vertical Scaling
-
-Adjust resource limits in docker-compose.yml:
-
-```yaml
-deploy:
-  resources:
-    limits:
-      cpus: '4'
-      memory: 4G
-```
+3. **Redis memory issues**: Increase maxmemory or adjust eviction policy
 
 ## Backup and Recovery
 
@@ -272,25 +188,25 @@ deploy:
 
 ```bash
 # Create backup
-docker-compose exec mongodb mongodump --out=/backup/dump
-
-# Copy backup
-docker cp market-scraper-mongodb:/backup/dump ./backup/
-```
-
-### MongoDB Restore
-
-```bash
-# Copy backup to container
-docker cp ./backup/dump market-scraper-mongodb:/backup/
+mongodump --db=market_scraper --out=/backup/$(date +%Y%m%d)
 
 # Restore
-docker-compose exec mongodb mongorestore /backup/dump
+mongorestore /backup/20240101/market_scraper
+```
+
+### Redis Backup
+
+```bash
+# Trigger RDB save
+redis-cli BGSAVE
+
+# Copy dump file
+cp /var/lib/redis/dump.rdb /backup/redis-$(date +%Y%m%d).rdb
 ```
 
 ## SSL/TLS with Nginx
 
-Example Nginx configuration:
+Use Nginx as a reverse proxy for SSL termination:
 
 ```nginx
 server {
@@ -301,9 +217,11 @@ server {
     ssl_certificate_key /etc/nginx/ssl/key.pem;
 
     location / {
-        proxy_pass http://market-scraper:8000;
+        proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
@@ -312,14 +230,14 @@ server {
 
 ### Regular Tasks
 
-1. **Log rotation**: Configure in Docker daemon
-2. **Database cleanup**: Automatic via MongoDB TTL indexes (see below)
-3. **Security updates**: Rebuild images regularly
+1. **Log rotation**: Configure logrotate for server.log
+2. **Database cleanup**: Automatic via MongoDB TTL indexes
+3. **Security updates**: Run `uv sync` regularly
 4. **Backups**: Schedule regular backups
 
 ### Data Retention
 
-MongoDB TTL indexes automatically clean up old data based on configurable retention periods. Configure retention in `config/traders_config.yaml`:
+MongoDB TTL indexes automatically clean up old data based on configurable retention periods. Configure retention in `config/market_config.yaml`:
 
 ```yaml
 storage:
@@ -354,9 +272,9 @@ mongosh cryptodata --eval "
 # Pull latest code
 git pull
 
-# Rebuild images
-docker-compose build
+# Update dependencies
+uv sync
 
-# Restart services
-docker-compose up -d
+# Restart service
+sudo systemctl restart market-scraper
 ```

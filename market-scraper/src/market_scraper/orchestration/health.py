@@ -1,7 +1,7 @@
 # src/market_scraper/orchestration/health.py
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -62,7 +62,7 @@ class HealthMonitor:
             return None
 
         component = self._components[name]
-        component.last_check = datetime.utcnow()
+        component.last_check = datetime.now(UTC)
 
         try:
             await self._perform_check(component)

@@ -1,13 +1,22 @@
 # src/market_scraper/api/main.py
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from market_scraper.api.routes import connectors, health, markets, traders, signals, cbbi, onchain, websocket
+from market_scraper.api.routes import (
+    cbbi,
+    connectors,
+    health,
+    markets,
+    onchain,
+    signals,
+    traders,
+    websocket,
+)
 from market_scraper.core.config import get_settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
 
@@ -23,24 +32,27 @@ async def lifespan(app: FastAPI):
     """
     lifecycle = LifecycleManager()
     app.state.lifecycle = lifecycle
+    settings = get_settings()
 
-    logger.info("Starting up Market Scraper API...")
-    logger.info("HTTP server starting (MongoDB connecting in background)")
+    logger.info(
+        "api_starting",
+        app_name=settings.app_name,
+        version=settings.app_version,
+        symbol=settings.hyperliquid.symbol,
+    )
 
     # Start lifecycle in background - don't block HTTP server startup
     startup_task = asyncio.create_task(lifecycle.startup_background())
 
     yield
 
-    logger.info("Shutting down Market Scraper API...")
+    logger.info("api_shutting_down")
 
     # Cancel background startup if still running
     if not startup_task.done():
         startup_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await startup_task
-        except asyncio.CancelledError:
-            pass
 
     await lifecycle.shutdown()
 

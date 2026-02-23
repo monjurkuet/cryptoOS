@@ -470,6 +470,21 @@ class DataRepository(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_signal_by_id(self, signal_id: str) -> dict[str, Any] | None:
+        """Get a signal by its ID.
+
+        Args:
+            signal_id: Signal ObjectId as string.
+
+        Returns:
+            Signal dictionary or None if not found.
+
+        Raises:
+            StorageError: If query fails.
+        """
+        pass
+
     # ============== Trader Management Methods ==============
 
     @abstractmethod

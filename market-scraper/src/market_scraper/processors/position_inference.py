@@ -157,13 +157,15 @@ class PositionInferenceProcessor(Processor):
 
             if has_position:
                 address = trader.get("ethAddress", "")
-                inferred.append({
-                    "address": address,
-                    "has_position": True,
-                    "reason": reason,
-                    "confidence": confidence,
-                    "account_value": float(trader.get("accountValue", 0)),
-                })
+                inferred.append(
+                    {
+                        "address": address,
+                        "has_position": True,
+                        "reason": reason,
+                        "confidence": confidence,
+                        "account_value": float(trader.get("accountValue", 0)),
+                    }
+                )
 
         self._inferred_positions += len(inferred)
 

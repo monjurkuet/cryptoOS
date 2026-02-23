@@ -1,6 +1,6 @@
 """Tests for the MemoryRepository implementation."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -31,7 +31,7 @@ class TestMemoryRepository:
         source: str = "hyperliquid",
     ) -> StandardEvent:
         """Helper to create a trade event."""
-        event_timestamp = timestamp or datetime.utcnow()
+        event_timestamp = timestamp or datetime.now(UTC)
         return StandardEvent.create(
             event_type=EventType.TRADE,
             source=source,
@@ -139,7 +139,7 @@ class TestMemoryRepository:
             payload=MarketDataPayload(
                 symbol="BTC-USD",
                 price=50000.0,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
             ).model_dump(),
         )
         await repository.store_bulk([trade_event, ticker_event])
@@ -417,7 +417,7 @@ class TestMemoryRepository:
         payload = MarketDataPayload(
             symbol="BTC-USD",
             price=50000.0,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         event = StandardEvent.create(
             event_type=EventType.TRADE,

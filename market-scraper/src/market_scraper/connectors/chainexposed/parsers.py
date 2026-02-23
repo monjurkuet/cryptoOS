@@ -2,7 +2,6 @@
 
 """Parsers for ChainExposed data."""
 
-from datetime import datetime
 from typing import Any
 
 from market_scraper.core.events import StandardEvent
@@ -34,12 +33,14 @@ def parse_chainexposed_metric(data: dict[str, Any], source: str = "chainexposed"
 
     # Build historical data (last 365 days)
     historical = []
-    for i, (date, value) in enumerate(zip(dates, values)):
+    for date, value in zip(dates, values, strict=False):
         if value is not None:
-            historical.append({
-                "date": date,
-                "value": value,
-            })
+            historical.append(
+                {
+                    "date": date,
+                    "value": value,
+                }
+            )
 
     # Keep only last 365 days
     historical = historical[-365:]
@@ -176,7 +177,7 @@ def parse_chainexposed_hodl_waves(data: dict[str, Any]) -> StandardEvent:
                 "value": latest_value,
                 "historical": [
                     {"date": d, "value": v}
-                    for d, v in zip(dates[-365:], values[-365:])
+                    for d, v in zip(dates[-365:], values[-365:], strict=False)
                     if v is not None
                 ],
             }
@@ -244,6 +245,4 @@ def validate_chainexposed_data(data: dict[str, Any]) -> None:
         return
 
     if len(dates) != len(values):
-        raise ValueError(
-            f"Dates and values length mismatch: {len(dates)} vs {len(values)}"
-        )
+        raise ValueError(f"Dates and values length mismatch: {len(dates)} vs {len(values)}")

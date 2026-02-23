@@ -5,23 +5,22 @@
 import pytest
 
 from market_scraper.core.events import StandardEvent
+from market_scraper.event_bus.memory_bus import MemoryEventBus
 from market_scraper.processors.position_inference import (
     PositionInferenceProcessor,
     has_likely_active_position,
     parse_performances,
-)
-from market_scraper.processors.trader_scoring import (
-    TraderScoringProcessor,
-    calculate_trader_score,
-    get_trader_tags,
 )
 from market_scraper.processors.signal_generation import (
     SignalGenerationProcessor,
     calculate_confidence,
     determine_recommendation,
 )
-from market_scraper.event_bus.memory_bus import MemoryEventBus
-
+from market_scraper.processors.trader_scoring import (
+    TraderScoringProcessor,
+    calculate_trader_score,
+    get_trader_tags,
+)
 
 # Sample trader data
 SAMPLE_TRADER = {

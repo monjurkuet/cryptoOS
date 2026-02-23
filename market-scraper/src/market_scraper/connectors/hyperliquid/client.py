@@ -108,7 +108,7 @@ class HyperliquidClient:
     async def get_candles(
         self,
         coin: str,
-        timeframe: str,
+        interval: str,
         start_time: int,
         end_time: int,
     ) -> list[dict]:
@@ -116,21 +116,20 @@ class HyperliquidClient:
 
         Args:
             coin: Coin symbol (e.g., "BTC")
-            timeframe: Timeframe granularity
+            interval: Candle interval string (e.g., "1m", "5m", "15m", "1h", "4h", "1d")
             start_time: Start time in milliseconds
             end_time: End time in milliseconds
 
         Returns:
             List of candle data dictionaries
         """
-        granularity = self._timeframe_to_seconds(timeframe)
         payload = {
             "type": "candleSnapshot",
             "req": {
                 "coin": coin,
+                "interval": interval,
                 "startTime": start_time,
                 "endTime": end_time,
-                "granularity": granularity,
             },
         }
         return await self._request("POST", "/info", payload)

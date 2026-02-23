@@ -3,6 +3,7 @@
 """Configuration for the Blockchain.info connector."""
 
 from enum import StrEnum
+
 from pydantic import Field, HttpUrl
 
 from market_scraper.connectors.base import ConnectorConfig

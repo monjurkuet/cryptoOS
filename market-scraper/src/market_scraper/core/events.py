@@ -2,7 +2,7 @@
 
 """Event models for the Market Scraper Framework."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
@@ -60,9 +60,7 @@ class StandardEvent(BaseModel):
 
     model_config = ConfigDict(
         extra="allow",
-        json_encoders={
-            datetime: lambda v: v.isoformat(),
-        },
+        populate_by_name=True,
     )
 
     # Required fields
@@ -119,7 +117,7 @@ class StandardEvent(BaseModel):
 
     def mark_processed(self) -> None:
         """Mark event as processed and calculate processing time."""
-        self.processed_at = datetime.utcnow()
+        self.processed_at = datetime.now(UTC)
         if self.processed_at and self.timestamp:
             delta = self.processed_at - self.timestamp
             self.processing_time_ms = delta.total_seconds() * 1000
@@ -150,7 +148,7 @@ class StandardEvent(BaseModel):
         return cls(
             event_id=str(uuid4()),
             event_type=event_type,
-            timestamp=timestamp or datetime.utcnow(),
+            timestamp=timestamp or datetime.now(UTC),
             source=source,
             payload=payload,
             correlation_id=correlation_id or str(uuid4()),

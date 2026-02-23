@@ -11,11 +11,10 @@ import structlog
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from market_scraper.core.config import HyperliquidSettings
-from market_scraper.core.events import StandardEvent
-from market_scraper.event_bus.base import EventBus
 from market_scraper.connectors.hyperliquid.collectors.base import BaseCollector
 from market_scraper.connectors.hyperliquid.collectors.candles import CandlesCollector
+from market_scraper.core.config import HyperliquidSettings
+from market_scraper.event_bus.base import EventBus
 
 logger = structlog.get_logger(__name__)
 
@@ -102,8 +101,8 @@ class CollectorManager:
         if self._ws:
             try:
                 await self._ws.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("websocket_close_error", error=str(e))
             self._ws = None
 
         # Cancel message task
@@ -112,7 +111,7 @@ class CollectorManager:
             try:
                 await self._message_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("message_task_cancelled")
             self._message_task = None
 
         logger.info("collector_manager_stopped")
@@ -152,7 +151,7 @@ class CollectorManager:
                 self._handle_disconnect()
 
             except Exception as e:
-                logger.error("websocket_error", error=str(e))
+                logger.error("websocket_error", error=str(e), exc_info=True)
                 self._handle_disconnect()
 
     async def _subscribe(self) -> None:
@@ -165,10 +164,14 @@ class CollectorManager:
         # Subscribe to candles for each interval
         if "candles" in self._collectors:
             for interval in CandlesCollector.INTERVALS:
-                await self._ws.send(json.dumps({
-                    "method": "subscribe",
-                    "subscription": {"type": "candle", "coin": coin, "interval": interval},
-                }))
+                await self._ws.send(
+                    json.dumps(
+                        {
+                            "method": "subscribe",
+                            "subscription": {"type": "candle", "coin": coin, "interval": interval},
+                        }
+                    )
+                )
 
         logger.info("subscriptions_sent", collectors=list(self._collectors.keys()))
 
@@ -185,9 +188,9 @@ class CollectorManager:
                 data = json.loads(message)
                 await self._process_message(data)
             except json.JSONDecodeError:
-                logger.warning("invalid_json", message=message[:100])
+                logger.warning("invalid_json", message_preview=message[:100])
             except Exception as e:
-                logger.error("message_error", error=str(e))
+                logger.error("message_error", error=str(e), exc_info=True)
 
     async def _process_message(self, data: dict[str, Any]) -> None:
         """Route message to appropriate collector.
@@ -220,7 +223,7 @@ class CollectorManager:
 
         # Calculate delay with exponential backoff + jitter
         delay = min(
-            self.config.reconnect_base_delay * (2 ** self._reconnect_attempts),
+            self.config.reconnect_base_delay * (2**self._reconnect_attempts),
             self.config.reconnect_max_delay,
         )
         delay = delay * (0.5 + random.random())  # Add jitter

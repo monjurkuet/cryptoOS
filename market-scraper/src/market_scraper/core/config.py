@@ -51,15 +51,23 @@ class HyperliquidSettings(BaseModel):
     api_key: str | None = Field(default=None, description="Optional API key")
 
     # Symbol configuration - ONLY this symbol's data is saved to DB
-    symbol: str = Field(default="BTC", description="Symbol to track (only this symbol's data is saved)")
+    symbol: str = Field(
+        default="BTC", description="Symbol to track (only this symbol's data is saved)"
+    )
 
     # Collector settings
-    position_max_interval: int = Field(default=600, description="Max interval in seconds between position saves")
+    position_max_interval: int = Field(
+        default=600, description="Max interval in seconds between position saves"
+    )
 
     # WebSocket settings
     reconnect_max_attempts: int = Field(default=10, description="Max reconnection attempts")
-    reconnect_base_delay: float = Field(default=1.0, description="Base delay for exponential backoff")
-    reconnect_max_delay: float = Field(default=30.0, description="Max delay for exponential backoff")
+    reconnect_base_delay: float = Field(
+        default=1.0, description="Base delay for exponential backoff"
+    )
+    reconnect_max_delay: float = Field(
+        default=30.0, description="Max delay for exponential backoff"
+    )
     heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")
 
     # Rate limiting

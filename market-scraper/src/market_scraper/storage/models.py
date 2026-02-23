@@ -13,8 +13,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ============== Market Data Models ==============
+
 
 class Trade(BaseModel):
     """Trade data model.
@@ -60,7 +60,7 @@ class Candle(BaseModel):
     t: datetime = Field(..., description="Candle start timestamp")
     o: float = Field(..., description="Open price")
     h: float = Field(..., description="High price")
-    l: float = Field(..., description="Low price")
+    l: float = Field(..., description="Low price")  # noqa: E741
     c: float = Field(..., description="Close price")
     v: float = Field(..., description="Volume")
 
@@ -77,6 +77,7 @@ class MarkPrice(BaseModel):
 
 
 # ============== Trader Models ==============
+
 
 class TraderPosition(BaseModel):
     """Trader position snapshot.
@@ -128,6 +129,7 @@ class TrackedTrader(BaseModel):
 
 # ============== Signal Models ==============
 
+
 class TradingSignal(BaseModel):
     """Trading signal model.
 
@@ -165,6 +167,7 @@ class TraderSignal(BaseModel):
 
 # ============== Leaderboard Models ==============
 
+
 class LeaderboardSnapshot(BaseModel):
     """Leaderboard snapshot.
 
@@ -177,6 +180,7 @@ class LeaderboardSnapshot(BaseModel):
 
 
 # ============== Collection Names ==============
+
 
 class CollectionName:
     """MongoDB collection names."""

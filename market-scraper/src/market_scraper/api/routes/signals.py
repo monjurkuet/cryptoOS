@@ -2,9 +2,12 @@
 
 """Signal API routes."""
 
-from datetime import datetime, timedelta
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -12,6 +15,41 @@ from market_scraper.api.dependencies import get_lifecycle
 from market_scraper.orchestration.lifecycle import LifecycleManager
 
 router = APIRouter()
+
+
+# ============== Input Validation ==============
+
+OBJECT_ID_PATTERN = re.compile(r"^[a-fA-F0-9]{24}$")
+
+
+def validate_object_id(object_id: str) -> str:
+    """Validate MongoDB ObjectId format.
+
+    Args:
+        object_id: String to validate as ObjectId
+
+    Returns:
+        Validated ObjectId string
+
+    Raises:
+        HTTPException: If the ID format is invalid
+    """
+    if not OBJECT_ID_PATTERN.match(object_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid signal ID format: must be a 24-character hex string",
+        )
+    try:
+        ObjectId(object_id)
+        return object_id
+    except InvalidId as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid signal ID: {str(e)}",
+        ) from e
+
+
+# ============== Response Models ==============
 
 
 class SignalResponse(BaseModel):
@@ -67,6 +105,9 @@ class SignalStatsResponse(BaseModel):
     current_bias: float
 
 
+# ============== Routes ==============
+
+
 @router.get("", response_model=SignalListResponse)
 async def list_signals(
     lifecycle: LifecycleManager = Depends(get_lifecycle),
@@ -91,7 +132,7 @@ async def list_signals(
 
     try:
         symbol = lifecycle._settings.hyperliquid.symbol
-        start_time = datetime.utcnow() - timedelta(hours=hours)
+        start_time = datetime.now(UTC) - timedelta(hours=hours)
 
         # Use repository method
         signals = await repository.get_signals(
@@ -127,7 +168,7 @@ async def list_signals(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/current", response_model=AggregatedSignalResponse)
@@ -183,7 +224,7 @@ async def get_current_signal(
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/stats", response_model=SignalStatsResponse)
@@ -206,7 +247,7 @@ async def get_signal_stats(
 
     try:
         symbol = lifecycle._settings.hyperliquid.symbol
-        start_time = datetime.utcnow() - timedelta(hours=hours)
+        start_time = datetime.now(UTC) - timedelta(hours=hours)
 
         # Use repository method
         stats = await repository.get_signal_stats(symbol, start_time)
@@ -223,7 +264,7 @@ async def get_signal_stats(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{signal_id}")
@@ -234,53 +275,42 @@ async def get_signal(
     """Get a specific signal by ID.
 
     Args:
-        signal_id: Signal ID
+        signal_id: Signal ID (24-character hex string)
         lifecycle: Lifecycle manager
 
     Returns:
         Signal details
     """
+    # Validate signal_id format
+    validate_object_id(signal_id)
+
     repository = lifecycle.repository
     if not repository:
         raise HTTPException(status_code=503, detail="Repository not available")
 
     try:
-        from bson import ObjectId
+        # Use repository method
+        signal = await repository.get_signal_by_id(signal_id)
 
-        # For this endpoint, we still need to access the database directly
-        # since it's a lookup by ObjectId
-        if hasattr(repository, "_db") and repository._db is not None:
-            from market_scraper.storage.models import CollectionName
+        if not signal:
+            raise HTTPException(status_code=404, detail="Signal not found")
 
-            try:
-                signal = await repository._db[CollectionName.SIGNALS].find_one(
-                    {"_id": ObjectId(signal_id)}
-                )
-            except Exception:
-                # Invalid ObjectId format
-                signal = None
-
-            if not signal:
-                raise HTTPException(status_code=404, detail="Signal not found")
-
-            return {
-                "id": str(signal.get("_id")),
-                "timestamp": signal.get("t"),
-                "symbol": signal.get("symbol"),
-                "recommendation": signal.get("rec"),
-                "confidence": signal.get("conf"),
-                "long_bias": signal.get("long_bias"),
-                "short_bias": signal.get("short_bias"),
-                "net_exposure": signal.get("net_exp"),
-                "traders_long": signal.get("t_long"),
-                "traders_short": signal.get("t_short"),
-                "traders_flat": signal.get("t_flat"),
-                "price": signal.get("price"),
-            }
-
-        raise HTTPException(status_code=404, detail="Signal not found")
+        return {
+            "id": signal.get("id", signal_id),
+            "timestamp": signal.get("t"),
+            "symbol": signal.get("symbol"),
+            "recommendation": signal.get("rec"),
+            "confidence": signal.get("conf"),
+            "long_bias": signal.get("long_bias"),
+            "short_bias": signal.get("short_bias"),
+            "net_exposure": signal.get("net_exp"),
+            "traders_long": signal.get("t_long"),
+            "traders_short": signal.get("t_short"),
+            "traders_flat": signal.get("t_flat"),
+            "price": signal.get("price"),
+        }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

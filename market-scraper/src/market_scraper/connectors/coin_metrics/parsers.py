@@ -2,7 +2,7 @@
 
 """Response parsers for Coin Metrics data."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from market_scraper.connectors.coin_metrics.config import CoinMetricsMetric
@@ -136,10 +136,12 @@ def parse_single_metric(
             timestamp = _parse_timestamp(point.get("time", ""))
             value = point.get(metric)
             if value is not None:
-                historical.append({
-                    "timestamp": timestamp.isoformat() if timestamp else None,
-                    "value": float(value),
-                })
+                historical.append(
+                    {
+                        "timestamp": timestamp.isoformat() if timestamp else None,
+                        "value": float(value),
+                    }
+                )
         except (KeyError, TypeError, ValueError):
             continue
 

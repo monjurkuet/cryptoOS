@@ -13,9 +13,9 @@ from market_scraper.connectors.base import DataConnector
 from market_scraper.connectors.cbbi.client import CBBIClient
 from market_scraper.connectors.cbbi.config import CBBIConfig
 from market_scraper.connectors.cbbi.parsers import (
-    parse_cbbi_index_response,
-    parse_cbbi_historical_response,
     parse_cbbi_component_response,
+    parse_cbbi_historical_response,
+    parse_cbbi_index_response,
     validate_cbbi_data,
 )
 from market_scraper.core.events import StandardEvent

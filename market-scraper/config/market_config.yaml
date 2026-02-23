@@ -1,5 +1,5 @@
-# Trader Selection Configuration
-# Controls how traders are scored, filtered, and tagged
+# Market Scraper Configuration
+# Controls trader scoring, filtering, buffering, and data retention
 
 # Scoring Algorithm Weights (should sum to 100 for proper weighting)
 scoring:
@@ -106,11 +106,9 @@ storage:
   # Keep score history for trend analysis
   keep_score_history: false
 
-  # Days to keep historical data (deprecated, use retention below)
-  retention_days: 30
-
   # Per-collection retention (days) - automatic deletion via MongoDB TTL indexes
   retention:
+    events: 7                  # Raw events (catch-all audit log)
     leaderboard_history: 90    # Leaderboard snapshots
     trader_positions: 30       # Position snapshots
     trader_scores: 90          # Score history
@@ -120,3 +118,51 @@ storage:
     trades: 7                  # Raw trade data
     orderbook: 7               # Orderbook snapshots
     candles: 30                # OHLCV candles
+
+# Buffer and Flush Configuration
+# Controls how events are batched before being saved to MongoDB
+buffer:
+  # How often to automatically flush buffered events to database (seconds)
+  # Lower values = more frequent writes, lower latency
+  # Higher values = fewer writes, better throughput
+  flush_interval: 5.0
+
+  # Maximum number of events to buffer before forced flush
+  # Lower values = more frequent writes
+  # Higher values = better batching, more memory usage
+  max_size: 100
+
+  # Maximum messages to batch for WebSocket broadcasts
+  broadcast_batch_size: 100
+
+  # Maximum milliseconds to wait before flushing broadcast batch
+  broadcast_batch_timeout_ms: 10.0
+
+# Candle Backfill Configuration
+# Fetches historical OHLCV data on startup instead of real-time WebSocket storage
+candle_backfill:
+  enabled: true
+
+  # Start date for backfill (ISO format)
+  # Set to null to use earliest available data from Hyperliquid
+  # Hyperliquid launched ~2023, so data before then won't exist
+  start_date: null  # or "2023-01-01" for explicit date
+
+  # Timeframes to backfill (only 1h and above to reduce storage)
+  timeframes:
+    - "1h"
+    - "4h"
+    - "1d"
+
+  # Batch size per API request (number of candles)
+  batch_size: 500
+
+  # Delay between API requests (seconds) to avoid rate limits
+  rate_limit_delay: 0.5
+
+  # Run backfill on every startup (checks for missing data first)
+  run_on_startup: true
+
+  # Smart backfill: only fetch data that doesn't exist in DB
+  # Queries latest candle timestamp and fetches from there to now
+  incremental: true

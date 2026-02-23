@@ -2,7 +2,6 @@
 
 """Parsers for exchange flow data."""
 
-from datetime import datetime
 from typing import Any
 
 from market_scraper.core.events import StandardEvent
@@ -18,6 +17,7 @@ def parse_exchange_flow_data(data: dict[str, Any], source: str = "exchange_flow"
     Returns:
         StandardEvent with exchange flow data
     """
+
     # Find latest non-null values
     def get_latest(values: list) -> float | None:
         for i in range(len(values) - 1, -1, -1):
@@ -34,21 +34,27 @@ def parse_exchange_flow_data(data: dict[str, Any], source: str = "exchange_flow"
     # Build historical data (last 365 days)
     historical = []
     for i in range(max(0, len(data["dates"]) - 365), len(data["dates"])):
-        historical.append({
-            "date": data["dates"][i],
-            "flow_in_btc": data["flow_in_btc"][i],
-            "flow_out_btc": data["flow_out_btc"][i],
-            "netflow_btc": data["netflow_btc"][i],
-            "supply_btc": data["supply_btc"][i],
-        })
+        historical.append(
+            {
+                "date": data["dates"][i],
+                "flow_in_btc": data["flow_in_btc"][i],
+                "flow_out_btc": data["flow_out_btc"][i],
+                "netflow_btc": data["netflow_btc"][i],
+                "supply_btc": data["supply_btc"][i],
+            }
+        )
 
     # Calculate statistics
     valid_netflow = [v for v in data.get("netflow_btc", []) if v is not None]
     stats = {}
     if valid_netflow:
         stats = {
-            "netflow_7d_avg": sum(valid_netflow[-7:]) / len(valid_netflow[-7:]) if len(valid_netflow) >= 7 else None,
-            "netflow_30d_avg": sum(valid_netflow[-30:]) / len(valid_netflow[-30:]) if len(valid_netflow) >= 30 else None,
+            "netflow_7d_avg": sum(valid_netflow[-7:]) / len(valid_netflow[-7:])
+            if len(valid_netflow) >= 7
+            else None,
+            "netflow_30d_avg": sum(valid_netflow[-30:]) / len(valid_netflow[-30:])
+            if len(valid_netflow) >= 30
+            else None,
         }
 
     return StandardEvent.create(
@@ -79,7 +85,7 @@ def parse_exchange_flow_summary(data: dict[str, Any]) -> StandardEvent:
 
     # Add interpretation
     netflow = event.payload.get("netflow_btc")
-    supply = event.payload.get("supply_btc")
+    event.payload.get("supply_btc")
     stats = event.payload.get("statistics", {})
 
     if netflow is not None:

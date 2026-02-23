@@ -3,22 +3,22 @@
 """Lifecycle manager for orchestrating all system components."""
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
-from market_scraper.config.traders_config import load_traders_config
-from market_scraper.connectors.hyperliquid.collectors.manager import CollectorManager
+from market_scraper.config.market_config import load_market_config
 from market_scraper.connectors.hyperliquid.collectors.leaderboard import LeaderboardCollector
+from market_scraper.connectors.hyperliquid.collectors.manager import CollectorManager
 from market_scraper.core.config import Settings, get_settings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
 from market_scraper.event_bus.memory_bus import MemoryEventBus
 from market_scraper.event_bus.redis_bus import RedisEventBus
 from market_scraper.processors.position_inference import PositionInferenceProcessor
-from market_scraper.processors.trader_scoring import TraderScoringProcessor
 from market_scraper.processors.signal_generation import SignalGenerationProcessor
+from market_scraper.processors.trader_scoring import TraderScoringProcessor
 from market_scraper.storage.base import DataRepository
 from market_scraper.storage.memory_repository import MemoryRepository
 from market_scraper.storage.mongo_repository import MongoRepository
@@ -87,6 +87,7 @@ class LifecycleManager:
             logger.warning("lifecycle_already_started")
             return
 
+        start_time = datetime.now(UTC)
         logger.info(
             "lifecycle_startup_begin",
             symbol=self._settings.hyperliquid.symbol,
@@ -105,9 +106,14 @@ class LifecycleManager:
             await self._subscribe_storage_handler()
             logger.info("storage_handler_subscribed")
 
-            # 3.5 Subscribe candle storage handler
-            await self._subscribe_candle_handler()
-            logger.info("candle_handler_subscribed")
+            # 3.5 Candle storage handler - DISABLED (using backfill instead)
+            # await self._subscribe_candle_handler()
+            # logger.info("candle_handler_subscribed")
+            logger.info("candle_handler_disabled_using_backfill")
+
+            # 3.6 Run candle backfill
+            await self._run_candle_backfill()
+            logger.info("candle_backfill_complete")
 
             # 4. Initialize processors
             await self._init_processors()
@@ -123,10 +129,12 @@ class LifecycleManager:
 
             self._started = True
             self._startup_complete = True
-            logger.info("lifecycle_startup_complete")
+
+            duration_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info("lifecycle_startup_complete", duration_ms=round(duration_ms, 2))
 
         except Exception as e:
-            logger.error("lifecycle_startup_failed", error=str(e))
+            logger.error("lifecycle_startup_failed", error=str(e), exc_info=True)
             self._startup_error = e
             await self.shutdown()
             raise
@@ -143,7 +151,7 @@ class LifecycleManager:
             await self.startup()
         except Exception as e:
             # Error is already logged and stored in _startup_error
-            logger.error("background_startup_failed", error=str(e))
+            logger.error("background_startup_failed", error=str(e), exc_info=True)
 
     async def wait_ready(self, timeout: float = 30.0) -> bool:
         """Wait for startup to complete.
@@ -154,8 +162,6 @@ class LifecycleManager:
         Returns:
             True if ready, False if timeout or error.
         """
-        import asyncio
-
         start_time = asyncio.get_event_loop().time()
         while not self._startup_complete:
             if self._startup_error:
@@ -175,6 +181,7 @@ class LifecycleManager:
         4. Repository
         5. Event Bus
         """
+        start_time = datetime.now(UTC)
         logger.info("lifecycle_shutdown_begin")
 
         # Stop leaderboard collector
@@ -182,7 +189,7 @@ class LifecycleManager:
             try:
                 await self._leaderboard_collector.stop()
             except Exception as e:
-                logger.error("leaderboard_stop_error", error=str(e))
+                logger.error("leaderboard_stop_error", error=str(e), exc_info=True)
             self._leaderboard_collector = None
 
         # Stop collector manager
@@ -190,7 +197,7 @@ class LifecycleManager:
             try:
                 await self._collector_manager.stop()
             except Exception as e:
-                logger.error("collector_stop_error", error=str(e))
+                logger.error("collector_stop_error", error=str(e), exc_info=True)
             self._collector_manager = None
 
         # Stop processors
@@ -198,7 +205,7 @@ class LifecycleManager:
             try:
                 await processor.stop()
             except Exception as e:
-                logger.error("processor_stop_error", error=str(e))
+                logger.error("processor_stop_error", error=str(e), exc_info=True)
         self._processors.clear()
 
         # Disconnect repository
@@ -206,7 +213,7 @@ class LifecycleManager:
             try:
                 await self._repository.disconnect()
             except Exception as e:
-                logger.error("repository_disconnect_error", error=str(e))
+                logger.error("repository_disconnect_error", error=str(e), exc_info=True)
             self._repository = None
 
         # Disconnect event bus
@@ -214,11 +221,12 @@ class LifecycleManager:
             try:
                 await self._event_bus.disconnect()
             except Exception as e:
-                logger.error("event_bus_disconnect_error", error=str(e))
+                logger.error("event_bus_disconnect_error", error=str(e), exc_info=True)
             self._event_bus = None
 
         self._started = False
-        logger.info("lifecycle_shutdown_complete")
+        duration_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+        logger.info("lifecycle_shutdown_complete", duration_ms=round(duration_ms, 2))
 
     async def _init_event_bus(self) -> None:
         """Initialize event bus based on configuration."""
@@ -269,12 +277,12 @@ class LifecycleManager:
             raise RuntimeError("Event bus not initialized")
 
         # Events that are too large to store (skip storage)
-        SKIP_STORAGE_EVENTS = {"leaderboard"}  # Leaderboard is ~30MB, exceeds MongoDB 16MB limit
+        skip_storage_events = {"leaderboard"}  # Leaderboard is ~30MB, exceeds MongoDB 16MB limit
 
         async def storage_handler(event: StandardEvent) -> None:
             """Handle events by storing them in the repository."""
             # Skip events that are too large
-            if event.event_type in SKIP_STORAGE_EVENTS:
+            if event.event_type in skip_storage_events:
                 return
 
             if self._repository:
@@ -314,8 +322,9 @@ class LifecycleManager:
                     return
 
                 # Create candle document
-                from market_scraper.storage.models import Candle
                 from datetime import datetime
+
+                from market_scraper.storage.models import Candle
 
                 timestamp = payload.get("timestamp")
                 if isinstance(timestamp, str):
@@ -335,15 +344,60 @@ class LifecycleManager:
                 # Store to the specific candle collection
                 if hasattr(self._repository, "store_candle"):
                     await self._repository.store_candle(candle, symbol, interval)
+                    logger.debug(
+                        "candle_saved",
+                        symbol=symbol,
+                        interval=interval,
+                        timestamp=timestamp.isoformat(),
+                        open=payload.get("open"),
+                        high=payload.get("high"),
+                        low=payload.get("low"),
+                        close=payload.get("close"),
+                        volume=payload.get("volume"),
+                    )
 
             except Exception as e:
                 logger.error(
                     "candle_handler_error",
                     event_id=event.event_id,
                     error=str(e),
+                    exc_info=True,
                 )
 
         await self._event_bus.subscribe("ohlcv", candle_handler)
+
+    async def _run_candle_backfill(self) -> None:
+        """Run historical candle backfill on startup."""
+        from market_scraper.connectors.hyperliquid.client import HyperliquidClient
+        from market_scraper.services.candle_backfill import CandleBackfillService
+
+        market_config = load_market_config()
+        backfill_config = market_config.candle_backfill
+
+        if not backfill_config.enabled or not backfill_config.run_on_startup:
+            logger.info("backfill_skipped", enabled=backfill_config.enabled)
+            return
+
+        try:
+            client = HyperliquidClient(
+                base_url=self._settings.hyperliquid.api_url,
+                timeout=self._settings.hyperliquid.timeout_seconds,
+            )
+            await client.connect()
+
+            service = CandleBackfillService(
+                client=client,
+                repository=self._repository,
+                config=backfill_config,
+                symbol=self._settings.hyperliquid.symbol,
+            )
+            results = await service.run_backfill()
+
+            await client.close()
+            logger.info("backfill_completed", results=results)
+
+        except Exception as e:
+            logger.error("backfill_failed", error=str(e), exc_info=True)
 
     async def _init_processors(self) -> None:
         """Initialize event processors."""
@@ -419,7 +473,7 @@ class LifecycleManager:
         self._collector_manager = CollectorManager(
             event_bus=self._event_bus,
             config=self._settings.hyperliquid,
-            collectors=["trades", "orderbook", "candles", "all_mids"],
+            collectors=["candles"],  # Only candles collector implemented currently
         )
 
         await self._collector_manager.start()
@@ -433,8 +487,8 @@ class LifecycleManager:
             logger.info("leaderboard_collector_disabled")
             return
 
-        # Load trader configuration from YAML
-        traders_config = load_traders_config()
+        # Load market configuration from YAML
+        market_config = load_market_config()
 
         # Get database reference for direct storage
         db = None
@@ -445,7 +499,7 @@ class LifecycleManager:
             event_bus=self._event_bus,
             config=self._settings.hyperliquid,
             db=db,
-            traders_config=traders_config,
+            market_config=market_config,
         )
 
         await self._leaderboard_collector.start()
@@ -462,8 +516,10 @@ class LifecycleManager:
             "api": True,
             "event_bus": self._event_bus is not None,
             "repository": self._repository is not None,
-            "collectors": self._collector_manager is not None and self._collector_manager.is_running,
-            "leaderboard": self._leaderboard_collector is not None and self._leaderboard_collector._running,
+            "collectors": self._collector_manager is not None
+            and self._collector_manager.is_running,
+            "leaderboard": self._leaderboard_collector is not None
+            and self._leaderboard_collector._running,
             "processors": len(self._processors) > 0,
         }
 
@@ -591,18 +647,22 @@ class LifecycleManager:
 
         if self._collector_manager:
             status = self._collector_manager.get_status()
-            connectors.append({
-                "name": "hyperliquid",
-                "status": "running" if status.get("running") else "stopped",
-                "symbol": self._settings.hyperliquid.symbol,
-            })
+            connectors.append(
+                {
+                    "name": "hyperliquid",
+                    "status": "running" if status.get("running") else "stopped",
+                    "symbol": self._settings.hyperliquid.symbol,
+                }
+            )
 
         if self._leaderboard_collector:
-            connectors.append({
-                "name": "leaderboard",
-                "status": "running" if self._leaderboard_collector._running else "stopped",
-                "symbol": self._settings.hyperliquid.symbol,
-            })
+            connectors.append(
+                {
+                    "name": "leaderboard",
+                    "status": "running" if self._leaderboard_collector._running else "stopped",
+                    "symbol": self._settings.hyperliquid.symbol,
+                }
+            )
 
         return connectors
 

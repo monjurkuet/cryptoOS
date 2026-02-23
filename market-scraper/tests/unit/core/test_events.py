@@ -2,7 +2,7 @@
 
 """Test suite for StandardEvent model."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,7 +17,7 @@ class TestStandardEvent:
         payload = MarketDataPayload(
             symbol="BTC-USD",
             price=50000.0,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         event = StandardEvent.create(
@@ -37,7 +37,7 @@ class TestStandardEvent:
         event = StandardEvent.create(
             event_type=EventType.TRADE,
             source="test",
-            payload={"symbol": "BTC-USD", "timestamp": datetime.utcnow().isoformat()},
+            payload={"symbol": "BTC-USD", "timestamp": datetime.now(UTC).isoformat()},
         )
 
         assert event.processed_at is None
@@ -57,7 +57,7 @@ class TestStandardEvent:
             payload={
                 "symbol": "ETH-USD",
                 "price": 3000.0,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -75,7 +75,7 @@ class TestStandardEvent:
                 source="test",
                 payload={
                     "symbol": "BTC-USD",
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 },
                 priority=15,  # Invalid: > 10
             )
@@ -91,7 +91,7 @@ class TestStandardEvent:
                 "high": 51000.0,
                 "low": 49000.0,
                 "close": 50500.0,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -107,7 +107,7 @@ class TestStandardEvent:
         event = StandardEvent.create(
             event_type=EventType.TRADE,
             source="test",
-            payload={"symbol": "BTC-USD", "timestamp": datetime.utcnow().isoformat()},
+            payload={"symbol": "BTC-USD", "timestamp": datetime.now(UTC).isoformat()},
         )
 
         assert event.correlation_id is not None
@@ -119,7 +119,7 @@ class TestStandardEvent:
         event = StandardEvent.create(
             event_type=EventType.TRADE,
             source="test",
-            payload={"symbol": "BTC-USD", "timestamp": datetime.utcnow().isoformat()},
+            payload={"symbol": "BTC-USD", "timestamp": datetime.now(UTC).isoformat()},
             correlation_id=custom_id,
         )
 
@@ -135,7 +135,7 @@ class TestMarketDataPayload:
             symbol="BTC-USD",
             price=50000.0,
             volume=1.5,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             bid=49999.0,
             ask=50001.0,
         )
@@ -150,7 +150,7 @@ class TestMarketDataPayload:
         """Test that optional fields can be None."""
         payload = MarketDataPayload(
             symbol="ETH-USD",
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
 
         assert payload.price is None
@@ -163,7 +163,7 @@ class TestMarketDataPayload:
         payload = MarketDataPayload(
             symbol="BTC-USD",
             price=50000.0,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             custom_field="custom_value",
         )
 

@@ -2,7 +2,7 @@
 
 """Response parsers for Fear & Greed Index data."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from market_scraper.core.events import StandardEvent
@@ -35,7 +35,7 @@ def parse_fear_greed_response(
     latest = fng_data[0]
     value = int(latest.get("value", 0))
     classification = latest.get("value_classification", "Unknown")
-    timestamp = datetime.fromtimestamp(int(latest["timestamp"]), tz=timezone.utc)
+    timestamp = datetime.fromtimestamp(int(latest["timestamp"]), tz=UTC)
 
     # Get previous value for comparison
     previous_value = None
@@ -77,7 +77,7 @@ def parse_fear_greed_historical(
 
     for entry in fng_data:
         try:
-            timestamp = datetime.fromtimestamp(int(entry["timestamp"]), tz=timezone.utc)
+            timestamp = datetime.fromtimestamp(int(entry["timestamp"]), tz=UTC)
             value = int(entry.get("value", 0))
 
             event = StandardEvent.create(
@@ -124,9 +124,7 @@ def parse_fear_greed_summary(
         "current": {
             "value": values[0] if values else None,
             "classification": fng_data[0].get("value_classification") if fng_data else None,
-            "timestamp": datetime.fromtimestamp(
-                int(fng_data[0]["timestamp"]), tz=timezone.utc
-            ).isoformat()
+            "timestamp": datetime.fromtimestamp(int(fng_data[0]["timestamp"]), tz=UTC).isoformat()
             if fng_data
             else None,
         },

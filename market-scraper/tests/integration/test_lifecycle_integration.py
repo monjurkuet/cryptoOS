@@ -4,7 +4,7 @@
 
 import pytest
 
-from market_scraper.core.config import Settings, HyperliquidSettings
+from market_scraper.core.config import HyperliquidSettings, Settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
 
 

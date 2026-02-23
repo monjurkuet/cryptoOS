@@ -4,7 +4,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -321,7 +321,7 @@ class ChainExposedConnector(DataConnector):
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             summary = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "sopr": None,
                 "sopr_lth": None,
                 "sopr_sth": None,
@@ -332,7 +332,7 @@ class ChainExposedConnector(DataConnector):
 
             metric_names = ["sopr", "sopr_lth", "sopr_sth", "nupl", "mvrv", "dormancy"]
 
-            for i, (name, result) in enumerate(zip(metric_names, results)):
+            for name, result in zip(metric_names, results, strict=False):
                 if not isinstance(result, Exception):
                     summary[name] = {
                         "value": result.payload.get("value"),

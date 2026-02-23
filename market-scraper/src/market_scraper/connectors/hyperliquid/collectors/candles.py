@@ -131,6 +131,8 @@ class CandlesCollector(BaseCollector):
         except Exception as e:
             logger.warning(
                 "candle_parse_error",
+                symbol=self.symbol,
+                interval=interval,
                 error=str(e),
                 candle=candle,
             )

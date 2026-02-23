@@ -12,6 +12,8 @@ from typing import Any
 
 import structlog
 
+from market_scraper.config.market_config import BufferConfig
+
 logger = structlog.get_logger(__name__)
 
 
@@ -106,6 +108,7 @@ class BroadcastManager:
         batch_size: int = 100,
         batch_timeout_ms: float = 10.0,
         rate_limit: RateLimitConfig | None = None,
+        buffer_config: BufferConfig | None = None,
     ) -> None:
         """Initialize broadcast manager.
 
@@ -113,9 +116,16 @@ class BroadcastManager:
             batch_size: Maximum number of messages to batch together
             batch_timeout_ms: Maximum time to wait before flushing batch
             rate_limit: Optional rate limiting configuration
+            buffer_config: Optional buffer configuration (overrides batch_size/batch_timeout_ms)
         """
-        self._batch_size = batch_size
-        self._batch_timeout_ms = batch_timeout_ms
+        # Use buffer_config if provided, otherwise use individual parameters
+        if buffer_config is not None:
+            self._batch_size = buffer_config.broadcast_batch_size
+            self._batch_timeout_ms = buffer_config.broadcast_batch_timeout_ms
+        else:
+            self._batch_size = batch_size
+            self._batch_timeout_ms = batch_timeout_ms
+
         self._rate_limiter = RateLimiter(rate_limit or RateLimitConfig())
         self._message_queue: deque[BroadcastMessage] = deque()
         self._batch_task: asyncio.Task | None = None
@@ -165,7 +175,11 @@ class BroadcastManager:
         """
         if len(self._message_queue) >= self._rate_limiter._config.max_queue_size:
             self._metrics["messages_dropped"] += 1
-            self._logger.warning("Message queue full, dropping message")
+            self._logger.warning(
+                "message_queue_full",
+                queue_size=len(self._message_queue),
+                max_size=self._rate_limiter._config.max_queue_size,
+            )
             return False
 
         self._message_queue.append(message)
@@ -190,7 +204,10 @@ class BroadcastManager:
         """
         # Wait for rate limit
         if not await self._rate_limiter.wait_for_token(timeout=1.0):
-            self._logger.warning("Rate limit exceeded, dropping broadcast")
+            self._logger.warning(
+                "rate_limit_exceeded",
+                client_count=len(clients),
+            )
             self._metrics["messages_dropped"] += 1
             return {"sent": 0, "failed": len(clients), "rate_limited": True}
 
@@ -218,7 +235,7 @@ class BroadcastManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self._logger.error("Batch processor error", error=str(e))
+                self._logger.error("batch_processor_error", error=str(e), exc_info=True)
 
     async def _flush_batch(self) -> None:
         """Flush the current message batch."""
@@ -233,7 +250,7 @@ class BroadcastManager:
         if batch:
             self._metrics["batches_sent"] += 1
             self._logger.debug(
-                "Flushing batch",
+                "batch_flushing",
                 batch_size=len(batch),
             )
             # Actual broadcast logic would be implemented here

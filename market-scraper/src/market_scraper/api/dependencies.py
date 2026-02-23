@@ -11,10 +11,13 @@ This module provides dependency injection functions for:
 from functools import lru_cache
 from typing import Any
 
+import structlog
 from fastapi import Request
 
 from market_scraper.core.config import Settings, get_settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
+
+logger = structlog.get_logger(__name__)
 
 
 def get_lifecycle(request: Request) -> LifecycleManager:
@@ -28,6 +31,7 @@ def get_settings_dependency() -> Settings:
 
 
 # ============== Connector Factory ==============
+
 
 class ConnectorFactory:
     """Factory for creating and caching on-chain data connectors.
@@ -44,9 +48,10 @@ class ConnectorFactory:
         """Get or create BlockchainInfoConnector."""
         if "blockchain_info" not in self._connectors:
             from market_scraper.connectors.blockchain_info import (
-                BlockchainInfoConnector,
                 BlockchainInfoConfig,
+                BlockchainInfoConnector,
             )
+
             self._connectors["blockchain_info"] = BlockchainInfoConnector(
                 BlockchainInfoConfig(name="blockchain_info")
             )
@@ -57,12 +62,11 @@ class ConnectorFactory:
         """Get or create FearGreedConnector."""
         if "fear_greed" not in self._connectors:
             from market_scraper.connectors.fear_greed import (
-                FearGreedConnector,
                 FearGreedConfig,
+                FearGreedConnector,
             )
-            self._connectors["fear_greed"] = FearGreedConnector(
-                FearGreedConfig(name="fear_greed")
-            )
+
+            self._connectors["fear_greed"] = FearGreedConnector(FearGreedConfig(name="fear_greed"))
             await self._connectors["fear_greed"].connect()
         return self._connectors["fear_greed"]
 
@@ -70,9 +74,10 @@ class ConnectorFactory:
         """Get or create CoinMetricsConnector."""
         if "coin_metrics" not in self._connectors:
             from market_scraper.connectors.coin_metrics import (
-                CoinMetricsConnector,
                 CoinMetricsConfig,
+                CoinMetricsConnector,
             )
+
             self._connectors["coin_metrics"] = CoinMetricsConnector(
                 CoinMetricsConfig(name="coin_metrics")
             )
@@ -82,7 +87,8 @@ class ConnectorFactory:
     async def get_cbbi_connector(self) -> Any:
         """Get or create CBBIConnector."""
         if "cbbi" not in self._connectors:
-            from market_scraper.connectors.cbbi import CBBIConnector, CBBIConfig
+            from market_scraper.connectors.cbbi import CBBIConfig, CBBIConnector
+
             self._connectors["cbbi"] = CBBIConnector(CBBIConfig(name="cbbi"))
             await self._connectors["cbbi"].connect()
         return self._connectors["cbbi"]
@@ -91,9 +97,10 @@ class ConnectorFactory:
         """Get or create ChainExposedConnector."""
         if "chainexposed" not in self._connectors:
             from market_scraper.connectors.chainexposed import (
-                ChainExposedConnector,
                 ChainExposedConfig,
+                ChainExposedConnector,
             )
+
             self._connectors["chainexposed"] = ChainExposedConnector(
                 ChainExposedConfig(name="chainexposed")
             )
@@ -104,9 +111,10 @@ class ConnectorFactory:
         """Get or create ExchangeFlowConnector."""
         if "exchange_flow" not in self._connectors:
             from market_scraper.connectors.exchange_flow import (
-                ExchangeFlowConnector,
                 ExchangeFlowConfig,
+                ExchangeFlowConnector,
             )
+
             self._connectors["exchange_flow"] = ExchangeFlowConnector(
                 ExchangeFlowConfig(name="exchange_flow")
             )
@@ -134,8 +142,8 @@ class ConnectorFactory:
             if hasattr(connector, "disconnect"):
                 try:
                     await connector.disconnect()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("connector_disconnect_error", connector=name, error=str(e))
         self._connectors.clear()
 
 
@@ -149,6 +157,7 @@ def get_connector_factory() -> ConnectorFactory:
 
 
 # ============== FastAPI Dependencies ==============
+
 
 async def get_blockchain_connector() -> Any:
     """FastAPI dependency for BlockchainInfoConnector."""

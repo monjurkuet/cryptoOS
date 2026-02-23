@@ -7,6 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from market_scraper.api.dependencies import get_cbbi_connector as get_cbbi_connector_dependency
+
 router = APIRouter()
 
 
@@ -31,23 +33,6 @@ class CBBIComponentResponse(BaseModel):
     historical: list[dict[str, Any]]
 
 
-# Cached CBBI client (initialized lazily)
-_cbbi_connector = None
-
-
-async def get_cbbi_connector():
-    """Get or create CBBI connector."""
-    global _cbbi_connector
-
-    if _cbbi_connector is None:
-        from market_scraper.connectors.cbbi import CBBIConnector, CBBIConfig
-
-        _cbbi_connector = CBBIConnector(CBBIConfig(name="cbbi"))
-        await _cbbi_connector.connect()
-
-    return _cbbi_connector
-
-
 @router.get("", response_model=CBBIDataResponse)
 async def get_cbbi_data() -> dict[str, Any]:
     """Get current CBBI (Bitcoin Bull Run Index) data.
@@ -63,7 +48,7 @@ async def get_cbbi_data() -> dict[str, Any]:
     Data is updated daily from colintalkscrypto.com.
     """
     try:
-        connector = await get_cbbi_connector()
+        connector = await get_cbbi_connector_dependency()
         event = await connector.get_current_index()
 
         return {
@@ -76,7 +61,7 @@ async def get_cbbi_data() -> dict[str, Any]:
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch CBBI data: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/components", response_model=list[CBBIComponentResponse])
@@ -95,7 +80,7 @@ async def get_cbbi_components() -> list[dict[str, Any]]:
     - Trolololo: Bitcoin Trolololo
     """
     try:
-        connector = await get_cbbi_connector()
+        connector = await get_cbbi_connector_dependency()
         events = await connector.get_component_breakdown()
 
         return [
@@ -111,7 +96,7 @@ async def get_cbbi_components() -> list[dict[str, Any]]:
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch CBBI components: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/components/{component_name}", response_model=CBBIComponentResponse)
@@ -130,7 +115,7 @@ async def get_cbbi_component(component_name: str) -> dict[str, Any]:
     - Trolololo
     """
     try:
-        connector = await get_cbbi_connector()
+        connector = await get_cbbi_connector_dependency()
         event = await connector.get_specific_component(component_name)
 
         return {
@@ -140,19 +125,19 @@ async def get_cbbi_component(component_name: str) -> dict[str, Any]:
             "historical": event.payload.get("historical", []),
         }
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch CBBI component: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/health")
 async def cbbi_health() -> dict[str, Any]:
     """Check CBBI connector health."""
     try:
-        connector = await get_cbbi_connector()
+        connector = await get_cbbi_connector_dependency()
         return await connector.health_check()
     except Exception as e:
         return {

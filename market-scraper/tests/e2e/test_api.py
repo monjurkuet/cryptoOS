@@ -1,8 +1,9 @@
 # tests/e2e/test_api.py
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-from httpx import AsyncClient, ASGITransport
+
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.mark.asyncio

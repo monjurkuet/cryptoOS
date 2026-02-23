@@ -4,7 +4,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -213,10 +213,12 @@ class ExchangeFlowConnector(DataConnector):
             cum_7d = sum([v for v in netflow[-7:] if v is not None]) if len(netflow) >= 7 else None
 
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "date": latest_date,
                 "netflow_btc": latest_netflow,
-                "netflow_interpretation": "bullish" if latest_netflow and latest_netflow > 0 else "bearish",
+                "netflow_interpretation": "bullish"
+                if latest_netflow and latest_netflow > 0
+                else "bearish",
                 "exchange_supply_btc": latest_supply,
                 "netflow_7d_avg": avg_7d,
                 "netflow_30d_avg": avg_30d,

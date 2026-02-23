@@ -1,11 +1,12 @@
-# src/market_scraper/config/traders_config.py
+# src/market_scraper/config/market_config.py
 
-"""Trader configuration loader.
+"""Market configuration loader.
 
-This module provides YAML-based configuration for trader selection,
-scoring weights, and filter criteria.
+This module provides YAML-based configuration for market data collection,
+scoring weights, retention, and buffer settings.
 """
 
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -73,12 +74,8 @@ class TagConfig(BaseModel):
         default_factory=lambda: {"require_positive": ["day", "week", "month"]}
     )
     high_performer: dict[str, Any] = Field(default_factory=lambda: {"all_time_roi": 1.0})
-    high_volume: dict[str, Any] = Field(
-        default_factory=lambda: {"monthly_volume": 100_000_000}
-    )
-    medium_volume: dict[str, Any] = Field(
-        default_factory=lambda: {"monthly_volume": 10_000_000}
-    )
+    high_volume: dict[str, Any] = Field(default_factory=lambda: {"monthly_volume": 100_000_000})
+    medium_volume: dict[str, Any] = Field(default_factory=lambda: {"monthly_volume": 10_000_000})
 
 
 class PositionInferenceConfig(BaseModel):
@@ -102,6 +99,7 @@ class RetentionConfig(BaseModel):
     Controls how long data is kept before automatic deletion via MongoDB TTL indexes.
     """
 
+    events: int = Field(default=7, description="Days to keep raw events (catch-all audit log)")
     leaderboard_history: int = Field(default=90, description="Days to keep leaderboard history")
     trader_positions: int = Field(default=30, description="Days to keep position snapshots")
     trader_scores: int = Field(default=90, description="Days to keep score history")
@@ -119,15 +117,61 @@ class StorageConfig(BaseModel):
     refresh_interval: int = 3600
     keep_snapshots: bool = True
     keep_score_history: bool = False
-    retention_days: int = 30  # Global default (deprecated, use retention below)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
 
-class TradersConfig(BaseModel):
-    """Complete trader configuration.
+class BufferConfig(BaseModel):
+    """Buffer and flush configuration.
+
+    Controls how events are batched before being saved to MongoDB.
+    Larger buffers reduce database writes but increase memory usage and latency.
+    """
+
+    flush_interval: float = Field(
+        default=5.0,
+        description="Seconds between automatic buffer flushes to database",
+    )
+    max_size: int = Field(
+        default=100,
+        description="Maximum events to buffer before forced flush",
+    )
+    broadcast_batch_size: int = Field(
+        default=100,
+        description="Maximum messages to batch for WebSocket broadcasts",
+    )
+    broadcast_batch_timeout_ms: float = Field(
+        default=10.0,
+        description="Maximum milliseconds to wait before flushing broadcast batch",
+    )
+
+
+class CandleBackfillConfig(BaseModel):
+    """Candle backfill configuration.
+
+    Controls historical OHLCV data backfill from Hyperliquid HTTP API.
+    """
+
+    enabled: bool = Field(default=True, description="Enable candle backfill on startup")
+    start_date: date | None = Field(
+        default=None, description="Start date for backfill (null = earliest available)"
+    )
+    timeframes: list[str] = Field(
+        default=["1h", "4h", "1d"], description="Timeframes to backfill (1h and above recommended)"
+    )
+    batch_size: int = Field(default=500, description="Candles per API request")
+    rate_limit_delay: float = Field(default=0.5, description="Delay between requests (seconds)")
+    run_on_startup: bool = Field(default=True, description="Run backfill on every startup")
+    incremental: bool = Field(
+        default=True,
+        description="Only fetch missing data (check latest candle and fetch from there)",
+    )
+
+
+class MarketConfig(BaseModel):
+    """Complete market configuration.
 
     This is the main configuration class that contains all settings
-    for trader selection, scoring, and storage.
+    for market data collection, trader scoring, storage, and buffering.
     """
 
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
@@ -147,36 +191,35 @@ class TradersConfig(BaseModel):
     ]
     filters: FilterConfig = Field(default_factory=FilterConfig)
     tags: TagConfig = Field(default_factory=TagConfig)
-    position_inference: PositionInferenceConfig = Field(
-        default_factory=PositionInferenceConfig
-    )
+    position_inference: PositionInferenceConfig = Field(default_factory=PositionInferenceConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    buffer: BufferConfig = Field(default_factory=BufferConfig)
+    candle_backfill: CandleBackfillConfig = Field(default_factory=CandleBackfillConfig)
 
 
-def load_traders_config(config_path: str | Path | None = None) -> TradersConfig:
-    """Load trader configuration from YAML file.
+def load_market_config(config_path: str | Path | None = None) -> MarketConfig:
+    """Load market configuration from YAML file.
 
     Args:
-        config_path: Path to config file. Defaults to config/traders_config.yaml
+        config_path: Path to config file. Defaults to config/market_config.yaml
 
     Returns:
-        TradersConfig instance with loaded or default values
+        MarketConfig instance with loaded or default values
     """
     if config_path is None:
-        # Try multiple default locations
         possible_paths = [
-            Path("config/traders_config.yaml"),
-            Path("traders_config.yaml"),
-            Path.home() / ".config" / "market_scraper" / "traders_config.yaml",
+            Path("config/market_config.yaml"),
+            Path("market_config.yaml"),
+            Path.home() / ".config" / "market_scraper" / "market_config.yaml",
         ]
         config_path = next((p for p in possible_paths if p.exists()), possible_paths[0])
     else:
         config_path = Path(config_path)
 
     if not config_path.exists():
-        return TradersConfig()
+        return MarketConfig()
 
     with open(config_path) as f:
         data = yaml.safe_load(f) or {}
 
-    return TradersConfig(**data)
+    return MarketConfig(**data)

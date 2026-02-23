@@ -3,7 +3,7 @@
 import asyncio
 import os
 from contextlib import suppress
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -37,7 +37,7 @@ class TestMemoryRepositoryIntegration:
         source: str = "hyperliquid",
     ) -> StandardEvent:
         """Helper to create a trade event."""
-        event_timestamp = timestamp or datetime.utcnow()
+        event_timestamp = timestamp or datetime.now(UTC)
         return StandardEvent.create(
             event_type=EventType.TRADE,
             source=source,
@@ -186,7 +186,7 @@ class TestMongoRepositoryIntegration:
         source: str = "hyperliquid",
     ) -> StandardEvent:
         """Helper to create a trade event."""
-        event_timestamp = timestamp or datetime.utcnow()
+        event_timestamp = timestamp or datetime.now(UTC)
         return StandardEvent.create(
             event_type=EventType.TRADE,
             source=source,

@@ -2,14 +2,13 @@
 
 """Tests for Hyperliquid utility functions."""
 
-import pytest
 
 from market_scraper.utils.hyperliquid import (
-    parse_window_performances,
-    extract_roi,
     extract_pnl,
+    extract_roi,
     extract_volume,
     is_positive_roi,
+    parse_window_performances,
 )
 
 

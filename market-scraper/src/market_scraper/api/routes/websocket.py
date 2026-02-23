@@ -10,12 +10,10 @@ import asyncio
 from contextlib import suppress
 from typing import Any
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, Depends
 import structlog
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from market_scraper.api.dependencies import get_lifecycle
 from market_scraper.core.events import StandardEvent
-from market_scraper.orchestration.lifecycle import LifecycleManager
 
 logger = structlog.get_logger(__name__)
 
@@ -40,7 +38,11 @@ class ConnectionManager:
         if channel not in self.active_connections:
             self.active_connections[channel] = []
         self.active_connections[channel].append(websocket)
-        logger.info("websocket_connected", channel=channel, total=len(self.active_connections.get(channel, [])))
+        logger.info(
+            "websocket_connected",
+            channel=channel,
+            total=len(self.active_connections.get(channel, [])),
+        )
 
     def disconnect(self, websocket: WebSocket, channel: str) -> None:
         """Disconnect a WebSocket from a channel.
@@ -90,7 +92,9 @@ manager = ConnectionManager()
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    channel: str = Query("market", description="Channel to subscribe to (market, traders, signals)"),
+    channel: str = Query(
+        "market", description="Channel to subscribe to (market, traders, signals)"
+    ),
 ) -> None:
     """WebSocket endpoint for real-time market data streaming.
 
@@ -120,7 +124,7 @@ async def websocket_endpoint(
         try:
             lifecycle = websocket.app.state.lifecycle
         except AttributeError:
-            pass
+            logger.debug("websocket_no_lifecycle_state", channel=channel)
 
         if lifecycle and lifecycle.event_bus:
             # Subscribe to event bus
@@ -156,7 +160,7 @@ async def websocket_endpoint(
                         # Create new receive task for next message
                         receive_task = asyncio.create_task(websocket.receive_text())
 
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         # Send heartbeat on timeout
                         try:
                             await websocket.send_json({"type": "heartbeat"})
@@ -181,9 +185,9 @@ async def websocket_endpoint(
                     break
 
     except WebSocketDisconnect:
-        pass
+        logger.debug("websocket_client_disconnected", channel=channel)
     except Exception as e:
-        logger.error("websocket_error", error=str(e), channel=channel)
+        logger.error("websocket_error", error=str(e), channel=channel, exc_info=True)
     finally:
         manager.disconnect(websocket, channel)
 
@@ -197,8 +201,5 @@ async def websocket_status() -> dict[str, Any]:
     """
     return {
         "total_connections": manager.get_connection_count(),
-        "channels": {
-            channel: len(conns)
-            for channel, conns in manager.active_connections.items()
-        },
+        "channels": {channel: len(conns) for channel, conns in manager.active_connections.items()},
     }

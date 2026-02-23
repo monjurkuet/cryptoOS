@@ -4,7 +4,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -196,8 +196,8 @@ class CoinMetricsConnector(DataConnector):
             data = await self._client.get_asset_metrics(
                 asset=asset or self.config.asset,
                 metrics=metrics or self.config.metrics,
-                start_time=(datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d"),
-                end_time=datetime.utcnow().strftime("%Y-%m-%d"),
+                start_time=(datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%d"),
+                end_time=datetime.now(UTC).strftime("%Y-%m-%d"),
             )
             validate_metrics_data(data)
             event = parse_metrics_response(data)

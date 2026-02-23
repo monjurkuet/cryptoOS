@@ -8,13 +8,13 @@ to MongoDB.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
 import structlog
 
-from market_scraper.config.traders_config import TradersConfig, load_traders_config
+from market_scraper.config.market_config import MarketConfig, load_market_config
 from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -45,7 +45,7 @@ class LeaderboardCollector:
         event_bus: EventBus,
         config: HyperliquidSettings,
         db: Any = None,
-        traders_config: TradersConfig | None = None,
+        market_config: MarketConfig | None = None,
         refresh_interval: int | None = None,
     ) -> None:
         """Initialize the leaderboard collector.
@@ -54,18 +54,18 @@ class LeaderboardCollector:
             event_bus: Event bus for publishing events
             config: Hyperliquid settings
             db: Optional MongoDB database instance for direct storage
-            traders_config: Trader configuration (loaded from YAML if not provided)
+            market_config: Market configuration (loaded from YAML if not provided)
             refresh_interval: Seconds between refreshes (uses config if not provided)
         """
         self.event_bus = event_bus
         self.config = config
         self._db = db
 
-        # Load trader configuration
-        self._traders_config = traders_config or load_traders_config()
+        # Load market configuration
+        self._market_config = market_config or load_market_config()
 
         # Use config refresh interval if not specified
-        self._refresh_interval = refresh_interval or self._traders_config.storage.refresh_interval
+        self._refresh_interval = refresh_interval or self._market_config.storage.refresh_interval
 
         self._running = False
         self._session: aiohttp.ClientSession | None = None
@@ -98,8 +98,8 @@ class LeaderboardCollector:
         logger.info(
             "leaderboard_collector_started",
             refresh_interval=self._refresh_interval,
-            min_score=self._traders_config.filters.min_score,
-            max_count=self._traders_config.filters.max_count,
+            min_score=self._market_config.filters.min_score,
+            max_count=self._market_config.filters.max_count,
         )
 
     async def _refresh_loop_with_initial(self) -> None:
@@ -119,7 +119,7 @@ class LeaderboardCollector:
             try:
                 await self._refresh_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("leaderboard_refresh_task_cancelled")
 
         if self._session:
             await self._session.close()
@@ -144,7 +144,7 @@ class LeaderboardCollector:
 
             if leaderboard:
                 self._last_leaderboard = leaderboard
-                self._last_fetch = datetime.utcnow()
+                self._last_fetch = datetime.now(UTC)
                 self._fetches += 1
 
                 rows = leaderboard.get("leaderboardRows", [])
@@ -171,8 +171,8 @@ class LeaderboardCollector:
                         "total_traders": total_traders,
                         "tracked_count": len(filtered),
                         "fetch_time": self._last_fetch.isoformat(),
-                        "min_score": self._traders_config.filters.min_score,
-                        "max_count": self._traders_config.filters.max_count,
+                        "min_score": self._market_config.filters.min_score,
+                        "max_count": self._market_config.filters.max_count,
                     },
                 )
 
@@ -182,12 +182,12 @@ class LeaderboardCollector:
                     "leaderboard_processed",
                     total_traders=total_traders,
                     tracked_count=len(filtered),
-                    min_score=self._traders_config.filters.min_score,
+                    min_score=self._market_config.filters.min_score,
                 )
 
         except Exception as e:
             self._errors += 1
-            logger.error("leaderboard_process_error", error=str(e))
+            logger.error("leaderboard_process_error", error=str(e), exc_info=True)
 
     def _score_traders(self, rows: list[dict]) -> list[dict]:
         """Score traders using configurable weights.
@@ -207,14 +207,16 @@ class LeaderboardCollector:
             # Parse performances
             performances = self._parse_performances(trader.get("windowPerformances", []))
 
-            scored.append({
-                "eth": trader.get("ethAddress", ""),
-                "name": trader.get("displayName"),
-                "score": score,
-                "acct_val": float(trader.get("accountValue", 0)),
-                "tags": tags,
-                "performances": performances,
-            })
+            scored.append(
+                {
+                    "eth": trader.get("ethAddress", ""),
+                    "name": trader.get("displayName"),
+                    "score": score,
+                    "acct_val": float(trader.get("accountValue", 0)),
+                    "tags": tags,
+                    "performances": performances,
+                }
+            )
 
         # Sort by score descending
         return sorted(scored, key=lambda x: x["score"], reverse=True)
@@ -228,7 +230,7 @@ class LeaderboardCollector:
         Returns:
             Calculated score (0-100+)
         """
-        config = self._traders_config
+        config = self._market_config
         weights = config.scoring.weights
         score = 0.0
 
@@ -241,7 +243,9 @@ class LeaderboardCollector:
 
         # All-time ROI (configurable weight)
         all_time_roi = float(perfs.get("allTime", {}).get("roi", 0) or 0)
-        score += min(all_time_roi * config.scoring.roi_multipliers.get("all_time", 30), weights.all_time_roi)
+        score += min(
+            all_time_roi * config.scoring.roi_multipliers.get("all_time", 30), weights.all_time_roi
+        )
 
         # Month ROI (configurable weight)
         month_roi = float(perfs.get("month", {}).get("roi", 0) or 0)
@@ -284,7 +288,7 @@ class LeaderboardCollector:
             List of applicable tags
         """
         tags = []
-        tag_config = self._traders_config.tags
+        tag_config = self._market_config.tags
 
         account_value = float(trader.get("accountValue", 0))
         performances = self._parse_performances(trader.get("windowPerformances", []))
@@ -345,7 +349,7 @@ class LeaderboardCollector:
         Returns:
             Filtered list of traders
         """
-        filters = self._traders_config.filters
+        filters = self._market_config.filters
 
         # Filter by min_score
         filtered = [t for t in scored if t["score"] >= filters.min_score]
@@ -359,7 +363,8 @@ class LeaderboardCollector:
             for timeframe, required in require_positive.items():
                 if required:
                     filtered = [
-                        t for t in filtered
+                        t
+                        for t in filtered
                         if t.get("performances", {}).get(timeframe, {}).get("roi", 0) > 0
                     ]
 
@@ -369,10 +374,12 @@ class LeaderboardCollector:
         if exclude_addresses:
             filtered = [t for t in filtered if t["eth"] not in exclude_addresses]
         if exclude_tags:
-            filtered = [t for t in filtered if not any(tag in exclude_tags for tag in t.get("tags", []))]
+            filtered = [
+                t for t in filtered if not any(tag in exclude_tags for tag in t.get("tags", []))
+            ]
 
         # Limit to max_count
-        return filtered[:filters.max_count]
+        return filtered[: filters.max_count]
 
     async def _store_derived_data(
         self,
@@ -395,10 +402,10 @@ class LeaderboardCollector:
         try:
             from market_scraper.storage.models import CollectionName
 
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
 
             # 1. Store lightweight snapshot
-            if self._traders_config.storage.keep_snapshots:
+            if self._market_config.storage.keep_snapshots:
                 snapshot = {
                     "t": now,
                     "symbol": self.config.symbol,
@@ -442,7 +449,7 @@ class LeaderboardCollector:
             )
 
         except Exception as e:
-            logger.error("leaderboard_storage_error", error=str(e))
+            logger.error("leaderboard_storage_error", error=str(e), exc_info=True)
 
     async def _fetch_leaderboard(self) -> dict[str, Any] | None:
         """Fetch leaderboard from Stats Data API.
@@ -472,8 +479,9 @@ class LeaderboardCollector:
                     return None
 
         except aiohttp.ClientError as e:
-            logger.error("leaderboard_client_error", error=str(e))
-        except asyncio.TimeoutError:
+            logger.error("leaderboard_client_error", error=str(e), exc_info=True)
+            return None
+        except TimeoutError:
             logger.error("leaderboard_timeout")
             return None
 
@@ -497,12 +505,14 @@ class LeaderboardCollector:
             "fetches": self._fetches,
             "errors": self._errors,
             "last_fetch": self._last_fetch.isoformat() if self._last_fetch else None,
-            "total_traders": len(self._last_leaderboard.get("leaderboardRows", [])) if self._last_leaderboard else 0,
+            "total_traders": len(self._last_leaderboard.get("leaderboardRows", []))
+            if self._last_leaderboard
+            else 0,
             "tracked_traders": self._last_tracked_count,
             "config": {
-                "min_score": self._traders_config.filters.min_score,
-                "max_count": self._traders_config.filters.max_count,
-                "min_account_value": self._traders_config.filters.min_account_value,
+                "min_score": self._market_config.filters.min_score,
+                "max_count": self._market_config.filters.max_count,
+                "min_account_value": self._market_config.filters.min_account_value,
             },
         }
 
@@ -517,6 +527,6 @@ class LeaderboardCollector:
         return self._last_fetch
 
     @property
-    def traders_config(self) -> TradersConfig:
+    def market_config(self) -> MarketConfig:
         """Get the trader configuration."""
-        return self._traders_config
+        return self._market_config

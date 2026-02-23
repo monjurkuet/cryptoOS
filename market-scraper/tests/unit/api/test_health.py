@@ -1,10 +1,9 @@
 # tests/unit/api/test_health.py
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from fastapi.testclient import TestClient
-from httpx import AsyncClient, ASGITransport
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.mark.asyncio

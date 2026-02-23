@@ -129,16 +129,19 @@ def parse_cbbi_component_response(
 
     # Build historical list (last 30 days by default)
     import time
+
     cutoff = time.time() - (30 * 86400)
     historical = []
     for ts_str, value in component_data.items():
         try:
             ts = int(ts_str)
             if ts >= cutoff:
-                historical.append({
-                    "timestamp": datetime.utcfromtimestamp(ts).isoformat(),
-                    "value": float(value),
-                })
+                historical.append(
+                    {
+                        "timestamp": datetime.utcfromtimestamp(ts).isoformat(),
+                        "value": float(value),
+                    }
+                )
         except (ValueError, TypeError):
             continue
 
@@ -225,15 +228,15 @@ def _extract_components(data: dict[str, Any], timestamp: int) -> dict[str, float
 
     # CBBI API field names (actual API uses these names)
     component_names = [
-        "PiCycle",      # Pi Cycle Top
-        "RUPL",         # Relative Unrealized Profit/Loss
-        "RHODL",        # Realized HODL Ratio
-        "Puell",        # Puell Multiple
-        "2YMA",         # 2-Year Moving Average
-        "MVRV",         # MVRV Z-Score
+        "PiCycle",  # Pi Cycle Top
+        "RUPL",  # Relative Unrealized Profit/Loss
+        "RHODL",  # Realized HODL Ratio
+        "Puell",  # Puell Multiple
+        "2YMA",  # 2-Year Moving Average
+        "MVRV",  # MVRV Z-Score
         "ReserveRisk",  # Reserve Risk
-        "Woobull",      # Woobull Top Cap vs CVDD
-        "Trolololo",    # Bitcoin Trolololo
+        "Woobull",  # Woobull Top Cap vs CVDD
+        "Trolololo",  # Bitcoin Trolololo
     ]
 
     for name in component_names:

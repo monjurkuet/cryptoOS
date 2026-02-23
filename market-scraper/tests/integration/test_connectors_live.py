@@ -7,7 +7,7 @@ Run with: pytest tests/integration/test_connectors_live.py -v --slow
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -69,7 +69,7 @@ class TestHyperliquidClientLive:
         await client.connect()
 
         try:
-            end = int(datetime.utcnow().timestamp() * 1000)
+            end = int(datetime.now(UTC).timestamp() * 1000)
             start = end - 3600000  # 1 hour ago
 
             candles = await client.get_candles("BTC", "1m", start, end)
@@ -111,7 +111,7 @@ class TestHyperliquidConnectorLive:
 
         await connector.connect()
         try:
-            end = datetime.utcnow()
+            end = datetime.now(UTC)
             start = end - timedelta(hours=1)
 
             events = await connector.get_historical_data("BTC", "1m", start, end)
@@ -143,7 +143,7 @@ class TestHyperliquidConnectorLive:
                             events.append(event)
                             if len(events) >= 3:
                                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass  # Expected if no events received
 
             print(f"Received {len(events)} events via WebSocket")

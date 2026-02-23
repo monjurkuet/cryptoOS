@@ -63,7 +63,7 @@ class SubscriptionManager:
         subscription = (symbol, event_type)
         if subscription in self._subscriptions[client_id]:
             self._logger.debug(
-                "Client already subscribed",
+                "client_already_subscribed",
                 client_id=client_id,
                 symbol=symbol,
                 event_type=event_type,
@@ -75,7 +75,7 @@ class SubscriptionManager:
         self._subscribers[subscription].add(websocket)
 
         self._logger.debug(
-            "Client subscribed",
+            "client_subscribed",
             client_id=client_id,
             symbol=symbol,
             event_type=event_type,
@@ -128,7 +128,7 @@ class SubscriptionManager:
 
         if removed > 0:
             self._logger.debug(
-                "Client unsubscribed",
+                "client_unsubscribed",
                 client_id=client_id,
                 symbol=symbol,
                 event_type=event_type,

@@ -2,8 +2,9 @@
 
 """Test suite for SubscriptionManager."""
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from market_scraper.streaming.subscriptions import SubscriptionManager
 

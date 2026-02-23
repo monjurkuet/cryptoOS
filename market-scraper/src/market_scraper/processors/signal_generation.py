@@ -6,7 +6,6 @@ Generates trading signals from aggregated trader position data.
 Calculates long/short bias, net exposure, and recommendations.
 """
 
-from datetime import datetime
 from typing import Any
 
 import structlog
@@ -290,17 +289,12 @@ class SignalGenerationProcessor(Processor):
             return True
 
         # Emit if bias changed significantly
-        bias_change = abs(
-            signal["longBias"] - self._last_signal.get("longBias", 0)
-        )
+        bias_change = abs(signal["longBias"] - self._last_signal.get("longBias", 0))
         if bias_change >= 0.1:  # 10% change
             return True
 
         # Emit if confidence is very high
-        if signal["confidence"] >= 0.7:
-            return True
-
-        return False
+        return signal["confidence"] >= 0.7
 
     def get_stats(self) -> dict[str, Any]:
         """Get processor statistics.

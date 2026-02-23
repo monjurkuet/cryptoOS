@@ -7,14 +7,14 @@ Get up and running with the Market Scraper Framework in 5 minutes.
 Before you begin, ensure you have:
 
 - **Python 3.11+** installed
-- **Docker and Docker Compose** installed
 - **UV package manager** installed
+- **MongoDB** running (local or remote)
+- **Redis** (optional, for distributed event bus)
 
 Check your versions:
 
 ```bash
 python --version
-docker --version
 uv --version
 ```
 
@@ -41,64 +41,54 @@ Copy the environment template:
 cp .env.example .env
 ```
 
-The default settings should work for local development. The `.env` file contains:
+Edit `.env` with your settings:
 
 ```bash
-# Redis connection
-REDIS__URL=redis://localhost:6379
-
-# MongoDB connection
+# MongoDB connection (required)
 MONGO__URL=mongodb://localhost:27017
-MONGO__DATABASE=market_scraper
+MONGO__DATABASE=cryptodata
 
-# Application
-APP_NAME=market-scraper
-DEBUG=false
-```
+# Redis connection (optional)
+REDIS__URL=redis://localhost:6379/0
 
-### 4. Start Services
-
-Start Redis and MongoDB using Docker Compose:
-
-```bash
-docker-compose up -d
-```
-
-Verify services are running:
-
-```bash
-docker-compose ps
-```
-
-Expected output:
-```
-NAME                     IMAGE          COMMAND              STATUS
-market-scraper-redis     redis:7-alpine "redis-server..."    Up
-market-scraper-mongodb   mongo:7        "docker-entrypoint..." Up
+# Hyperliquid settings
+HYPERLIQUID__SYMBOL=BTC
 ```
 
 ## Running the Application
 
-### Option 1: Run the API Server
+### Start the Server
 
 ```bash
-uv run uvicorn market_scraper.api:app --reload
+# Using the run script (recommended)
+./run_server.sh start
+
+# Or directly with uv
+uv run python -m market_scraper server
+
+# Run in foreground for development
+./run_server.sh run
 ```
 
 The API will be available at:
+- API: http://localhost:8000
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
-### Option 2: Run as Application
+### Server Management
 
 ```bash
-uv run python -m market_scraper
-```
+# Check status
+./run_server.sh status
 
-### Option 3: Use the CLI
+# View logs
+tail -f server.log
 
-```bash
-market-scraper
+# Stop server
+./run_server.sh stop
+
+# Restart server
+./run_server.sh restart
 ```
 
 ## First Data Fetch
@@ -202,18 +192,22 @@ pytest --cov=src/market_scraper
 
 ### Port Already in Use
 
-If port 8000 is in use, specify a different port:
+If port 8000 is in use, set a different port:
 
 ```bash
-uv run uvicorn market_scraper.api:app --port 8001
+SERVER_PORT=8001 ./run_server.sh start
 ```
 
-### Connection Refused
+### MongoDB Connection Failed
 
-Ensure Docker services are running:
+Ensure MongoDB is running:
 
 ```bash
-docker-compose restart
+# Check MongoDB status
+mongosh --eval "db.adminCommand('ping')"
+
+# Start MongoDB (if using local install)
+sudo systemctl start mongod
 ```
 
 ### Import Errors

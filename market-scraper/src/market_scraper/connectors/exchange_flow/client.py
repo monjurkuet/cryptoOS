@@ -6,7 +6,6 @@ import asyncio
 import csv
 import io
 import time
-from datetime import datetime
 from typing import Any
 
 import httpx

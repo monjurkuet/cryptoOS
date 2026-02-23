@@ -4,7 +4,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -300,8 +300,10 @@ class BlockchainInfoConnector(DataConnector):
             )
 
             summary = {
-                "timestamp": datetime.utcnow().isoformat(),
-                "current_metrics": current_metrics if not isinstance(current_metrics, Exception) else None,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "current_metrics": current_metrics
+                if not isinstance(current_metrics, Exception)
+                else None,
                 "charts": {},
             }
 
@@ -313,9 +315,7 @@ class BlockchainInfoConnector(DataConnector):
                         summary["charts"][chart_name] = {
                             "value": latest["y"],
                             "unit": data.get("unit"),
-                            "timestamp": datetime.fromtimestamp(
-                                latest["x"]
-                            ).isoformat(),
+                            "timestamp": datetime.fromtimestamp(latest["x"]).isoformat(),
                         }
 
             return summary

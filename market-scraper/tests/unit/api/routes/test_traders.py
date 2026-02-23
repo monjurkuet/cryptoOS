@@ -2,13 +2,12 @@
 
 """Tests for trader API routes."""
 
-import pytest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 from market_scraper.api.routes.traders import router
 
@@ -51,7 +50,7 @@ class TestListTraders:
         """Test successful list traders response."""
         mock_repository.get_tracked_traders.return_value = [
             {
-                "eth": "0x1234567890abcdef",
+                "eth": "0x1234567890123456789012345678901234567890",
                 "name": "Test Trader",
                 "score": 75.5,
                 "tags": ["whale"],
@@ -61,17 +60,14 @@ class TestListTraders:
         ]
         mock_repository.count_tracked_traders.return_value = 1
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/traders")
 
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1
         assert len(data["traders"]) == 1
-        assert data["traders"][0]["address"] == "0x1234567890abcdef"
+        assert data["traders"][0]["address"] == "0x1234567890123456789012345678901234567890"
         assert data["traders"][0]["score"] == 75.5
 
     @pytest.mark.asyncio
@@ -80,14 +76,8 @@ class TestListTraders:
         mock_repository.get_tracked_traders.return_value = []
         mock_repository.count_tracked_traders.return_value = 0
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/v1/traders",
-                params={"min_score": 50, "tag": "whale"}
-            )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/v1/traders", params={"min_score": 50, "tag": "whale"})
 
         assert response.status_code == 200
         mock_repository.get_tracked_traders.assert_called_once_with(
@@ -102,10 +92,7 @@ class TestListTraders:
         """Test list traders when repository is not available."""
         mock_lifecycle.repository = None
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/api/v1/traders")
 
         assert response.status_code == 503
@@ -119,26 +106,23 @@ class TestGetTrader:
     async def test_get_trader_success(self, app, mock_repository) -> None:
         """Test successful get trader response."""
         mock_repository.get_trader_by_address.return_value = {
-            "eth": "0x1234567890abcdef",
+            "eth": "0x1234567890123456789012345678901234567890",
             "name": "Test Trader",
             "score": 75.5,
             "tags": ["whale"],
             "acct_val": 5000000,
             "active": True,
         }
-        mock_repository.get_trader_current_state.return_value = {
-            "positions": []
-        }
+        mock_repository.get_trader_current_state.return_value = {"positions": []}
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
-            response = await client.get("/api/v1/traders/0x1234567890abcdef")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/traders/0x1234567890123456789012345678901234567890"
+            )
 
         assert response.status_code == 200
         data = response.json()
-        assert data["address"] == "0x1234567890abcdef"
+        assert data["address"] == "0x1234567890123456789012345678901234567890"
         assert data["score"] == 75.5
 
     @pytest.mark.asyncio
@@ -146,11 +130,10 @@ class TestGetTrader:
         """Test get trader when trader not found."""
         mock_repository.get_trader_by_address.return_value = None
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
-            response = await client.get("/api/v1/traders/0xnonexistent")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/traders/0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+            )
 
         assert response.status_code == 404
         assert "Trader not found" in response.json()["detail"]
@@ -159,7 +142,7 @@ class TestGetTrader:
     async def test_get_trader_with_positions(self, app, mock_repository) -> None:
         """Test get trader with current positions."""
         mock_repository.get_trader_by_address.return_value = {
-            "eth": "0x1234567890abcdef",
+            "eth": "0x1234567890123456789012345678901234567890",
             "name": "Test Trader",
             "score": 75.5,
             "tags": [],
@@ -181,11 +164,10 @@ class TestGetTrader:
             ]
         }
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
-            response = await client.get("/api/v1/traders/0x1234567890abcdef")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/traders/0x1234567890123456789012345678901234567890"
+            )
 
         assert response.status_code == 200
         data = response.json()
@@ -201,7 +183,7 @@ class TestGetTraderPositions:
         """Test successful get positions response."""
         mock_repository.get_trader_positions_history.return_value = [
             {
-                "t": datetime.utcnow(),
+                "t": datetime.now(UTC),
                 "coin": "BTC",
                 "sz": 1.5,
                 "ep": 50000,
@@ -211,13 +193,10 @@ class TestGetTraderPositions:
             }
         ]
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get(
-                "/api/v1/traders/0x1234567890abcdef/positions",
-                params={"hours": 24}
+                "/api/v1/traders/0x1234567890123456789012345678901234567890/positions",
+                params={"hours": 24},
             )
 
         assert response.status_code == 200
@@ -234,7 +213,7 @@ class TestGetTraderSignals:
         """Test successful get signals response."""
         mock_repository.get_trader_signals.return_value = [
             {
-                "t": datetime.utcnow(),
+                "t": datetime.now(UTC),
                 "symbol": "BTC",
                 "action": "open",
                 "dir": "long",
@@ -243,13 +222,10 @@ class TestGetTraderSignals:
             }
         ]
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get(
-                "/api/v1/traders/0x1234567890abcdef/signals",
-                params={"hours": 24}
+                "/api/v1/traders/0x1234567890123456789012345678901234567890/signals",
+                params={"hours": 24},
             )
 
         assert response.status_code == 200

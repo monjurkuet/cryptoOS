@@ -146,6 +146,8 @@ cython_debug/
 *.sqlite
 data/
 logs/
+server.pid
+server.log
 
 # Docker
 .dockerignore

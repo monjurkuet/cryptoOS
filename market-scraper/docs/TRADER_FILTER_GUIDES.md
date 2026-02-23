@@ -94,7 +94,7 @@ Per Hyperliquid's official criteria:
 
 **Configuration**:
 ```yaml
-# config/traders_config.yaml - Whale Focus
+# config/market_config.yaml - Whale Focus
 
 scoring:
   weights:
@@ -153,7 +153,7 @@ storage:
 
 **Configuration**:
 ```yaml
-# config/traders_config.yaml - Mega Whale Focus
+# config/market_config.yaml - Mega Whale Focus
 
 scoring:
   weights:
@@ -224,7 +224,7 @@ storage:
 
 **Configuration**:
 ```yaml
-# config/traders_config.yaml - Smart Money Focus
+# config/market_config.yaml - Smart Money Focus
 
 scoring:
   weights:
@@ -293,7 +293,7 @@ storage:
 
 **Configuration**:
 ```yaml
-# config/traders_config.yaml - Consistent Performers
+# config/market_config.yaml - Consistent Performers
 
 scoring:
   weights:
@@ -349,7 +349,7 @@ storage:
 
 **Configuration**:
 ```yaml
-# config/traders_config.yaml - High ROI Focus
+# config/market_config.yaml - High ROI Focus
 
 scoring:
   weights:
@@ -407,7 +407,7 @@ storage:
 
 **Configuration**:
 ```yaml
-# config/traders_config.yaml - Active Traders
+# config/market_config.yaml - Active Traders
 
 scoring:
   weights:
@@ -473,7 +473,7 @@ storage:
 
 **Configuration**:
 ```yaml
-# config/traders_config.yaml - Balanced Focus (Default)
+# config/market_config.yaml - Balanced Focus (Default)
 
 scoring:
   weights:
@@ -562,7 +562,7 @@ storage:
 
 **Configuration**:
 ```yaml
-# config/traders_config.yaml - Conservative Focus
+# config/market_config.yaml - Conservative Focus
 
 scoring:
   weights:
@@ -632,7 +632,7 @@ storage:
 Use this template to create custom configurations:
 
 ```yaml
-# config/traders_config.yaml - Custom
+# config/market_config.yaml - Custom
 
 # Step 1: Define your scoring weights (should roughly sum to 100)
 scoring:
@@ -743,7 +743,7 @@ storage:
 
 ## Data Retention
 
-MongoDB TTL indexes automatically clean up old data based on configurable retention periods. Configure retention in `config/traders_config.yaml`:
+MongoDB TTL indexes automatically clean up old data based on configurable retention periods. Configure retention in `config/market_config.yaml`:
 
 ```yaml
 storage:

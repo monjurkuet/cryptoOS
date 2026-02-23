@@ -2,8 +2,10 @@
 
 """Test suite for Processor base class."""
 
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from market_scraper.core.events import EventType, MarketDataPayload, StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -37,7 +39,7 @@ class TestProcessor:
         payload = MarketDataPayload(
             symbol="BTC-USD",
             price=50000.0,
-            timestamp=__import__("datetime").datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         return StandardEvent.create(
             event_type=EventType.TRADE,

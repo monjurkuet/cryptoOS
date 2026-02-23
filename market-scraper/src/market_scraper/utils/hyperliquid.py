@@ -128,7 +128,4 @@ def is_positive_roi(performances: dict[str, dict], *windows: str) -> bool:
     Returns:
         True if all specified windows have positive ROI.
     """
-    for window in windows:
-        if extract_roi(performances, window) <= 0:
-            return False
-    return True
+    return all(extract_roi(performances, window) > 0 for window in windows)

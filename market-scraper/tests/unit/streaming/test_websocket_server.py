@@ -2,12 +2,11 @@
 
 """Test suite for WebSocketServer."""
 
-import asyncio
 import json
-import pytest
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import websockets
 
 from market_scraper.core.events import EventType, MarketDataPayload, StandardEvent
@@ -67,7 +66,7 @@ class TestWebSocketServer:
         payload = MarketDataPayload(
             symbol="BTC-USD",
             price=50000.0,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
         )
         return StandardEvent.create(
             event_type=EventType.TRADE,

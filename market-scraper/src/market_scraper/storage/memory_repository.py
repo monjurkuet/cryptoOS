@@ -380,14 +380,16 @@ class MemoryRepository(DataRepository):
         for event in reversed(matching):
             payload = event.payload
             if isinstance(payload, dict):
-                candles.append({
-                    "t": event.timestamp,
-                    "o": payload.get("open", 0),
-                    "h": payload.get("high", 0),
-                    "l": payload.get("low", 0),
-                    "c": payload.get("close", 0),
-                    "v": payload.get("volume", 0),
-                })
+                candles.append(
+                    {
+                        "t": event.timestamp,
+                        "o": payload.get("open", 0),
+                        "h": payload.get("high", 0),
+                        "l": payload.get("low", 0),
+                        "c": payload.get("close", 0),
+                        "v": payload.get("volume", 0),
+                    }
+                )
 
         return candles
 
@@ -564,6 +566,17 @@ class MemoryRepository(DataRepository):
             "avg_confidence": 0.0,
             "avg_long_bias": 0.0,
         }
+
+    async def get_signal_by_id(self, signal_id: str) -> dict[str, Any] | None:
+        """Get a signal by its ID (stub for testing).
+
+        Args:
+            signal_id: Signal ObjectId as string.
+
+        Returns:
+            None (stub implementation).
+        """
+        return None
 
     # ============== Trader Management Methods ==============
 

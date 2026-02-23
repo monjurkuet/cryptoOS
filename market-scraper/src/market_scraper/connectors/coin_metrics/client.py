@@ -4,7 +4,7 @@
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -165,8 +165,8 @@ class CoinMetricsClient:
         Returns:
             Dictionary with latest metric values
         """
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        yesterday = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        yesterday = datetime.now(UTC).strftime("%Y-%m-%d")
 
         data = await self.get_asset_metrics(
             asset=asset,
@@ -197,7 +197,7 @@ class CoinMetricsClient:
         """
         from datetime import timedelta
 
-        end_time = datetime.utcnow()
+        end_time = datetime.now(UTC)
         start_time = end_time - timedelta(days=days)
 
         data = await self.get_asset_metrics(

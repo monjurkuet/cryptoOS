@@ -8,12 +8,14 @@ Uses webData2 subscription type for comprehensive trader data.
 
 import asyncio
 import time
-from datetime import datetime
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 import aiohttp
 import structlog
 
+from market_scraper.config.market_config import BufferConfig
 from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -41,6 +43,7 @@ class TraderWebSocketCollector:
         event_bus: EventBus,
         config: HyperliquidSettings,
         on_trader_data: Callable[[dict[str, Any]], None] | None = None,
+        buffer_config: BufferConfig | None = None,
     ) -> None:
         """Initialize the trader WebSocket collector.
 
@@ -48,6 +51,7 @@ class TraderWebSocketCollector:
             event_bus: Event bus for publishing events
             config: Hyperliquid settings
             on_trader_data: Optional callback for trader data
+            buffer_config: Buffer and flush configuration
         """
         self.event_bus = event_bus
         self.config = config
@@ -66,7 +70,10 @@ class TraderWebSocketCollector:
         self._last_positions: dict[str, dict] = {}
         self._position_max_interval = config.position_max_interval
 
-        # Buffer for batch processing
+        # Buffer configuration
+        buffer_config = buffer_config or BufferConfig()
+        self._flush_interval: float = buffer_config.flush_interval
+        self._buffer_max_size: int = buffer_config.max_size
         self._message_buffer: list[dict] = []
         self._buffer_lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
@@ -83,7 +90,7 @@ class TraderWebSocketCollector:
             traders: List of trader addresses to track (optional)
         """
         if self._running:
-            logger.warning("Trader WS collector already running")
+            logger.warning("trader_ws_already_running")
             return
 
         self._tracked_traders = traders or []
@@ -94,10 +101,12 @@ class TraderWebSocketCollector:
             num_traders=len(self._tracked_traders),
             num_clients=self._num_clients,
             symbol=self.config.symbol,
+            flush_interval=self._flush_interval,
+            buffer_max_size=self._buffer_max_size,
         )
 
         if not self._tracked_traders:
-            logger.warning("No traders to track")
+            logger.warning("no_traders_to_track")
             return
 
         # Split traders among clients
@@ -138,7 +147,7 @@ class TraderWebSocketCollector:
             try:
                 await self._flush_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("trader_ws_flush_task_cancelled")
 
         # Flush remaining messages
         await self._flush_messages()
@@ -205,7 +214,7 @@ class TraderWebSocketCollector:
             self._message_buffer.append(data)
 
             # Flush if buffer is full
-            if len(self._message_buffer) >= 100:
+            if len(self._message_buffer) >= self._buffer_max_size:
                 await self._flush_messages()
 
     async def _handle_disconnect(self, client_id: int) -> None:
@@ -222,8 +231,8 @@ class TraderWebSocketCollector:
                 # Stop old client
                 try:
                     await client.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("trader_ws_client_stop_error", client_id=client_id, error=str(e))
 
                 # Get traders for this client
                 traders = client.traders
@@ -248,7 +257,7 @@ class TraderWebSocketCollector:
     async def _flush_loop(self) -> None:
         """Periodically flush the message buffer."""
         while self._running:
-            await asyncio.sleep(5)  # Flush every 5 seconds
+            await asyncio.sleep(self._flush_interval)
             await self._flush_messages()
 
     def _normalize_positions(self, positions: list[dict]) -> str:
@@ -342,18 +351,14 @@ class TraderWebSocketCollector:
             return None
 
         # Filter for active positions
-        active_positions = [
-            p for p in positions
-            if float(p.get("position", {}).get("szi", 0)) != 0
-        ]
+        active_positions = [p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0]
 
         if not active_positions:
             return None
 
         # BTC-ONLY FILTER: Only process positions for configured symbol
         symbol_positions = [
-            p for p in active_positions
-            if p.get("position", {}).get("coin") == self.config.symbol
+            p for p in active_positions if p.get("position", {}).get("coin") == self.config.symbol
         ]
 
         if not symbol_positions:
@@ -383,7 +388,7 @@ class TraderWebSocketCollector:
                 "symbol": self.config.symbol,
                 "positions": symbol_positions,
                 "marginSummary": clearinghouse.get("marginSummary", {}),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -457,10 +462,12 @@ class TraderWSClient:
 
             # Subscribe to all traders
             for address in self.traders:
-                await self._ws.send_json({
-                    "method": "subscribe",
-                    "subscription": {"type": "webData2", "user": address},
-                })
+                await self._ws.send_json(
+                    {
+                        "method": "subscribe",
+                        "subscription": {"type": "webData2", "user": address},
+                    }
+                )
                 await asyncio.sleep(0.01)  # Small delay between subscriptions
 
             logger.info(
@@ -475,7 +482,12 @@ class TraderWSClient:
             return True
 
         except Exception as e:
-            logger.error("trader_ws_client_start_error", client_id=self.client_id, error=str(e))
+            logger.error(
+                "trader_ws_client_start_error",
+                client_id=self.client_id,
+                error=str(e),
+                exc_info=True,
+            )
             await self._handle_error()
             return False
 
@@ -488,7 +500,7 @@ class TraderWSClient:
             try:
                 await self._listen_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("trader_ws_listen_task_cancelled", client_id=self.client_id)
 
         if self._ws:
             await self._ws.close()
@@ -507,10 +519,12 @@ class TraderWSClient:
             self.traders.append(address)
 
         if self._ws and not self._ws.closed:
-            await self._ws.send_json({
-                "method": "subscribe",
-                "subscription": {"type": "webData2", "user": address},
-            })
+            await self._ws.send_json(
+                {
+                    "method": "subscribe",
+                    "subscription": {"type": "webData2", "user": address},
+                }
+            )
 
     async def unsubscribe_trader(self, address: str) -> None:
         """Unsubscribe from a trader.
@@ -522,10 +536,12 @@ class TraderWSClient:
             self.traders.remove(address)
 
         if self._ws and not self._ws.closed:
-            await self._ws.send_json({
-                "method": "unsubscribe",
-                "subscription": {"type": "webData2", "user": address},
-            })
+            await self._ws.send_json(
+                {
+                    "method": "unsubscribe",
+                    "subscription": {"type": "webData2", "user": address},
+                }
+            )
 
     async def _listen(self) -> None:
         """Listen for WebSocket messages."""
@@ -545,7 +561,12 @@ class TraderWSClient:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("trader_ws_client_listen_error", client_id=self.client_id, error=str(e))
+                logger.error(
+                    "trader_ws_client_listen_error",
+                    client_id=self.client_id,
+                    error=str(e),
+                    exc_info=True,
+                )
                 await self._handle_error()
                 break
 
@@ -583,8 +604,8 @@ class TraderWSClient:
         if self._ws:
             try:
                 await self._ws.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("trader_ws_close_error", client_id=self.client_id, error=str(e))
 
         await self.start()
 

@@ -2,7 +2,8 @@
 
 """Trader API routes."""
 
-from datetime import datetime, timedelta
+import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,6 +13,34 @@ from market_scraper.api.dependencies import get_lifecycle
 from market_scraper.orchestration.lifecycle import LifecycleManager
 
 router = APIRouter()
+
+
+# ============== Input Validation ==============
+
+ETHEREUM_ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
+
+
+def validate_eth_address(address: str) -> str:
+    """Validate Ethereum address format.
+
+    Args:
+        address: String to validate as Ethereum address
+
+    Returns:
+        Lowercase validated address
+
+    Raises:
+        HTTPException: If the address format is invalid
+    """
+    if not ETHEREUM_ADDRESS_PATTERN.match(address):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Ethereum address format: must be 0x followed by 40 hex characters",
+        )
+    return address.lower()
+
+
+# ============== Response Models ==============
 
 
 class TraderResponse(BaseModel):
@@ -57,6 +86,9 @@ class TraderDetailResponse(BaseModel):
     active: bool = True
     positions: list[dict[str, Any]] = []
     last_updated: datetime | None = None
+
+
+# ============== Routes ==============
 
 
 @router.get("", response_model=TraderListResponse)
@@ -112,7 +144,7 @@ async def list_traders(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{address}", response_model=TraderDetailResponse)
@@ -123,41 +155,50 @@ async def get_trader(
     """Get detailed trader information.
 
     Args:
-        address: Trader Ethereum address
+        address: Trader Ethereum address (0x + 40 hex characters)
         lifecycle: Lifecycle manager
 
     Returns:
         Detailed trader information
     """
+    # Validate address format
+    validated_address = validate_eth_address(address)
+
     repository = lifecycle.repository
     if not repository:
         raise HTTPException(status_code=503, detail="Repository not available")
 
     try:
         # Get trader info using repository method
-        trader = await repository.get_trader_by_address(address)
+        trader = await repository.get_trader_by_address(validated_address)
 
         if not trader:
             raise HTTPException(status_code=404, detail="Trader not found")
 
         # Get current positions
-        state = await repository.get_trader_current_state(address)
+        state = await repository.get_trader_current_state(validated_address)
 
         positions = []
         if state:
             for pos in state.get("positions", []):
                 p = pos.get("position", pos)
-                positions.append({
-                    "coin": p.get("coin"),
-                    "size": float(p.get("szi", 0)),
-                    "entry_price": float(p.get("entryPx", 0)),
-                    "mark_price": float(p.get("markPx", 0)),
-                    "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
-                    "leverage": float(p.get("leverage", {}).get("value", 1) if isinstance(p.get("leverage"), dict) else p.get("leverage", 1)),
-                })
+                positions.append(
+                    {
+                        "coin": p.get("coin"),
+                        "size": float(p.get("szi", 0)),
+                        "entry_price": float(p.get("entryPx", 0)),
+                        "mark_price": float(p.get("markPx", 0)),
+                        "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
+                        "leverage": float(
+                            p.get("leverage", {}).get("value", 1)
+                            if isinstance(p.get("leverage"), dict)
+                            else p.get("leverage", 1)
+                        ),
+                    }
+                )
 
         return TraderDetailResponse(
-            address=trader.get("eth", trader.get("address", address)),
+            address=trader.get("eth", trader.get("address", validated_address)),
             display_name=trader.get("name", trader.get("displayName")),
             score=trader.get("score", 0),
             tags=trader.get("tags", []),
@@ -170,7 +211,7 @@ async def get_trader(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{address}/positions")
@@ -183,7 +224,7 @@ async def get_trader_positions(
     """Get trader position history.
 
     Args:
-        address: Trader Ethereum address
+        address: Trader Ethereum address (0x + 40 hex characters)
         lifecycle: Lifecycle manager
         hours: Hours of history to fetch
         limit: Maximum results
@@ -191,22 +232,25 @@ async def get_trader_positions(
     Returns:
         Position history
     """
+    # Validate address format
+    validated_address = validate_eth_address(address)
+
     repository = lifecycle.repository
     if not repository:
         raise HTTPException(status_code=503, detail="Repository not available")
 
     try:
-        start_time = datetime.utcnow() - timedelta(hours=hours)
+        start_time = datetime.now(UTC) - timedelta(hours=hours)
 
         # Use repository method
         positions = await repository.get_trader_positions_history(
-            address=address,
+            address=validated_address,
             start_time=start_time,
             limit=limit,
         )
 
         return {
-            "address": address,
+            "address": validated_address,
             "symbol": lifecycle._settings.hyperliquid.symbol,
             "positions": [
                 {
@@ -224,7 +268,7 @@ async def get_trader_positions(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{address}/signals")
@@ -237,7 +281,7 @@ async def get_trader_signals(
     """Get trader's recent signals.
 
     Args:
-        address: Trader Ethereum address
+        address: Trader Ethereum address (0x + 40 hex characters)
         lifecycle: Lifecycle manager
         hours: Hours of history
         limit: Maximum results
@@ -245,22 +289,25 @@ async def get_trader_signals(
     Returns:
         Trader signals
     """
+    # Validate address format
+    validated_address = validate_eth_address(address)
+
     repository = lifecycle.repository
     if not repository:
         raise HTTPException(status_code=503, detail="Repository not available")
 
     try:
-        start_time = datetime.utcnow() - timedelta(hours=hours)
+        start_time = datetime.now(UTC) - timedelta(hours=hours)
 
         # Use repository method
         signals = await repository.get_trader_signals(
-            address=address,
+            address=validated_address,
             start_time=start_time,
             limit=limit,
         )
 
         return {
-            "address": address,
+            "address": validated_address,
             "signals": [
                 {
                     "timestamp": s.get("t"),
@@ -276,4 +323,4 @@ async def get_trader_signals(
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e

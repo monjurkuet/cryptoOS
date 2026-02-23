@@ -7,7 +7,6 @@ Weights: All-time ROI (30%), Month ROI (25%), Week ROI (20%),
 Account Value (15%), Volume (10%).
 """
 
-from datetime import datetime
 from typing import Any
 
 import structlog
@@ -17,10 +16,10 @@ from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
 from market_scraper.processors.base import Processor
 from market_scraper.utils.hyperliquid import (
-    parse_window_performances,
     extract_roi,
     extract_volume,
     is_positive_roi,
+    parse_window_performances,
 )
 
 logger = structlog.get_logger(__name__)
@@ -200,14 +199,16 @@ class TraderScoringProcessor(Processor):
                 address = trader.get("ethAddress", "")
                 tags = get_trader_tags(trader, score)
 
-                scored_traders.append({
-                    "address": address,
-                    "displayName": trader.get("displayName"),
-                    "accountValue": float(trader.get("accountValue", 0)),
-                    "score": score,
-                    "tags": tags,
-                    "windowPerformances": trader.get("windowPerformances", []),
-                })
+                scored_traders.append(
+                    {
+                        "address": address,
+                        "displayName": trader.get("displayName"),
+                        "accountValue": float(trader.get("accountValue", 0)),
+                        "score": score,
+                        "tags": tags,
+                        "windowPerformances": trader.get("windowPerformances", []),
+                    }
+                )
 
         # Sort by score descending
         scored_traders.sort(key=lambda x: x["score"], reverse=True)

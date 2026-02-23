@@ -5,11 +5,11 @@
 import pytest
 
 from market_scraper.core.types import (
+    VALID_TIMEFRAMES,
     ConnectorName,
     CorrelationId,
     EventId,
     Symbol,
-    VALID_TIMEFRAMES,
 )
 
 
@@ -65,7 +65,7 @@ class TestValidTimeframes:
     def test_timeframes_list(self) -> None:
         """Test VALID_TIMEFRAMES contains expected values."""
         expected = ["1s", "1m", "5m", "15m", "1h", "4h", "1d", "1w", "1M"]
-        assert VALID_TIMEFRAMES == expected
+        assert expected == VALID_TIMEFRAMES
 
     def test_timeframes_length(self) -> None:
         """Test VALID_TIMEFRAMES has correct length."""

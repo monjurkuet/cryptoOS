@@ -13,12 +13,12 @@ data from multiple sources:
 """
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-import structlog
 
 from market_scraper.api.dependencies import get_all_connectors
 
@@ -137,7 +137,7 @@ async def get_onchain_summary() -> dict[str, Any]:
 
         # Build response
         response = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "price_usd": None,
             "network": {},
             "sentiment": {"fear_greed": {}, "cbbi_confidence": None},
@@ -220,11 +220,11 @@ async def get_onchain_summary() -> dict[str, Any]:
         return response
 
     except Exception as e:
-        logger.error("onchain_summary_error", error=str(e))
+        logger.error("onchain_summary_error", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch on-chain data: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/btc/network")
@@ -246,11 +246,11 @@ async def get_network_metrics() -> dict[str, Any]:
         logger.info("onchain_network_fetched", block_height=event.payload.get("block_height"))
         return event.payload
     except Exception as e:
-        logger.error("onchain_network_error", error=str(e))
+        logger.error("onchain_network_error", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch network metrics: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/btc/sentiment")
@@ -276,7 +276,7 @@ async def get_sentiment_metrics() -> dict[str, Any]:
         fg, cbbi_data = await asyncio.gather(fg_task, cbbi_task, return_exceptions=True)
 
         result = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "fear_greed": None,
             "cbbi": None,
         }
@@ -291,11 +291,11 @@ async def get_sentiment_metrics() -> dict[str, Any]:
         return result
 
     except Exception as e:
-        logger.error("onchain_sentiment_error", error=str(e))
+        logger.error("sentiment_metrics_fetch_failed", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch sentiment metrics: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/btc/valuation")
@@ -331,11 +331,11 @@ async def get_valuation_metrics() -> dict[str, Any]:
         return result
 
     except Exception as e:
-        logger.error("onchain_valuation_error", error=str(e))
+        logger.error("valuation_metrics_fetch_failed", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch valuation metrics: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/btc/activity")
@@ -364,11 +364,11 @@ async def get_activity_metrics() -> dict[str, Any]:
         return result
 
     except Exception as e:
-        logger.error("onchain_activity_error", error=str(e))
+        logger.error("activity_metrics_fetch_failed", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch activity metrics: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/btc/sopr")
@@ -394,12 +394,10 @@ async def get_sopr_metrics() -> dict[str, Any]:
         sth_task = chainexposed.get_sopr_sth()
         lth_task = chainexposed.get_sopr_lth()
 
-        sopr, sth, lth = await asyncio.gather(
-            sopr_task, sth_task, lth_task, return_exceptions=True
-        )
+        sopr, sth, lth = await asyncio.gather(sopr_task, sth_task, lth_task, return_exceptions=True)
 
         result = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "sopr": None,
             "sth_sopr": None,
             "lth_sopr": None,
@@ -428,11 +426,11 @@ async def get_sopr_metrics() -> dict[str, Any]:
         return result
 
     except Exception as e:
-        logger.error("onchain_sopr_error", error=str(e))
+        logger.error("sopr_metrics_fetch_failed", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch SOPR metrics: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/btc/exchange-flows")
@@ -461,7 +459,7 @@ async def get_exchange_flows() -> dict[str, Any]:
         flows, summary = await asyncio.gather(flows_task, summary_task, return_exceptions=True)
 
         result = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "flow_in_btc": None,
             "flow_out_btc": None,
             "netflow_btc": None,
@@ -488,11 +486,11 @@ async def get_exchange_flows() -> dict[str, Any]:
         return result
 
     except Exception as e:
-        logger.error("onchain_exchange_flows_error", error=str(e))
+        logger.error("exchange_flows_fetch_failed", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch exchange flows: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/btc/nupl")
@@ -512,7 +510,7 @@ async def get_nupl_metrics() -> dict[str, Any]:
         event = await chainexposed.get_nupl()
 
         result = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "value": event.payload.get("value"),
             "date": event.payload.get("date"),
             "zone": event.payload.get("zone"),
@@ -523,11 +521,11 @@ async def get_nupl_metrics() -> dict[str, Any]:
         return result
 
     except Exception as e:
-        logger.error("onchain_nupl_error", error=str(e))
+        logger.error("nupl_metrics_fetch_failed", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch NUPL metrics: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/btc/mvrv")
@@ -544,7 +542,7 @@ async def get_mvrv_metrics() -> dict[str, Any]:
         event = await chainexposed.get_mvrv()
 
         result = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "value": event.payload.get("value"),
             "date": event.payload.get("date"),
             "signal": event.payload.get("signal"),
@@ -555,11 +553,11 @@ async def get_mvrv_metrics() -> dict[str, Any]:
         return result
 
     except Exception as e:
-        logger.error("onchain_mvrv_error", error=str(e))
+        logger.error("mvrv_metrics_fetch_failed", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to fetch MVRV metrics: {str(e)}",
-        )
+        ) from e
 
 
 @router.get("/health")
@@ -588,14 +586,26 @@ async def onchain_health() -> dict[str, Any]:
         )
 
         health_status = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "connectors": {
-                "blockchain_info": results[0] if not isinstance(results[0], Exception) else {"status": "unhealthy", "error": str(results[0])},
-                "fear_greed": results[1] if not isinstance(results[1], Exception) else {"status": "unhealthy", "error": str(results[1])},
-                "coin_metrics": results[2] if not isinstance(results[2], Exception) else {"status": "unhealthy", "error": str(results[2])},
-                "cbbi": results[3] if not isinstance(results[3], Exception) else {"status": "unhealthy", "error": str(results[3])},
-                "chainexposed": results[4] if not isinstance(results[4], Exception) else {"status": "unhealthy", "error": str(results[4])},
-                "exchange_flow": results[5] if not isinstance(results[5], Exception) else {"status": "unhealthy", "error": str(results[5])},
+                "blockchain_info": results[0]
+                if not isinstance(results[0], Exception)
+                else {"status": "unhealthy", "error": str(results[0])},
+                "fear_greed": results[1]
+                if not isinstance(results[1], Exception)
+                else {"status": "unhealthy", "error": str(results[1])},
+                "coin_metrics": results[2]
+                if not isinstance(results[2], Exception)
+                else {"status": "unhealthy", "error": str(results[2])},
+                "cbbi": results[3]
+                if not isinstance(results[3], Exception)
+                else {"status": "unhealthy", "error": str(results[3])},
+                "chainexposed": results[4]
+                if not isinstance(results[4], Exception)
+                else {"status": "unhealthy", "error": str(results[4])},
+                "exchange_flow": results[5]
+                if not isinstance(results[5], Exception)
+                else {"status": "unhealthy", "error": str(results[5])},
             },
         }
 
@@ -611,6 +621,6 @@ async def onchain_health() -> dict[str, Any]:
     except Exception as e:
         return {
             "status": "unhealthy",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "error": str(e),
         }
