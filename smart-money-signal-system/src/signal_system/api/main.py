@@ -1,5 +1,6 @@
 """Signal System API."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -22,12 +23,13 @@ _event_subscriber: EventSubscriber | None = None
 _signal_processor: SignalGenerationProcessor | None = None
 _whale_detector: WhaleAlertDetector | None = None
 _signal_store: SignalStore | None = None
+_subscriber_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan."""
-    global _event_subscriber, _signal_processor, _whale_detector, _signal_store
+    global _event_subscriber, _signal_processor, _whale_detector, _signal_store, _subscriber_task
 
     settings = get_settings()
 
@@ -49,6 +51,40 @@ async def lifespan(app: FastAPI):
 
     # Register handlers
     async def handle_position(event: dict) -> None:
+        payload = event.get("payload", {})
+        address = payload.get("address")
+
+        if address:
+            account_value = float(payload.get("accountValue", 0))
+            positions = payload.get("positions", [])
+
+            # Update whale detector with trader info
+            if _whale_detector:
+                _whale_detector.update_trader_info(
+                    address=address,
+                    account_value=account_value,
+                )
+
+                # Check for whale alerts on BTC positions
+                for pos in positions:
+                    pos_data = pos.get("position", pos)
+                    if pos_data.get("coin") == settings.symbol:
+                        szi = float(pos_data.get("szi", 0))
+                        change = _whale_detector.detect_position_change(
+                            address=address,
+                            coin=settings.symbol,
+                            current_szi=szi,
+                        )
+                        if change:
+                            alert = _whale_detector.generate_alert(change)
+                            if alert:
+                                logger.info(
+                                    "whale_alert_generated",
+                                    priority=alert.priority.value,
+                                    title=alert.title,
+                                )
+
+        # Generate signal
         if _signal_processor:
             signal = await _signal_processor.process_position(event)
             if signal:
@@ -64,9 +100,11 @@ async def lifespan(app: FastAPI):
     _event_subscriber.subscribe("trader_positions", handle_position)
     _event_subscriber.subscribe("scored_traders", handle_scored_traders)
 
-    # Connect and start subscriber
+    # Connect and start subscriber in background
     try:
         await _event_subscriber.connect()
+        # Start listening for events in a background task
+        _subscriber_task = asyncio.create_task(_event_subscriber.start())
         logger.info("api_startup_complete")
     except Exception as e:
         logger.warning("redis_connection_failed", error=str(e))
@@ -74,6 +112,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
+    if _subscriber_task:
+        _subscriber_task.cancel()
+        try:
+            await _subscriber_task
+        except asyncio.CancelledError:
+            pass
     if _event_subscriber:
         await _event_subscriber.disconnect()
     logger.info("api_shutdown_complete")

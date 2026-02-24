@@ -191,32 +191,40 @@ class WhaleAlertDetector:
         if not changes_to_process:
             return None
 
+        alert: WhaleAlert | None = None
+
         # Check for CRITICAL: Alpha Whale position change
         alpha_changes = [
             c for c in changes_to_process
             if c.account_value >= self.alpha_whale_threshold
         ]
         if alpha_changes:
-            return self._create_critical_alert(alpha_changes)
+            alert = self._create_critical_alert(alpha_changes)
 
         # Check for HIGH: 2+ whales in window
-        whale_changes = [
-            c for c in changes_to_process
-            if c.account_value >= self.whale_threshold
-        ]
-        if len(whale_changes) >= 2:
-            return self._create_high_alert(whale_changes)
+        if not alert:
+            whale_changes = [
+                c for c in changes_to_process
+                if c.account_value >= self.whale_threshold
+            ]
+            if len(whale_changes) >= 2:
+                alert = self._create_high_alert(whale_changes)
 
-        # Check for MEDIUM: Aggregate bias flip
-        bias_change = self._calculate_aggregate_bias_change()
-        if abs(bias_change) >= 0.3:  # 30% bias flip
-            return self._create_medium_alert(whale_changes, bias_change)
+            # Check for MEDIUM: Aggregate bias flip
+            if not alert:
+                bias_change = self._calculate_aggregate_bias_change()
+                if abs(bias_change) >= 0.3:  # 30% bias flip
+                    alert = self._create_medium_alert(whale_changes, bias_change)
 
-        # Check for LOW: Single whale change or smaller consensus shift
-        if whale_changes:
-            return self._create_low_alert(whale_changes)
+            # Check for LOW: Single whale change or smaller consensus shift
+            if not alert and whale_changes:
+                alert = self._create_low_alert(whale_changes)
 
-        return None
+        # Store the alert
+        if alert:
+            self._alerts.append(alert)
+
+        return alert
 
     def _create_critical_alert(self, changes: list[PositionChange]) -> WhaleAlert:
         """Create CRITICAL priority alert for alpha whale changes."""
