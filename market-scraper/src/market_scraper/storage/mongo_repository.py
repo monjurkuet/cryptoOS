@@ -13,9 +13,7 @@ from market_scraper.storage.base import DataRepository, QueryFilter
 from market_scraper.storage.models import (
     Candle,
     CollectionName,
-    Orderbook,
     TrackedTrader,
-    Trade,
     TraderPosition,
     TraderScore,
     TraderSignal,
@@ -508,87 +506,6 @@ class MongoRepository(DataRepository):
         await self._db[collection_name].drop()
 
     # ============== Model-Specific Methods ==============
-
-    async def store_trade(self, trade: Trade, symbol: str) -> bool:
-        """Store a trade.
-
-        Args:
-            trade: Trade to store.
-            symbol: Trading symbol (e.g., "BTC").
-
-        Returns:
-            True if stored successfully.
-
-        Raises:
-            StorageError: If not connected or storage fails.
-        """
-        if self._db is None:
-            raise StorageError("Not connected to MongoDB")
-
-        try:
-            collection = self._db[CollectionName.trades(symbol)]
-            await collection.update_one(
-                {"tid": trade.tid},
-                {"$setOnInsert": trade.model_dump()},
-                upsert=True,
-            )
-            return True
-        except Exception as e:
-            raise StorageError(f"Failed to store trade: {e}") from e
-
-    async def store_trades_bulk(self, trades: list[Trade], symbol: str) -> int:
-        """Store multiple trades efficiently.
-
-        Args:
-            trades: List of trades to store.
-            symbol: Trading symbol.
-
-        Returns:
-            Number of trades stored.
-
-        Raises:
-            StorageError: If not connected.
-        """
-        if self._db is None:
-            raise StorageError("Not connected to MongoDB")
-
-        if not trades:
-            return 0
-
-        try:
-            collection = self._db[CollectionName.trades(symbol)]
-            documents = [trade.model_dump() for trade in trades]
-            result = await collection.insert_many(documents, ordered=False)
-            return len(result.inserted_ids)
-        except Exception as e:
-            if hasattr(e, "details") and e.details:
-                n_inserted = e.details.get("nInserted", 0)
-                if n_inserted > 0:
-                    return n_inserted
-            raise StorageError(f"Failed to store trades: {e}") from e
-
-    async def store_orderbook(self, orderbook: Orderbook, symbol: str) -> bool:
-        """Store an orderbook snapshot.
-
-        Args:
-            orderbook: Orderbook to store.
-            symbol: Trading symbol.
-
-        Returns:
-            True if stored successfully.
-
-        Raises:
-            StorageError: If not connected or storage fails.
-        """
-        if self._db is None:
-            raise StorageError("Not connected to MongoDB")
-
-        try:
-            collection = self._db[CollectionName.orderbook(symbol)]
-            await collection.insert_one(orderbook.model_dump())
-            return True
-        except Exception as e:
-            raise StorageError(f"Failed to store orderbook: {e}") from e
 
     async def store_candle(self, candle: Candle, symbol: str, interval: str) -> bool:
         """Store a candle.

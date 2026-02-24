@@ -34,35 +34,6 @@ def get_settings_dependency() -> Settings:
 # ============== Connector Factory using Registry ==============
 
 
-# Mapping from friendly names to registry names and config classes
-CONNECTOR_MAPPING: dict[str, tuple[str, type, type]] = {
-    "blockchain_info": (
-        "blockchain_info",
-        "market_scraper.connectors.blockchain_info",
-    ),
-    "fear_greed": (
-        "fear_greed",
-        "market_scraper.connectors.fear_greed",
-    ),
-    "coin_metrics": (
-        "coin_metrics",
-        "market_scraper.connectors.coin_metrics",
-    ),
-    "cbbi": (
-        "cbbi",
-        "market_scraper.connectors.cbbi",
-    ),
-    "chainexposed": (
-        "chainexposed",
-        "market_scraper.connectors.chainexposed",
-    ),
-    "exchange_flow": (
-        "exchange_flow",
-        "market_scraper.connectors.exchange_flow",
-    ),
-}
-
-
 class ConnectorFactory:
     """Factory for creating and caching on-chain data connectors.
 
@@ -105,10 +76,10 @@ class ConnectorFactory:
             from market_scraper.connectors.cbbi import CBBIConfig
 
             self._connector_configs[name] = CBBIConfig
-        elif name == "chainexposed":
-            from market_scraper.connectors.chainexposed import ChainExposedConfig
+        elif name == "bitview":
+            from market_scraper.connectors.bitview import BitviewConfig
 
-            self._connector_configs[name] = ChainExposedConfig
+            self._connector_configs[name] = BitviewConfig
         elif name == "exchange_flow":
             from market_scraper.connectors.exchange_flow import ExchangeFlowConfig
 
@@ -135,9 +106,9 @@ class ConnectorFactory:
         # Get connector class from registry
         try:
             connector_class = ConnectorRegistry.get(name)
-        except KeyError:
+        except KeyError as err:
             logger.error("connector_not_in_registry", name=name)
-            raise ValueError(f"Connector '{name}' not found in registry")
+            raise ValueError(f"Connector '{name}' not found in registry") from err
 
         # Get config class
         config_class = self._load_connector_config(name)
@@ -167,9 +138,9 @@ class ConnectorFactory:
         """Get or create CBBIConnector."""
         return await self.get_connector("cbbi")
 
-    async def get_chainexposed_connector(self) -> Any:
-        """Get or create ChainExposedConnector."""
-        return await self.get_connector("chainexposed")
+    async def get_bitview_connector(self) -> Any:
+        """Get or create BitviewConnector."""
+        return await self.get_connector("bitview")
 
     async def get_exchange_flow_connector(self) -> Any:
         """Get or create ExchangeFlowConnector."""
@@ -179,14 +150,14 @@ class ConnectorFactory:
         """Get all connectors as a tuple.
 
         Returns connectors in the order expected by onchain.py routes:
-        (blockchain, fear_greed, coin_metrics, cbbi, chainexposed, exchange_flow)
+        (blockchain, fear_greed, coin_metrics, cbbi, bitview, exchange_flow)
         """
         return (
             await self.get_blockchain_connector(),
             await self.get_fear_greed_connector(),
             await self.get_coin_metrics_connector(),
             await self.get_cbbi_connector(),
-            await self.get_chainexposed_connector(),
+            await self.get_bitview_connector(),
             await self.get_exchange_flow_connector(),
         )
 
@@ -238,10 +209,10 @@ async def get_cbbi_connector() -> Any:
     return await factory.get_cbbi_connector()
 
 
-async def get_chainexposed_connector() -> Any:
-    """FastAPI dependency for ChainExposedConnector."""
+async def get_bitview_connector() -> Any:
+    """FastAPI dependency for BitviewConnector."""
     factory = get_connector_factory()
-    return await factory.get_chainexposed_connector()
+    return await factory.get_bitview_connector()
 
 
 async def get_exchange_flow_connector() -> Any:

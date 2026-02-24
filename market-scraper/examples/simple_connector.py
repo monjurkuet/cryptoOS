@@ -9,7 +9,7 @@ Usage:
 """
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, AsyncIterator
 
 from market_scraper.connectors.base import DataConnector, ConnectorConfig
@@ -155,7 +155,7 @@ class SimpleConnector(DataConnector):
                         "symbol": symbol,
                         "price": 50000 + random.uniform(-100, 100),
                         "volume": random.uniform(0.1, 10),
-                        "timestamp": datetime.utcnow(),
+                        "timestamp": datetime.now(UTC),
                     },
                 )
 
@@ -221,8 +221,8 @@ async def main() -> None:
         events = await connector.get_historical_data(
             symbol="BTC-USD",
             timeframe="1h",
-            start=datetime.utcnow() - timedelta(days=1),
-            end=datetime.utcnow(),
+            start=datetime.now(UTC) - timedelta(days=1),
+            end=datetime.now(UTC),
         )
 
         # Display sample events

@@ -1,3 +1,6 @@
+## Current year
+- 2026
+
 ## Must follow rules 
 - No CI/CD required.
 - Always use uv for python.

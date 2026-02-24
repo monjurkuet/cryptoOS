@@ -8,7 +8,7 @@ These models are optimized for:
 - Efficient indexing
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -30,27 +30,6 @@ class Trade(BaseModel):
     usd: float = Field(..., description="USD value (price * size)")
 
 
-class OrderbookLevel(BaseModel):
-    """Single orderbook level."""
-
-    p: float = Field(..., description="Price")
-    sz: float = Field(..., description="Size")
-
-
-class Orderbook(BaseModel):
-    """Orderbook snapshot model.
-
-    Collection: {symbol}_orderbook (e.g., btc_orderbook)
-    """
-
-    t: datetime = Field(..., description="Timestamp (UTC)")
-    bids: list[OrderbookLevel] = Field(default_factory=list, description="Top bids")
-    asks: list[OrderbookLevel] = Field(default_factory=list, description="Top asks")
-    mid: float = Field(..., description="Mid price")
-    spr: float = Field(..., description="Spread (as decimal)")
-    imb: float = Field(..., description="Imbalance (-1 to 1)")
-
-
 class Candle(BaseModel):
     """OHLCV candle model.
 
@@ -63,17 +42,6 @@ class Candle(BaseModel):
     l: float = Field(..., description="Low price")  # noqa: E741
     c: float = Field(..., description="Close price")
     v: float = Field(..., description="Volume")
-
-
-class MarkPrice(BaseModel):
-    """Mark price model.
-
-    Collection: mark_prices
-    """
-
-    t: datetime = Field(..., description="Timestamp")
-    symbol: str = Field(..., description="Symbol")
-    price: float = Field(..., description="Mark price")
 
 
 # ============== Trader Models ==============
@@ -123,8 +91,12 @@ class TrackedTrader(BaseModel):
     score: float = Field(default=0, description="Current score")
     tags: list[str] = Field(default_factory=list, description="Tags")
     active: bool = Field(default=True, description="Is being tracked")
-    added_at: datetime = Field(default_factory=datetime.utcnow, description="When added")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update")
+    added_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), description="When added"
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), description="Last update"
+    )
 
 
 # ============== Signal Models ==============
@@ -202,8 +174,7 @@ class CollectionName:
     TRADER_SIGNALS = "trader_signals"
 
     # Leaderboard
-    LEADERBOARD = "leaderboard_history"
-    LEADERBOARD_HISTORY = "leaderboard_history"  # Alias for clarity
+    LEADERBOARD_HISTORY = "leaderboard_history"
 
     @classmethod
     def trades(cls, symbol: str) -> str:

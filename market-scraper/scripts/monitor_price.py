@@ -8,7 +8,7 @@ and reports accuracy statistics.
 import asyncio
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 import httpx
 
@@ -101,7 +101,7 @@ async def run_monitor():
     async with httpx.AsyncClient() as client:
         for i in range(iterations):
             iteration = i + 1
-            timestamp = datetime.utcnow().strftime("%H:%M:%S")
+            timestamp = datetime.now(UTC).strftime("%H:%M:%S")
 
             print(f"[{timestamp}] Iteration {iteration}/{iterations}")
             print("-" * 50)

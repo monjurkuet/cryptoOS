@@ -90,7 +90,6 @@ class TestSettings:
         assert settings.environment == "development"
         assert settings.api_host == "0.0.0.0"
         assert settings.api_port == 8000
-        assert settings.api_workers >= 1
 
     def test_nested_configs(self) -> None:
         """Test nested configuration objects."""

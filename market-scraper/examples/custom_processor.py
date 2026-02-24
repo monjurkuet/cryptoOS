@@ -111,9 +111,9 @@ class DataEnrichmentProcessor(Processor):
             payload["trade_value"] = price * volume
 
         # Add processed timestamp to all events
-        from datetime import datetime
+        from datetime import UTC, datetime
 
-        payload["enriched_at"] = datetime.utcnow().isoformat()
+        payload["enriched_at"] = datetime.now(UTC).isoformat()
 
         return event
 

@@ -7,6 +7,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from market_scraper.api.dependencies import get_connector_factory
 from market_scraper.api.routes import (
     cbbi,
     connectors,
@@ -17,7 +18,6 @@ from market_scraper.api.routes import (
     traders,
     websocket,
 )
-from market_scraper.api.dependencies import get_connector_factory
 from market_scraper.core.config import get_settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
 

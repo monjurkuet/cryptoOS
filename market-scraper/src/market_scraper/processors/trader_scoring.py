@@ -11,7 +11,7 @@ from typing import Any
 
 import structlog
 
-from market_scraper.config.market_config import MarketConfig, TagConfig
+from market_scraper.config.market_config import TagConfig
 from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -125,8 +125,6 @@ def get_trader_tags(
 
     # Consistency tags (using config)
     all_time_roi = extract_roi(performances, "allTime")
-    month_roi = extract_roi(performances, "month")
-    week_roi = extract_roi(performances, "week")
 
     required_positive = tags_config.consistent.get("require_positive", ["day", "week", "month"])
     if all(performances.get(t, {}).get("roi", 0) > 0 for t in required_positive):
