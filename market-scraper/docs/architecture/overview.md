@@ -79,11 +79,12 @@ The system follows hexagonal architecture with clear boundaries:
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐ │
 │  │ Connectors   │ │ Storage      │ │ Event Bus            │ │
 │  │ - Hyperliquid│ │ - MongoDB    │ │ - Redis              │ │
-│  │ - CBBI       │ │ - Memory     │ │ - Memory             │ │
+│  │ - TraderWS   │ │ - Memory     │ │ - Memory             │ │
+│  │ - CBBI       │ │              │ │                      │ │
 │  │ - Blockchain │ │              │ │                      │ │
 │  │ - FearGreed  │ │              │ │                      │ │
 │  │ - CoinMetrics│ │              │ │                      │ │
-│  │ - ChainExp.  │ │              │ │                      │ │
+│  │ - Bitview    │ │              │ │                      │ │
 │  │ - ExchangeFl.│ │              │ │                      │ │
 │  └──────────────┘ └──────────────┘ └──────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘

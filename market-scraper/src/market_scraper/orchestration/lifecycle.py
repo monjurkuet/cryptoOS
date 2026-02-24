@@ -11,6 +11,7 @@ import structlog
 from market_scraper.config.market_config import load_market_config
 from market_scraper.connectors.hyperliquid.collectors.leaderboard import LeaderboardCollector
 from market_scraper.connectors.hyperliquid.collectors.manager import CollectorManager
+from market_scraper.connectors.hyperliquid.collectors.trader_ws import TraderWebSocketCollector
 from market_scraper.core.config import Settings, get_settings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
@@ -60,6 +61,7 @@ class LifecycleManager:
         self._repository: DataRepository | None = None
         self._collector_manager: CollectorManager | None = None
         self._leaderboard_collector: LeaderboardCollector | None = None
+        self._trader_ws_collector: TraderWebSocketCollector | None = None
 
         # Processors
         self._processors: list[Any] = []
@@ -127,6 +129,10 @@ class LifecycleManager:
             # 6. Initialize Leaderboard Collector
             await self._init_leaderboard_collector()
             logger.info("leaderboard_collector_initialized")
+
+            # 6.1 Initialize Trader WebSocket Collector
+            await self._init_trader_ws_collector()
+            logger.info("trader_ws_collector_initialized")
 
             # 7. Initialize Scheduler
             await self._init_scheduler()
@@ -215,6 +221,14 @@ class LifecycleManager:
             except Exception as e:
                 logger.error("leaderboard_stop_error", error=str(e), exc_info=True)
             self._leaderboard_collector = None
+
+        # Stop trader websocket collector
+        if self._trader_ws_collector:
+            try:
+                await self._trader_ws_collector.stop()
+            except Exception as e:
+                logger.error("trader_ws_stop_error", error=str(e), exc_info=True)
+            self._trader_ws_collector = None
 
         # Stop collector manager
         if self._collector_manager:
@@ -472,6 +486,45 @@ class LifecycleManager:
 
         await self._leaderboard_collector.start()
 
+    async def _init_trader_ws_collector(self) -> None:
+        """Initialize the trader WebSocket collector for position tracking.
+
+        This collector subscribes to tracked traders and publishes their
+        real-time position data to the event bus.
+        """
+        if not self._event_bus:
+            raise RuntimeError("Event bus not initialized")
+
+        if not self._settings.hyperliquid.enabled:
+            logger.info("trader_ws_collector_disabled")
+            return
+
+        # Load market configuration from YAML
+        market_config = load_market_config()
+
+        # Create the collector
+        self._trader_ws_collector = TraderWebSocketCollector(
+            event_bus=self._event_bus,
+            config=self._settings.hyperliquid,
+            buffer_config=market_config.buffer,
+        )
+
+        # Wait a moment for leaderboard to process and store tracked traders
+        # Then get tracked addresses from leaderboard collector
+        await asyncio.sleep(2.0)
+
+        if self._leaderboard_collector:
+            tracked_addresses = await self._leaderboard_collector.get_tracked_addresses()
+
+            if tracked_addresses:
+                logger.info("starting_trader_ws_with_tracked", count=len(tracked_addresses))
+                await self._trader_ws_collector.start(tracked_addresses)
+            else:
+                logger.warning("no_tracked_addresses_trader_ws_not_started")
+                # Start without traders - will add them later when leaderboard refreshes
+        else:
+            logger.warning("leaderboard_not_available_trader_ws_delayed")
+
     async def _init_scheduler(self) -> None:
         """Initialize the scheduler with configured tasks."""
         market_config = load_market_config()
@@ -603,6 +656,8 @@ class LifecycleManager:
             self._health_monitor.register_component("collector_manager", ComponentType.CONNECTOR)
         if self._leaderboard_collector:
             self._health_monitor.register_component("leaderboard", ComponentType.CONNECTOR)
+        if self._trader_ws_collector:
+            self._health_monitor.register_component("trader_ws", ComponentType.CONNECTOR)
 
         for i, _processor in enumerate(self._processors):
             self._health_monitor.register_component(f"processor_{i}", ComponentType.PROCESSOR)
@@ -627,6 +682,8 @@ class LifecycleManager:
             and self._collector_manager.is_running,
             "leaderboard": self._leaderboard_collector is not None
             and self._leaderboard_collector._running,
+            "trader_ws": self._trader_ws_collector is not None
+            and self._trader_ws_collector._running,
             "processors": len(self._processors) > 0,
         }
 
@@ -651,6 +708,9 @@ class LifecycleManager:
             "leaderboard": {
                 "status": "healthy" if self._leaderboard_collector else "not_initialized",
             },
+            "trader_ws": {
+                "status": "healthy" if self._trader_ws_collector else "not_initialized",
+            },
             "processors": {
                 "status": "healthy" if self._processors else "not_initialized",
                 "count": len(self._processors),
@@ -669,6 +729,9 @@ class LifecycleManager:
 
         if self._leaderboard_collector:
             result["leaderboard"].update(self._leaderboard_collector.get_stats())
+
+        if self._trader_ws_collector:
+            result["trader_ws"].update(self._trader_ws_collector.get_stats())
 
         return result
 
@@ -771,6 +834,15 @@ class LifecycleManager:
                 }
             )
 
+        if self._trader_ws_collector:
+            connectors.append(
+                {
+                    "name": "trader_ws",
+                    "status": "running" if self._trader_ws_collector._running else "stopped",
+                    "symbol": self._settings.hyperliquid.symbol,
+                }
+            )
+
         return connectors
 
     async def get_connector_status(self, name: str) -> dict[str, Any] | None:
@@ -786,6 +858,8 @@ class LifecycleManager:
             return self._collector_manager.get_status()
         if name == "leaderboard" and self._leaderboard_collector:
             return self._leaderboard_collector.get_stats()
+        if name == "trader_ws" and self._trader_ws_collector:
+            return self._trader_ws_collector.get_stats()
         return None
 
     async def start_connector(self, name: str) -> None:
@@ -821,6 +895,29 @@ class LifecycleManager:
                 await self._leaderboard_collector.start()
                 return
 
+        if name == "trader_ws":
+            if self._trader_ws_collector and not self._trader_ws_collector._running:
+                # Get tracked addresses and start
+                if self._leaderboard_collector:
+                    addresses = await self._leaderboard_collector.get_tracked_addresses()
+                    if addresses:
+                        await self._trader_ws_collector.start(addresses)
+                        return
+                raise ValueError("No tracked addresses available for trader_ws")
+            if not self._trader_ws_collector and self._event_bus:
+                market_config = load_market_config()
+                self._trader_ws_collector = TraderWebSocketCollector(
+                    event_bus=self._event_bus,
+                    config=self._settings.hyperliquid,
+                    buffer_config=market_config.buffer,
+                )
+                if self._leaderboard_collector:
+                    addresses = await self._leaderboard_collector.get_tracked_addresses()
+                    if addresses:
+                        await self._trader_ws_collector.start(addresses)
+                        return
+                raise ValueError("No tracked addresses available for trader_ws")
+
         raise ValueError(f"Connector {name} not found or cannot be started")
 
     async def stop_connector(self, name: str) -> None:
@@ -838,6 +935,10 @@ class LifecycleManager:
 
         if name == "leaderboard" and self._leaderboard_collector:
             await self._leaderboard_collector.stop()
+            return
+
+        if name == "trader_ws" and self._trader_ws_collector:
+            await self._trader_ws_collector.stop()
             return
 
         raise ValueError(f"Connector {name} not found")
@@ -872,3 +973,8 @@ class LifecycleManager:
     def leaderboard_collector(self) -> LeaderboardCollector | None:
         """Get the leaderboard collector instance."""
         return self._leaderboard_collector
+
+    @property
+    def trader_ws_collector(self) -> TraderWebSocketCollector | None:
+        """Get the trader WebSocket collector instance."""
+        return self._trader_ws_collector

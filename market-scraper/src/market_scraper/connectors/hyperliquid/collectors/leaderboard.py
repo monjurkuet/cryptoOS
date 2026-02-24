@@ -530,3 +530,29 @@ class LeaderboardCollector:
     def market_config(self) -> MarketConfig:
         """Get the trader configuration."""
         return self._market_config
+
+    async def get_tracked_addresses(self) -> list[str]:
+        """Get list of tracked trader addresses from database.
+
+        Returns tracked traders that are marked as active in the database.
+        Falls back to empty list if database is not available.
+
+        Returns:
+            List of Ethereum addresses for tracked traders
+        """
+        if self._db is None:
+            logger.warning("get_tracked_addresses_no_database")
+            return []
+
+        try:
+            from market_scraper.storage.models import CollectionName
+
+            cursor = self._db[CollectionName.TRACKED_TRADERS].find(
+                {"active": True}, {"eth": 1, "_id": 0}
+            )
+            addresses = [doc["eth"] async for doc in cursor]
+            logger.debug("get_tracked_addresses_found", count=len(addresses))
+            return addresses
+        except Exception as e:
+            logger.error("get_tracked_addresses_error", error=str(e), exc_info=True)
+            return []

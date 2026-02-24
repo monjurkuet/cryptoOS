@@ -14,7 +14,7 @@ This document contains only APIs that were **actually tested and verified workin
 | FearGreed | ✅ Implemented | `src/market_scraper/connectors/fear_greed/` |
 | CoinMetrics | ✅ Implemented | `src/market_scraper/connectors/coin_metrics/` |
 | CBBI | ✅ Implemented | `src/market_scraper/connectors/cbbi/` |
-| ChainExposed | ✅ Implemented | `src/market_scraper/connectors/chainexposed/` |
+| Bitview | ✅ Implemented | `src/market_scraper/connectors/bitview/` |
 | ExchangeFlow | ✅ Implemented | `src/market_scraper/connectors/exchange_flow/` |
 
 ---

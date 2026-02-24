@@ -329,19 +329,19 @@ async def get_metrics():
     await connector.disconnect()
 ```
 
-### ChainExposed
+### Bitview
 
-Bitcoin on-chain metrics from ChainExposed:
+Bitcoin on-chain metrics from Bitview.space:
 - **SOPR**: Spent Output Profit Ratio
 - **NUPL**: Net Unrealized Profit/Loss
 - **MVRV**: Market Value to Realized Value
 - **Dormancy**: Average age of spent coins
 
 ```python
-from market_scraper.connectors.chainexposed import ChainExposedConnector, ChainExposedConfig
+from market_scraper.connectors.bitview import BitviewConnector, BitviewConfig
 
 async def get_sopr():
-    connector = ChainExposedConnector(ChainExposedConfig(name="chainexposed"))
+    connector = BitviewConnector(BitviewConfig(name="bitview"))
     await connector.connect()
 
     event = await connector.get_sopr()

@@ -210,12 +210,27 @@ class TraderWebSocketCollector:
         """
         self._messages_received += 1
 
+        # Debug: Log message receipt
+        if self._messages_received <= 5:
+            logger.debug(
+                "trader_ws_message_received",
+                msg_num=self._messages_received,
+                channel=data.get("channel"),
+                has_user=bool(data.get("data", {}).get("user")),
+            )
+
+        should_flush = False
         async with self._buffer_lock:
             self._message_buffer.append(data)
 
-            # Flush if buffer is full
+            # Check if buffer is full
             if len(self._message_buffer) >= self._buffer_max_size:
-                await self._flush_messages()
+                logger.debug("trader_ws_buffer_full_flushing", size=len(self._message_buffer))
+                should_flush = True
+
+        # Flush outside the lock to avoid deadlock
+        if should_flush:
+            await self._flush_messages()
 
     async def _handle_disconnect(self, client_id: int) -> None:
         """Handle client disconnection.
@@ -321,17 +336,28 @@ class TraderWebSocketCollector:
             self._message_buffer.clear()
 
         events = []
+        webdata_count = 0
 
         for msg in messages:
             if msg.get("channel") == "webData2":
+                webdata_count += 1
                 event = self._process_webdata2(msg)
                 if event:
                     events.append(event)
 
+        logger.debug(
+            "trader_ws_flush_processed",
+            total_messages=len(messages),
+            webdata_messages=webdata_count,
+            events_created=len(events),
+            positions_saved=self._positions_saved,
+            positions_skipped=self._positions_skipped,
+        )
+
         # Publish events
         if events:
             await self.event_bus.publish_bulk(events)
-            logger.debug("trader_ws_flushed", events=len(events))
+            logger.info("trader_ws_events_published", count=len(events))
 
     def _process_webdata2(self, msg: dict) -> StandardEvent | None:
         """Process webData2 message and create event.
@@ -368,9 +394,20 @@ class TraderWebSocketCollector:
         # EVENT-DRIVEN: Check if position actually changed
         if not self._has_significant_change(address, symbol_positions):
             self._positions_skipped += 1
+            logger.debug(
+                "trader_ws_position_unchanged",
+                address=address[:10],
+                symbol=self.config.symbol,
+            )
             return None
 
         self._positions_saved += 1
+        logger.info(
+            "trader_ws_position_saved",
+            address=address[:10],
+            symbol=self.config.symbol,
+            position_count=len(symbol_positions),
+        )
 
         # Update last saved state
         self._last_positions[address] = {

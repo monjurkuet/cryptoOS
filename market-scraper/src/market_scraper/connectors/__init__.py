@@ -3,9 +3,9 @@
 """Connectors module for market data sources."""
 
 from market_scraper.connectors.base import ConnectorConfig, DataConnector
+from market_scraper.connectors.bitview import BitviewConnector
 from market_scraper.connectors.blockchain_info import BlockchainInfoConnector
 from market_scraper.connectors.cbbi import CBBIConnector
-from market_scraper.connectors.chainexposed import ChainExposedConnector
 from market_scraper.connectors.coin_metrics import CoinMetricsConnector
 from market_scraper.connectors.exchange_flow import ExchangeFlowConnector
 from market_scraper.connectors.fear_greed import FearGreedConnector
@@ -19,7 +19,7 @@ ConnectorRegistry.register("cbbi", CBBIConnector)
 ConnectorRegistry.register("blockchain_info", BlockchainInfoConnector)
 ConnectorRegistry.register("fear_greed", FearGreedConnector)
 ConnectorRegistry.register("coin_metrics", CoinMetricsConnector)
-ConnectorRegistry.register("chainexposed", ChainExposedConnector)
+ConnectorRegistry.register("bitview", BitviewConnector)
 ConnectorRegistry.register("exchange_flow", ExchangeFlowConnector)
 
 __all__ = [
@@ -31,6 +31,6 @@ __all__ = [
     "BlockchainInfoConnector",
     "FearGreedConnector",
     "CoinMetricsConnector",
-    "ChainExposedConnector",
+    "BitviewConnector",
     "ExchangeFlowConnector",
 ]

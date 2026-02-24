@@ -34,7 +34,7 @@ A production-ready market data system that collects real-time data from Hyperliq
 | **FearGreed** | Fear & Greed Index (sentiment) | Daily |
 | **CoinMetrics** | Active addresses, transaction count, supply | On-demand |
 | **CBBI** | Bitcoin Bull Run Index (9 components) | Daily |
-| **ChainExposed** | SOPR, NUPL, MVRV, HODL Waves | On-demand |
+| **Bitview** | SOPR, NUPL, MVRV, HODL Waves | On-demand |
 | **ExchangeFlow** | Exchange inflows/outflows, netflow | On-demand |
 
 **Note:** On-chain connectors do NOT return price data. Use Hyperliquid candles for price information.

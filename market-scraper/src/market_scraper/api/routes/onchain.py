@@ -8,7 +8,7 @@ data from multiple sources:
 - FearGreedConnector: Market sentiment
 - CoinMetricsConnector: Price, market cap, active addresses
 - CBBIConnector: Valuation metrics (MVRV, Puell, NUPL, etc.)
-- ChainExposedConnector: SOPR, NUPL, MVRV, HODL Waves, Dormancy
+- BitviewConnector: SOPR, NUPL, MVRV (fresh data from Bitview.space)
 - ExchangeFlowConnector: Exchange inflows/outflows, netflow
 """
 
@@ -52,7 +52,7 @@ class SentimentMetrics(BaseModel):
 
 
 class SOPRMetrics(BaseModel):
-    """SOPR metrics from ChainExposed."""
+    """SOPR metrics from Bitview."""
 
     sopr: float | None = Field(None, description="Spent Output Profit Ratio")
     interpretation: str | None = Field(None, description="profit_taking or loss_realization")
@@ -105,7 +105,7 @@ async def get_onchain_summary() -> dict[str, Any]:
     - **Sentiment**: Fear & Greed Index, CBBI confidence
     - **Valuation**: MVRV, Puell, NUPL, Reserve Risk, etc. (CBBI)
     - **Activity**: Active addresses, transaction count, supply (Coin Metrics)
-    - **SOPR**: Spent Output Profit Ratio with LTH/STH variants (ChainExposed)
+    - **SOPR**: Spent Output Profit Ratio with LTH/STH variants (Bitview)
     - **Exchange Flows**: Inflow, outflow, netflow, supply (Coin Metrics CSV)
 
     All data is fetched in parallel for optimal performance.
@@ -113,14 +113,14 @@ async def get_onchain_summary() -> dict[str, Any]:
     try:
         # Use dependency injection
         connectors = await get_all_connectors()
-        blockchain, fear_greed, coin_metrics, cbbi, chainexposed, exchange_flow = connectors
+        blockchain, fear_greed, coin_metrics, cbbi, bitview, exchange_flow = connectors
 
         # Fetch all data in parallel for speed
         network_task = blockchain.get_current_metrics()
         sentiment_task = fear_greed.get_current_index()
         activity_task = coin_metrics.get_latest_metrics()
         cbbi_task = cbbi.get_current_index()
-        sopr_task = chainexposed.get_summary()
+        sopr_task = bitview.get_summary()
         flow_task = exchange_flow.get_current_flows()
 
         results = await asyncio.gather(
@@ -373,7 +373,7 @@ async def get_activity_metrics() -> dict[str, Any]:
 
 @router.get("/btc/sopr")
 async def get_sopr_metrics() -> dict[str, Any]:
-    """Get SOPR (Spent Output Profit Ratio) metrics from ChainExposed.
+    """Get SOPR (Spent Output Profit Ratio) metrics from Bitview.
 
     SOPR measures whether coins are being sold at profit or loss:
     - **SOPR > 1**: Coins being sold at profit
@@ -387,12 +387,12 @@ async def get_sopr_metrics() -> dict[str, Any]:
     """
     try:
         connectors = await get_all_connectors()
-        chainexposed = connectors[4]
+        bitview = connectors[4]
 
         # Fetch all SOPR variants in parallel
-        sopr_task = chainexposed.get_sopr()
-        sth_task = chainexposed.get_sopr_sth()
-        lth_task = chainexposed.get_sopr_lth()
+        sopr_task = bitview.get_sopr()
+        sth_task = bitview.get_sopr_sth()
+        lth_task = bitview.get_sopr_lth()
 
         sopr, sth, lth = await asyncio.gather(sopr_task, sth_task, lth_task, return_exceptions=True)
 
@@ -495,23 +495,26 @@ async def get_exchange_flows() -> dict[str, Any]:
 
 @router.get("/btc/nupl")
 async def get_nupl_metrics() -> dict[str, Any]:
-    """Get NUPL (Net Unrealized Profit/Loss) from ChainExposed.
+    """Get NUPL (Net Unrealized Profit/Loss) from Bitview.
 
-    NUPL zones:
+    NUPL zones (normalized 0-1):
     - **< 0**: Capitulation
     - **0 - 0.25**: Hope/Fear
     - **0.25 - 0.5**: Optimism
     - **0.5 - 0.75**: Belief
     - **> 0.75**: Euphoria
+
+    Note: Bitview NUPL is scaled by 100 (e.g., 19.94 = 0.1994).
     """
     try:
         connectors = await get_all_connectors()
-        chainexposed = connectors[4]
-        event = await chainexposed.get_nupl()
+        bitview = connectors[4]
+        event = await bitview.get_nupl()
 
         result = {
             "timestamp": datetime.now(UTC).isoformat(),
             "value": event.payload.get("value"),
+            "value_normalized": event.payload.get("value_normalized"),
             "date": event.payload.get("date"),
             "zone": event.payload.get("zone"),
             "statistics": event.payload.get("statistics", {}),
@@ -530,7 +533,7 @@ async def get_nupl_metrics() -> dict[str, Any]:
 
 @router.get("/btc/mvrv")
 async def get_mvrv_metrics() -> dict[str, Any]:
-    """Get MVRV (Market Value to Realized Value) from ChainExposed.
+    """Get MVRV (Market Value to Realized Value) from Bitview.
 
     MVRV signals:
     - **< 1.0**: Undervalued (historical buying opportunity)
@@ -538,8 +541,8 @@ async def get_mvrv_metrics() -> dict[str, Any]:
     """
     try:
         connectors = await get_all_connectors()
-        chainexposed = connectors[4]
-        event = await chainexposed.get_mvrv()
+        bitview = connectors[4]
+        event = await bitview.get_mvrv()
 
         result = {
             "timestamp": datetime.now(UTC).isoformat(),
@@ -570,7 +573,7 @@ async def onchain_health() -> dict[str, Any]:
             fear_greed,
             coin_metrics,
             cbbi,
-            chainexposed,
+            bitview,
             exchange_flow,
         ) = connectors
 
@@ -580,7 +583,7 @@ async def onchain_health() -> dict[str, Any]:
             fear_greed.health_check(),
             coin_metrics.health_check(),
             cbbi.health_check(),
-            chainexposed.health_check(),
+            bitview.health_check(),
             exchange_flow.health_check(),
             return_exceptions=True,
         )
@@ -600,7 +603,7 @@ async def onchain_health() -> dict[str, Any]:
                 "cbbi": results[3]
                 if not isinstance(results[3], Exception)
                 else {"status": "unhealthy", "error": str(results[3])},
-                "chainexposed": results[4]
+                "bitview": results[4]
                 if not isinstance(results[4], Exception)
                 else {"status": "unhealthy", "error": str(results[4])},
                 "exchange_flow": results[5]
