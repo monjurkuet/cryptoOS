@@ -222,6 +222,44 @@ scheduler:
       enabled: false  # Use MongoDB TTL indexes instead
 ```
 
+### Data Archival Configuration
+
+Archive data before TTL deletion for long-term storage:
+
+```yaml
+archival:
+  enabled: false  # Enable via environment or config override
+  schedule: "monthly"
+  compression:
+    algorithm: "zstd"
+    level: 3  # 1=fastest, 22=best ratio
+  git_lfs:
+    repo_url: "${ARCHIVE_REPO_URL}"
+    branch: "main"
+  collections:
+    - trader_positions
+    - signals
+    - leaderboard_history
+    - candles
+```
+
+**Run archival manually:**
+```bash
+# Archive specific collections
+uv run python scripts/run_archive.py --collections trader_positions signals
+
+# Archive all configured collections
+uv run python scripts/run_archive.py --all --push
+```
+
+**Restore from archive:**
+```python
+from market_scraper.archival import Compressor
+
+compressor = Compressor()
+data = compressor.decompress_from_file(Path("/data/archives/positions_202401.zst"))
+```
+
 ### Position Inference Configuration
 
 Configure position inference thresholds:

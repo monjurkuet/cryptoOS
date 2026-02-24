@@ -39,6 +39,24 @@ Aggregates trader positions to generate trading signals:
 - Tracks positions from scored traders
 - Calculates long/short bias
 - Generates BUY/SELL/NEUTRAL signals with confidence
+- **Memory Management**: TTL-based cleanup (24h), max 10,000 traders
+
+### Event Processor
+
+Shared event processing logic for standalone and API modes:
+- Handles trader position events
+- Handles scored traders events
+- Stores signals and alerts via SignalStore
+
+### Safe Conversions
+
+Prevents crashes from malformed Redis data:
+```python
+from signal_system.utils.safe_convert import safe_float, safe_datetime
+
+account_value = safe_float(payload.get("accountValue"), 0)  # Never raises
+timestamp = safe_datetime(payload.get("timestamp"))  # Returns None on error
+```
 
 ### Whale Alert Detector
 
@@ -47,6 +65,7 @@ Detects significant whale position changes:
 - **HIGH**: 2+ whales change within 5 min
 - **MEDIUM**: Aggregate whale bias flips 30%+
 - **LOW**: Single whale position change
+- **Memory Management**: 7-day TTL for position history, bounded alerts (500), bounded changes (1000)
 
 ### Weighting Engine
 
@@ -59,6 +78,7 @@ Multi-dimensional trader scoring:
 ### ML Components
 
 - **Market Regime Detector**: KMeans clustering for 6 regimes (deep_accumulation, early_bull, mid_bull, late_bull, distribution, bear)
+  - **Memory Management**: Bounded history (max 1000 entries)
 - **Feature Importance Analyzer**: RandomForest-based feature ranking
 
 ## API Endpoints
