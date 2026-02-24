@@ -1,6 +1,7 @@
 """Market Regime Detection using KMeans clustering."""
 
 import json
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,9 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 logger = structlog.get_logger(__name__)
+
+# Maximum regime history entries to prevent unbounded memory growth
+MAX_REGIME_HISTORY = 1000
 
 
 @dataclass
@@ -86,6 +90,7 @@ class MarketRegimeDetector:
         model_path: Path | None = None,
         n_clusters: int = 6,
         random_state: int = 42,
+        max_history: int = MAX_REGIME_HISTORY,
     ) -> None:
         """Initialize the detector.
 
@@ -93,14 +98,17 @@ class MarketRegimeDetector:
             model_path: Path to save/load the trained model
             n_clusters: Number of regime clusters
             random_state: Random seed for reproducibility
+            max_history: Maximum number of history entries to keep
         """
         self.model_path = model_path or Path("models/regime_detector.joblib")
         self.n_clusters = n_clusters
         self.random_state = random_state
+        self.max_history = max_history
         self._model: KMeans | None = None
         self._scaler: StandardScaler | None = None
         self._current_regime: int | None = None
-        self._regime_history: list[tuple[str, int]] = []
+        # Use deque with maxlen to prevent unbounded memory growth
+        self._regime_history: deque[tuple[str, int]] = deque(maxlen=max_history)
 
     def train(
         self,
@@ -230,7 +238,7 @@ class MarketRegimeDetector:
         Returns:
             List of (timestamp, regime_id) tuples
         """
-        return self._regime_history[-limit:]
+        return list(self._regime_history)[-limit:]
 
     def save_analysis(self, path: Path | None = None) -> None:
         """Save regime analysis to JSON.
@@ -247,7 +255,7 @@ class MarketRegimeDetector:
                 else None
             ),
             "signal_multiplier": self.get_signal_multiplier(),
-            "regime_history": self._regime_history[-100:],
+            "regime_history": list(self._regime_history)[-100:],
             "regime_definitions": {
                 rid: {
                     "name": r.name,

@@ -194,3 +194,35 @@ scheduler:
       enabled: true
       interval_seconds: 600  # 5 minutes
 
+# Data Archival Configuration
+# Archives data before TTL deletion for long-term storage
+archival:
+  enabled: false  # Enable via environment variable or config override
+
+  # Archive schedule (runs via scheduler)
+  schedule: "monthly"  # daily, weekly, monthly
+
+  # Compression settings
+  compression:
+    algorithm: "zstd"
+    level: 3  # 1=fastest, 22=best ratio, 3=balanced
+
+  # Git LFS configuration for archive storage
+  git_lfs:
+    repo_url: "${ARCHIVE_REPO_URL}"  # Set in .env
+    branch: "main"
+    local_cache: "/data/archives/repo"
+
+  # Local cache for archive files before push
+  local_cache: "/data/archives"
+
+  # Collections to archive (matches retention keys)
+  collections:
+    - trader_positions
+    - signals
+    - leaderboard_history
+    - candles
+
+  # Archive data older than retention_days before TTL deletion
+  archive_before_ttl_days: 2  # Archive 2 days before TTL expires
+

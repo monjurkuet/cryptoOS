@@ -1,5 +1,7 @@
 """Whale Alert Detector for detecting large position changes."""
 
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -7,9 +9,16 @@ from typing import Any
 
 import structlog
 
-from signal_system.weighting_engine.engine import TraderWeight
+from signal_system.utils.safe_convert import safe_datetime
 
 logger = structlog.get_logger(__name__)
+
+# TTL for position history (7 days in seconds)
+POSITION_HISTORY_TTL = 604800
+# Maximum alerts to keep in memory
+MAX_ALERTS = 500
+# Maximum recent changes to keep
+MAX_RECENT_CHANGES = 1000
 
 
 class AlertPriority(str, Enum):
@@ -57,6 +66,8 @@ class WhaleAlertDetector:
     - HIGH: 2+ whales change within 5 min
     - MEDIUM: Aggregate whale bias flips
     - LOW: Elite consensus shifts 20%+
+
+    Implements TTL-based cleanup to prevent unbounded memory growth.
     """
 
     def __init__(
@@ -64,6 +75,9 @@ class WhaleAlertDetector:
         alpha_whale_threshold: float = 20_000_000,
         whale_threshold: float = 10_000_000,
         aggregation_window_minutes: int = 5,
+        position_history_ttl: int = POSITION_HISTORY_TTL,
+        max_alerts: int = MAX_ALERTS,
+        max_recent_changes: int = MAX_RECENT_CHANGES,
     ) -> None:
         """Initialize the detector.
 
@@ -71,15 +85,25 @@ class WhaleAlertDetector:
             alpha_whale_threshold: Account value for alpha whale classification
             whale_threshold: Account value for whale classification
             aggregation_window_minutes: Window for aggregating changes
+            position_history_ttl: TTL for position history in seconds
+            max_alerts: Maximum alerts to keep in memory
+            max_recent_changes: Maximum recent changes to keep
         """
         self.alpha_whale_threshold = alpha_whale_threshold
         self.whale_threshold = whale_threshold
         self.aggregation_window = timedelta(minutes=aggregation_window_minutes)
+        self.position_history_ttl = position_history_ttl
+        self.max_alerts = max_alerts
+        self.max_recent_changes = max_recent_changes
 
-        self._position_history: dict[str, dict[str, float]] = {}  # addr -> coin -> szi
-        self._recent_changes: list[PositionChange] = []
-        self._alerts: list[WhaleAlert] = []
-        self._trader_info: dict[str, dict[str, Any]] = {}  # addr -> {name, tier, account_value}
+        # Position history with TTL: addr -> coin -> (szi, timestamp)
+        self._position_history: dict[str, dict[str, tuple[float, float]]] = {}
+        # Bounded recent changes
+        self._recent_changes: deque[PositionChange] = deque(maxlen=max_recent_changes)
+        # Bounded alerts
+        self._alerts: deque[WhaleAlert] = deque(maxlen=max_alerts)
+        # Trader info (active traders only, cleaned up when whale threshold not met)
+        self._trader_info: dict[str, dict[str, Any]] = {}
 
     def update_trader_info(
         self,
@@ -126,11 +150,12 @@ class WhaleAlertDetector:
         if account_value < self.whale_threshold:
             return None
 
-        # Get previous position
+        # Get previous position (now stored as tuple)
         if address not in self._position_history:
             self._position_history[address] = {}
 
-        previous_szi = self._position_history[address].get(coin, 0)
+        prev_entry = self._position_history[address].get(coin)
+        previous_szi = prev_entry[0] if prev_entry else 0.0
 
         # Calculate change
         if previous_szi == 0:
@@ -140,8 +165,8 @@ class WhaleAlertDetector:
 
         # Threshold for significance (10% change or new position)
         if change_pct < 0.1 and not (previous_szi == 0 and current_szi != 0):
-            # Update history even for small changes
-            self._position_history[address][coin] = current_szi
+            # Update history even for small changes (with timestamp)
+            self._position_history[address][coin] = (current_szi, time.time())
             return None
 
         # Create change record
@@ -157,23 +182,43 @@ class WhaleAlertDetector:
             detected_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        # Update history
-        self._position_history[address][coin] = current_szi
+        # Update history (with timestamp)
+        self._position_history[address][coin] = (current_szi, time.time())
         self._recent_changes.append(change)
 
-        # Clean old changes
-        self._clean_old_changes()
+        # Clean old changes and position history
+        self._cleanup()
 
         return change
 
+    def _cleanup(self) -> None:
+        """Remove stale data to prevent unbounded memory growth."""
+        # Clean old changes (outside aggregation window)
+        cutoff = datetime.now(timezone.utc) - self.aggregation_window
+        while self._recent_changes:
+            c = self._recent_changes[0]
+            dt = safe_datetime(c.detected_at)
+            if dt and dt > cutoff:
+                break
+            self._recent_changes.popleft()
+
+        # Clean position history entries older than TTL
+        now = time.time()
+        cutoff_time = now - self.position_history_ttl
+
+        for address in list(self._position_history.keys()):
+            coins = self._position_history[address]
+            for coin in list(coins.keys()):
+                _, timestamp = coins[coin]
+                if timestamp < cutoff_time:
+                    del coins[coin]
+            # Remove address entry if no coins left
+            if not coins:
+                del self._position_history[address]
+
     def _clean_old_changes(self) -> None:
         """Remove changes outside the aggregation window."""
-        cutoff = datetime.now(timezone.utc) - self.aggregation_window
-        self._recent_changes = [
-            c
-            for c in self._recent_changes
-            if datetime.fromisoformat(c.detected_at) > cutoff
-        ]
+        self._cleanup()
 
     def generate_alert(self, change: PositionChange | None = None) -> WhaleAlert | None:
         """Generate alert based on detected changes.
@@ -328,7 +373,7 @@ class WhaleAlertDetector:
         Returns:
             List of WhaleAlert
         """
-        return self._alerts[-limit:]
+        return list(self._alerts)[-limit:]
 
     def get_active_alerts(self) -> list[WhaleAlert]:
         """Get alerts that haven't expired.
@@ -339,7 +384,7 @@ class WhaleAlertDetector:
         now = datetime.now(timezone.utc)
         return [
             a for a in self._alerts
-            if datetime.fromisoformat(a.expires_at) > now
+            if safe_datetime(a.expires_at) and safe_datetime(a.expires_at) > now
         ]
 
     def get_stats(self) -> dict[str, Any]:

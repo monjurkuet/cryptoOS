@@ -3,6 +3,7 @@
 """Hyperliquid API client."""
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
@@ -77,7 +78,7 @@ class HyperliquidClient:
                 async with self._rate_limit_lock:
                     # Apply rate limiting
                     if self._last_request_time is not None:
-                        elapsed = asyncio.get_event_loop().time() - self._last_request_time
+                        elapsed = time.time() - self._last_request_time
                         if elapsed < 0.1:  # Max 10 requests per second
                             await asyncio.sleep(0.1 - elapsed)
 
@@ -86,7 +87,7 @@ class HyperliquidClient:
                         url=endpoint,
                         json=json_data,
                     )
-                    self._last_request_time = asyncio.get_event_loop().time()
+                    self._last_request_time = time.time()
 
                 response.raise_for_status()
                 return response.json()

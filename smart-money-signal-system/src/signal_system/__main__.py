@@ -12,10 +12,12 @@ import uvicorn
 from signal_system.config import get_settings
 from signal_system.event_subscriber import EventSubscriber
 from signal_system.signal_generation.processor import SignalGenerationProcessor
+from signal_system.signal_store import SignalStore
 from signal_system.weighting_engine.engine import TraderWeightingEngine
 from signal_system.whale_alerts.detector import WhaleAlertDetector
 from signal_system.ml.regime_detection import MarketRegimeDetector
 from signal_system.ml.feature_importance import FeatureImportanceAnalyzer
+from signal_system.services.event_processor import EventProcessor
 from signal_system.api.main import app
 
 logger = structlog.get_logger(__name__)
@@ -31,8 +33,17 @@ class SignalSystem:
         # Core components
         self.event_subscriber = EventSubscriber(self.settings.redis)
         self.signal_processor = SignalGenerationProcessor(symbol=self.settings.symbol)
+        self.signal_store = SignalStore()
         self.weighting_engine = TraderWeightingEngine()
         self.whale_detector = WhaleAlertDetector()
+
+        # Shared event processor
+        self.event_processor = EventProcessor(
+            signal_processor=self.signal_processor,
+            whale_detector=self.whale_detector,
+            signal_store=self.signal_store,
+            settings=self.settings,
+        )
 
         # ML components (optional, lazy-loaded)
         self._regime_detector: MarketRegimeDetector | None = None
@@ -72,13 +83,13 @@ class SignalSystem:
 
     def _register_handlers(self) -> None:
         """Register event handlers for different event types."""
-        # Handle trader position updates
+        # Handle trader position updates via EventProcessor
         async def handle_trader_positions(event: dict) -> None:
-            await self._process_position_event(event)
+            await self.event_processor.handle_position_event(event)
 
-        # Handle leaderboard/scored traders
+        # Handle leaderboard/scored traders via EventProcessor
         async def handle_scored_traders(event: dict) -> None:
-            await self._process_scored_traders(event)
+            await self.event_processor.handle_scored_traders(event)
 
         # Handle candles for regime detection
         async def handle_candles(event: dict) -> None:
@@ -87,72 +98,6 @@ class SignalSystem:
         self.event_subscriber.subscribe("trader_positions", handle_trader_positions)
         self.event_subscriber.subscribe("scored_traders", handle_scored_traders)
         self.event_subscriber.subscribe("candles", handle_candles)
-
-    async def _process_position_event(self, event: dict) -> None:
-        """Process trader position event.
-
-        Args:
-            event: Raw event from market-scraper
-        """
-        try:
-            # Update trader info for whale detection
-            payload = event.get("payload", {})
-            address = payload.get("address")
-
-            if address:
-                # Extract account value from position
-                account_value = float(payload.get("accountValue", 0))
-                positions = payload.get("positions", [])
-
-                # Update whale detector with trader info
-                self.whale_detector.update_trader_info(
-                    address=address,
-                    account_value=account_value,
-                )
-
-                # Check for whale alerts on BTC positions
-                for pos in positions:
-                    pos_data = pos.get("position", pos)
-                    if pos_data.get("coin") == self.settings.symbol:
-                        szi = float(pos_data.get("szi", 0))
-                        change = self.whale_detector.detect_position_change(
-                            address=address,
-                            coin=self.settings.symbol,
-                            current_szi=szi,
-                        )
-                        if change:
-                            alert = self.whale_detector.generate_alert(change)
-                            if alert:
-                                logger.info(
-                                    "whale_alert_generated",
-                                    priority=alert.priority.value,
-                                    title=alert.title,
-                                )
-
-            # Generate signal
-            signal = await self.signal_processor.process_position(event)
-            if signal:
-                logger.info(
-                    "signal_generated",
-                    action=signal["action"],
-                    confidence=signal["confidence"],
-                    net_bias=signal["net_bias"],
-                )
-
-        except Exception as e:
-            logger.error("position_processing_error", error=str(e), exc_info=True)
-
-    async def _process_scored_traders(self, event: dict) -> None:
-        """Process scored traders event.
-
-        Args:
-            event: Event containing trader scores
-        """
-        try:
-            await self.signal_processor.process_scored_traders(event)
-            logger.debug("scored_traders_processed")
-        except Exception as e:
-            logger.error("scored_traders_error", error=str(e), exc_info=True)
 
     async def _process_candles(self, event: dict) -> None:
         """Process candle data for regime detection.

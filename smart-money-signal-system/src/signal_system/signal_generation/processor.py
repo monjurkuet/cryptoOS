@@ -1,24 +1,47 @@
 """Signal Generation Processor."""
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 import structlog
 
+from signal_system.utils.safe_convert import safe_float
+
 logger = structlog.get_logger(__name__)
+
+# Default TTL for trader data (24 hours in seconds)
+TRADER_TTL_SECONDS = 86400
+# Maximum number of traders to track
+MAX_TRACKED_TRADERS = 10000
 
 
 class SignalGenerationProcessor:
-    """Generates trading signals from trader position data."""
+    """Generates trading signals from trader position data.
 
-    def __init__(self, symbol: str = "BTC") -> None:
+    Implements TTL-based cleanup to prevent unbounded memory growth.
+    Traders that haven't been updated in 24 hours are automatically removed.
+    """
+
+    def __init__(
+        self,
+        symbol: str = "BTC",
+        trader_ttl_seconds: int = TRADER_TTL_SECONDS,
+        max_traders: int = MAX_TRACKED_TRADERS,
+    ) -> None:
         """Initialize the processor.
 
         Args:
             symbol: Trading symbol to generate signals for
+            trader_ttl_seconds: TTL for trader data in seconds
+            max_traders: Maximum number of traders to track
         """
         self.symbol = symbol
-        self._trader_positions: dict[str, dict] = {}
+        self._trader_ttl = trader_ttl_seconds
+        self._max_traders = max_traders
+
+        # State with TTL tracking: address -> (data, last_access_time)
+        self._trader_positions: dict[str, tuple[dict, float]] = {}
         self._trader_scores: dict[str, float] = {}
         self._last_signal: dict | None = None
         self._signals_generated = 0
@@ -38,8 +61,11 @@ class SignalGenerationProcessor:
         if not address:
             return None
 
-        # Store position
-        self._trader_positions[address] = payload
+        # Store position with timestamp
+        self._trader_positions[address] = (payload, time.time())
+
+        # Cleanup stale traders periodically
+        self._cleanup_stale_traders()
 
         # Generate signal
         return self._generate_signal()
@@ -59,6 +85,42 @@ class SignalGenerationProcessor:
             if address:
                 self._trader_scores[address] = score
 
+    def _cleanup_stale_traders(self) -> None:
+        """Remove traders that haven't been updated recently.
+
+        Called on each position update to ensure memory doesn't grow unbounded.
+        """
+        now = time.time()
+        cutoff = now - self._trader_ttl
+
+        # Remove stale traders
+        stale_addresses = [
+            addr for addr, (_, last_access) in self._trader_positions.items()
+            if last_access < cutoff
+        ]
+
+        for addr in stale_addresses:
+            del self._trader_positions[addr]
+            # Also remove scores for stale traders
+            self._trader_scores.pop(addr, None)
+
+        if stale_addresses:
+            logger.debug(
+                "trader_cleanup",
+                removed=len(stale_addresses),
+                remaining=len(self._trader_positions),
+            )
+
+        # Enforce max size limit (LRU eviction)
+        if len(self._trader_positions) > self._max_traders:
+            sorted_items = sorted(
+                self._trader_positions.items(),
+                key=lambda x: x[1][1],  # Sort by last_access time
+            )
+            for addr, _ in sorted_items[:len(self._trader_positions) - self._max_traders]:
+                del self._trader_positions[addr]
+                self._trader_scores.pop(addr, None)
+
     def _generate_signal(self) -> dict | None:
         """Generate aggregated signal.
 
@@ -74,7 +136,7 @@ class SignalGenerationProcessor:
         traders_long = 0
         traders_short = 0
 
-        for address, position in self._trader_positions.items():
+        for address, (position, _) in self._trader_positions.items():
             score = self._trader_scores.get(address, 50)
             weight = score / 100
 
@@ -89,7 +151,7 @@ class SignalGenerationProcessor:
                     break
 
             if btc_position:
-                szi = float(btc_position.get("szi", 0))
+                szi = safe_float(btc_position.get("szi"), 0)
 
                 if szi > 0:
                     long_score += weight

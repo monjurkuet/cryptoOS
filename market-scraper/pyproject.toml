@@ -39,6 +39,7 @@ dependencies = [
     "websockets>=12.0",
     "pydantic-settings>=2.13.0",
     "prometheus-client>=0.24.1",
+    "zstandard>=0.21.0",
 ]
 
 [project.optional-dependencies]

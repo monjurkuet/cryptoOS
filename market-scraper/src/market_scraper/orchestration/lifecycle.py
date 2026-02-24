@@ -3,6 +3,7 @@
 """Lifecycle manager for orchestrating all system components."""
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -177,11 +178,11 @@ class LifecycleManager:
         Returns:
             True if ready, False if timeout or error.
         """
-        start_time = asyncio.get_event_loop().time()
+        start_time = time.time()
         while not self._startup_complete:
             if self._startup_error:
                 return False
-            if asyncio.get_event_loop().time() - start_time > timeout:
+            if time.time() - start_time > timeout:
                 return False
             await asyncio.sleep(0.1)
         return True

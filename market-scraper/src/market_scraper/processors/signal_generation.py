@@ -6,6 +6,7 @@ Generates trading signals from aggregated trader position data.
 Calculates long/short bias, net exposure, and recommendations.
 """
 
+import time
 from typing import Any
 
 import structlog
@@ -14,8 +15,14 @@ from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
 from market_scraper.processors.base import Processor
+from market_scraper.utils.safe_convert import safe_float
 
 logger = structlog.get_logger(__name__)
+
+# Default TTL for trader data (24 hours in seconds)
+TRADER_TTL_SECONDS = 86400
+# Maximum number of traders to track
+MAX_TRACKED_TRADERS = 10000
 
 
 def determine_recommendation(long_bias: float, short_bias: float) -> str:
@@ -78,25 +85,34 @@ class SignalGenerationProcessor(Processor):
     - Net exposure
     - Trading recommendation
     - Confidence score
+
+    Implements TTL-based cleanup to prevent unbounded memory growth.
+    Traders that haven't been updated in 24 hours are automatically removed.
     """
 
     def __init__(
         self,
         event_bus: EventBus,
         config: HyperliquidSettings | None = None,
+        trader_ttl_seconds: int = TRADER_TTL_SECONDS,
+        max_traders: int = MAX_TRACKED_TRADERS,
     ) -> None:
         """Initialize the processor.
 
         Args:
             event_bus: Event bus for publishing events
             config: Optional Hyperliquid settings
+            trader_ttl_seconds: TTL for trader data in seconds
+            max_traders: Maximum number of traders to track
         """
         super().__init__(event_bus)
         self._config = config
         self._symbol = config.symbol if config else "BTC"
+        self._trader_ttl = trader_ttl_seconds
+        self._max_traders = max_traders
 
-        # State tracking
-        self._trader_states: dict[str, dict[str, Any]] = {}
+        # State tracking with TTL: address -> (state, last_access_time)
+        self._trader_states: dict[str, tuple[dict[str, Any], float]] = {}
         self._trader_scores: dict[str, float] = {}
         self._current_price: float = 0.0
         self._last_signal: dict[str, Any] | None = None
@@ -143,7 +159,11 @@ class SignalGenerationProcessor(Processor):
         if not address:
             return
 
-        self._trader_states[address] = payload
+        # Store with timestamp for TTL tracking
+        self._trader_states[address] = (payload, time.time())
+
+        # Cleanup stale traders periodically
+        self._cleanup_stale_traders()
 
     async def _update_trader_scores(self, event: StandardEvent) -> None:
         """Update trader scores.
@@ -161,6 +181,41 @@ class SignalGenerationProcessor(Processor):
             score = trader.get("score", 50)
             if address:
                 self._trader_scores[address] = score
+
+    def _cleanup_stale_traders(self) -> None:
+        """Remove traders that haven't been updated recently.
+
+        Called on each position update to ensure memory doesn't grow unbounded.
+        """
+        now = time.time()
+        cutoff = now - self._trader_ttl
+
+        # Remove stale traders
+        stale_addresses = [
+            addr for addr, (_, last_access) in self._trader_states.items()
+            if last_access < cutoff
+        ]
+
+        for addr in stale_addresses:
+            del self._trader_states[addr]
+            self._trader_scores.pop(addr, None)
+
+        if stale_addresses:
+            logger.debug(
+                "trader_cleanup",
+                removed=len(stale_addresses),
+                remaining=len(self._trader_states),
+            )
+
+        # Enforce max size limit (LRU eviction)
+        if len(self._trader_states) > self._max_traders:
+            sorted_items = sorted(
+                self._trader_states.items(),
+                key=lambda x: x[1][1],  # Sort by last_access time
+            )
+            for addr, _ in sorted_items[:len(self._trader_states) - self._max_traders]:
+                del self._trader_states[addr]
+                self._trader_scores.pop(addr, None)
 
     async def _update_price(self, event: StandardEvent) -> None:
         """Update current price.
@@ -189,7 +244,7 @@ class SignalGenerationProcessor(Processor):
         traders_flat = 0
         net_exposure = 0.0
 
-        for address, state in self._trader_states.items():
+        for address, (state, _) in self._trader_states.items():
             score = self._trader_scores.get(address, 50)
             weight = score / 100  # Normalize to 0-1
 
@@ -206,7 +261,7 @@ class SignalGenerationProcessor(Processor):
                     break
 
             if target_position:
-                szi = float(target_position.get("szi", 0))
+                szi = safe_float(target_position.get("szi"), 0)
 
                 # Weighted exposure
                 exposure = szi * weight

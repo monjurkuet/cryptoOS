@@ -1,9 +1,8 @@
 """API Routes for signals and alerts."""
 
-from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from signal_system.api.dependencies import get_signal_processor, get_whale_detector, get_signal_store

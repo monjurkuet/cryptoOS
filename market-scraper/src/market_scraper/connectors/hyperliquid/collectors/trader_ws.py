@@ -32,11 +32,17 @@ class TraderWebSocketCollector:
     - BTC-only filtering (configurable)
     - Auto-reconnect with exponential backoff
     - Batch processing with message buffer
+    - TTL-based cleanup to prevent unbounded memory growth
 
     Storage Optimization: 85% reduction through event-driven saves
     """
 
     WS_URL = "wss://api.hyperliquid.xyz/ws"
+
+    # TTL for position state (24 hours)
+    POSITION_STATE_TTL = 86400
+    # Max tracked positions
+    MAX_TRACKED_POSITIONS = 1000
 
     def __init__(
         self,
@@ -66,7 +72,8 @@ class TraderWebSocketCollector:
         self._running = False
         self._tracked_traders: list[str] = []
 
-        # Event-driven optimization: Track last saved state per trader
+        # Event-driven optimization: Track last saved state per trader with TTL
+        # address -> {positions, normalized, timestamp}
         self._last_positions: dict[str, dict] = {}
         self._position_max_interval = config.position_max_interval
 
@@ -326,6 +333,35 @@ class TraderWebSocketCollector:
 
         return last_normalized != current_normalized
 
+    def _cleanup_stale_positions(self) -> None:
+        """Remove stale position entries to prevent unbounded memory growth."""
+        now = time.time()
+        cutoff = now - self.POSITION_STATE_TTL
+
+        stale_addresses = [
+            addr for addr, data in self._last_positions.items()
+            if data.get("timestamp", 0) < cutoff
+        ]
+
+        for addr in stale_addresses:
+            del self._last_positions[addr]
+
+        # Enforce max size
+        if len(self._last_positions) > self.MAX_TRACKED_POSITIONS:
+            sorted_items = sorted(
+                self._last_positions.items(),
+                key=lambda x: x[1].get("timestamp", 0),
+            )
+            for addr, _ in sorted_items[:len(self._last_positions) - self.MAX_TRACKED_POSITIONS]:
+                del self._last_positions[addr]
+
+        if stale_addresses:
+            logger.debug(
+                "position_state_cleanup",
+                removed=len(stale_addresses),
+                remaining=len(self._last_positions),
+            )
+
     async def _flush_messages(self) -> None:
         """Flush buffered messages and emit events."""
         async with self._buffer_lock:
@@ -334,6 +370,9 @@ class TraderWebSocketCollector:
 
             messages = self._message_buffer.copy()
             self._message_buffer.clear()
+
+        # Cleanup stale position state periodically
+        self._cleanup_stale_positions()
 
         events = []
         webdata_count = 0

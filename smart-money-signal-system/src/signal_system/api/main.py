@@ -15,6 +15,7 @@ from signal_system.event_subscriber import EventSubscriber
 from signal_system.signal_generation.processor import SignalGenerationProcessor
 from signal_system.signal_store import SignalStore
 from signal_system.whale_alerts.detector import WhaleAlertDetector
+from signal_system.services.event_processor import EventProcessor
 
 logger = structlog.get_logger(__name__)
 
@@ -23,13 +24,14 @@ _event_subscriber: EventSubscriber | None = None
 _signal_processor: SignalGenerationProcessor | None = None
 _whale_detector: WhaleAlertDetector | None = None
 _signal_store: SignalStore | None = None
+_event_processor: EventProcessor | None = None
 _subscriber_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan."""
-    global _event_subscriber, _signal_processor, _whale_detector, _signal_store, _subscriber_task
+    global _event_subscriber, _signal_processor, _whale_detector, _signal_store, _event_processor, _subscriber_task
 
     settings = get_settings()
 
@@ -41,6 +43,14 @@ async def lifespan(app: FastAPI):
     # Setup event subscriber
     _event_subscriber = EventSubscriber(settings.redis)
 
+    # Create shared event processor
+    _event_processor = EventProcessor(
+        signal_processor=_signal_processor,
+        whale_detector=_whale_detector,
+        signal_store=_signal_store,
+        settings=settings,
+    )
+
     # Set components for dependency injection
     set_components(
         signal_processor=_signal_processor,
@@ -49,53 +59,12 @@ async def lifespan(app: FastAPI):
         signal_store=_signal_store,
     )
 
-    # Register handlers
+    # Register handlers using EventProcessor
     async def handle_position(event: dict) -> None:
-        payload = event.get("payload", {})
-        address = payload.get("address")
-
-        if address:
-            account_value = float(payload.get("accountValue", 0))
-            positions = payload.get("positions", [])
-
-            # Update whale detector with trader info
-            if _whale_detector:
-                _whale_detector.update_trader_info(
-                    address=address,
-                    account_value=account_value,
-                )
-
-                # Check for whale alerts on BTC positions
-                for pos in positions:
-                    pos_data = pos.get("position", pos)
-                    if pos_data.get("coin") == settings.symbol:
-                        szi = float(pos_data.get("szi", 0))
-                        change = _whale_detector.detect_position_change(
-                            address=address,
-                            coin=settings.symbol,
-                            current_szi=szi,
-                        )
-                        if change:
-                            alert = _whale_detector.generate_alert(change)
-                            if alert:
-                                logger.info(
-                                    "whale_alert_generated",
-                                    priority=alert.priority.value,
-                                    title=alert.title,
-                                )
-
-        # Generate signal
-        if _signal_processor:
-            signal = await _signal_processor.process_position(event)
-            if signal:
-                # Store the signal
-                if _signal_store:
-                    _signal_store.store_signal(signal)
-                logger.info("signal_generated", signal=signal)
+        await _event_processor.handle_position_event(event)
 
     async def handle_scored_traders(event: dict) -> None:
-        if _signal_processor:
-            await _signal_processor.process_scored_traders(event)
+        await _event_processor.handle_scored_traders(event)
 
     _event_subscriber.subscribe("trader_positions", handle_position)
     _event_subscriber.subscribe("scored_traders", handle_scored_traders)
