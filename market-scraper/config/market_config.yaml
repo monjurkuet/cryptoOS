@@ -196,14 +196,13 @@ scheduler:
 
     # Data archival - archive data before TTL deletion
     archival:
-      enabled: false  # Enable via ARCHIVE_REPO_URL env var
+      enabled: true  # Enabled - ARCHIVE_REPO_URL is set in .env
       interval_seconds: 2592000  # 30 days (monthly)
-      # Note: Requires ARCHIVE_REPO_URL environment variable to be set
 
 # Data Archival Configuration
 # Archives data before TTL deletion for long-term storage
 archival:
-  enabled: false  # Enable via environment variable or config override
+  enabled: true  # Enabled - ARCHIVE_REPO_URL is set in .env
 
   # Archive schedule (runs via scheduler)
   schedule: "monthly"  # daily, weekly, monthly
