@@ -9,20 +9,60 @@ This guide covers deploying the Market Scraper Framework in production.
 - Redis 7+
 - uv (Python package manager)
 
+## Deployment Options
+
+| Method | Use Case | Complexity |
+|--------|----------|------------|
+| **Bash Scripts** | Development, testing | Low |
+| **systemd Services** | Production servers | Medium |
+| **Manual** | One-off runs, debugging | Low |
+
 ## Quick Start
 
+### Option 1: Bash Scripts (Recommended for Development)
+
+From the project root directory:
+
 ```bash
-# Install dependencies
+# Start both servers in background
+./scripts/start-all.sh --background
+
+# Check status
+./scripts/status.sh
+
+# View logs
+tail -f logs/market-scraper.log
+
+# Stop all servers
+./scripts/stop-all.sh
+```
+
+### Option 2: systemd Services (Recommended for Production)
+
+```bash
+# Install service files
+sudo cp systemd/market-scraper.service /etc/systemd/system/
+sudo cp systemd/signal-system.service /etc/systemd/system/
+
+# Reload systemd
+sudo systemctl daemon-reload
+
+# Enable and start
+sudo systemctl enable market-scraper.service signal-system.service
+sudo systemctl start market-scraper.service
+
+# Check status
+sudo systemctl status market-scraper.service
+```
+
+### Option 3: Manual Start
+
+```bash
+cd market-scraper
 uv sync
-
-# Copy environment template
 cp .env.example .env
-
-# Edit environment variables
-vim .env
-
-# Run the server
-./run_server.sh
+vim .env  # Edit configuration
+uv run python -m market_scraper server
 ```
 
 ## Environment Configuration
@@ -56,48 +96,67 @@ API_PORT=8000
 
 ## Production Deployment
 
-### Using systemd
+### Using systemd (Recommended)
 
-Create a systemd service file:
+Pre-configured systemd service files are provided in the `systemd/` directory:
 
 ```bash
+# Copy service files
+sudo cp systemd/market-scraper.service /etc/systemd/system/
+sudo cp systemd/signal-system.service /etc/systemd/system/
+
+# Review and customize if needed
 sudo vim /etc/systemd/system/market-scraper.service
-```
 
-```ini
-[Unit]
-Description=Market Scraper API
-After=network.target mongodb.service redis.service
-
-[Service]
-Type=simple
-User=market
-Group=market
-WorkingDirectory=/opt/market-scraper
-Environment="PATH=/opt/market-scraper/.venv/bin"
-ExecStart=/opt/market-scraper/.venv/bin/uvicorn market_scraper.api:app --host 0.0.0.0 --port 8000
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
+# Reload systemd daemon
 sudo systemctl daemon-reload
-sudo systemctl enable market-scraper
-sudo systemctl start market-scraper
+
+# Enable services (start on boot)
+sudo systemctl enable market-scraper.service
+sudo systemctl enable signal-system.service
+
+# Start services
+sudo systemctl start market-scraper.service
+sudo systemctl start signal-system.service
+
+# Check status
+sudo systemctl status market-scraper.service
+sudo systemctl status signal-system.service
 ```
 
-### Using the run script
+#### Service Configuration
 
-The `run_server.sh` script handles startup:
+The default service files include:
+
+- **Auto-restart** on failure (5 second delay)
+- **Resource limits**: 1GB memory, 80% CPU for market-scraper
+- **Logging**: stdout/stderr to journal and log files
+- **Graceful shutdown**: 30 second timeout
+- **Security hardening**: Read-only home, restricted privileges
+
+To customize, edit the service files before copying or use systemd overrides:
 
 ```bash
-./run_server.sh
+sudo systemctl edit market-scraper.service
 ```
+
+#### Managing Services
+
+```bash
+# Restart
+sudo systemctl restart market-scraper.service
+
+# Stop
+sudo systemctl stop market-scraper.service
+
+# View logs
+sudo journalctl -u market-scraper.service -f
+
+# View recent errors
+sudo journalctl -u market-scraper.service -p err -n 50
+```
+
+See [systemd/README.md](../../systemd/README.md) for complete documentation.
 
 ## Monitoring
 

@@ -2,9 +2,25 @@
 
 Production systemd service definitions for CryptoData platform.
 
+## Overview
+
+This directory contains systemd service files for running the CryptoData platform in production:
+
+- **market-scraper.service**: Real-time market data collection and API (port 8000)
+- **signal-system.service**: Smart money signal generation (port 4341)
+
+### Features
+
+- ✅ Automatic restart on failure
+- ✅ Boot-time startup
+- ✅ Centralized logging via `journalctl`
+- ✅ Resource limits (memory, CPU)
+- ✅ Graceful shutdown handling
+- ✅ Security hardening
+
 ## Installation
 
-### 1. Copy service files to systemd directory
+### 1. Copy service files
 
 ```bash
 sudo cp /home/muham/development/cryptodata/systemd/market-scraper.service /etc/systemd/system/
@@ -29,6 +45,18 @@ sudo systemctl enable signal-system.service
 ```bash
 sudo systemctl start market-scraper.service
 sudo systemctl start signal-system.service
+```
+
+### 5. Verify installation
+
+```bash
+# Check status
+sudo systemctl status market-scraper.service
+sudo systemctl status signal-system.service
+
+# Test API endpoints
+curl http://localhost:8000/health
+curl http://localhost:4341/health
 ```
 
 ## Management Commands
@@ -80,6 +108,38 @@ market-scraper.service
     └── Wants: mongodb.service, redis.service
     └── After: network.target, mongodb.service, redis.service
 ```
+
+## Alternative: Bash Scripts
+
+For development or non-systemd environments, use the provided bash scripts:
+
+```bash
+# Start both servers in background
+./scripts/start-all.sh --background
+
+# Check status
+./scripts/status.sh
+
+# View logs
+tail -f logs/market-scraper.log
+tail -f logs/signal-system.log
+
+# Stop all servers
+./scripts/stop-all.sh
+```
+
+Bash scripts are suitable for:
+- Development environments
+- Testing deployments
+- Systems without systemd
+- Quick manual starts
+
+systemd services are recommended for:
+- Production servers
+- Automatic restart on crash
+- Boot-time startup
+- Centralized logging
+- Resource management
 
 ## Resource Limits
 

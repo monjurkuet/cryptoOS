@@ -134,6 +134,22 @@ cp .env.example .env
 
 ### Running the Server
 
+#### Quick Start (from project root)
+
+```bash
+# Start both servers (market-scraper + signal-system)
+cd /home/muham/development/cryptodata
+./scripts/start-all.sh --background
+
+# Check status
+./scripts/status.sh
+
+# Stop all servers
+./scripts/stop-all.sh
+```
+
+#### Manual Start
+
 ```bash
 # Start with default settings (BTC)
 uv run python -m market_scraper server
@@ -147,6 +163,24 @@ uv run python -m market_scraper server --no-collectors
 # Custom host/port
 uv run python -m market_scraper server --host 0.0.0.0 --port 8080
 ```
+
+#### Production (systemd)
+
+```bash
+# Install service (from project root)
+sudo cp systemd/market-scraper.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable market-scraper.service
+sudo systemctl start market-scraper.service
+
+# Check status
+sudo systemctl status market-scraper.service
+
+# View logs
+sudo journalctl -u market-scraper.service -f
+```
+
+See [systemd/README.md](../systemd/README.md) for detailed instructions.
 
 ### CLI Commands
 

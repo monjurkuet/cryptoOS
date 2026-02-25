@@ -29,6 +29,7 @@ Complete documentation for the Market Scraper v2 system.
 | [Quick Start](docs/guides/quickstart.md) | Get up and running in minutes |
 | [Development Guide](docs/guides/development.md) | Testing, contributing, and development setup |
 | [Deployment Guide](docs/guides/deployment.md) | Production deployment strategies |
+| [systemd/README.md](../systemd/README.md) | systemd service installation and management |
 
 ---
 

@@ -129,6 +129,19 @@ SYMBOL=BTC
 
 ### Running
 
+#### Quick Start (from project root)
+
+```bash
+# Start both servers together
+cd /home/muham/development/cryptodata
+./scripts/start-all.sh --background
+
+# Check status
+./scripts/status.sh
+```
+
+#### Manual Start
+
 ```bash
 # Run API server with event processing
 uv run python -m signal_system
@@ -136,6 +149,24 @@ uv run python -m signal_system
 # Or run in server-only mode
 uv run python -m signal_system server
 ```
+
+#### Production (systemd)
+
+```bash
+# Install service (from project root)
+sudo cp systemd/signal-system.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable signal-system.service
+sudo systemctl start signal-system.service
+
+# Check status
+sudo systemctl status signal-system.service
+
+# View logs
+sudo journalctl -u signal-system.service -f
+```
+
+See [systemd/README.md](../systemd/README.md) for detailed instructions.
 
 ### Development
 

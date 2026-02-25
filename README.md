@@ -45,10 +45,19 @@ API documentation and scripts for cryptocurrency data providers.
 │  :8000 API      │                       │  :4341 API          │
 │  :8000 WS       │                       │                     │
 └─────────────────┘                       └─────────────────────┘
-        │
-        ▼
-   MongoDB
+        │                                         │
+        ▼                                         ▼
+   MongoDB                                   SignalStore
+   (signals collection)                     (in-memory cache)
 ```
+
+### Data Flow
+
+1. **market-scraper** collects trader positions → publishes to Redis
+2. **signal-system** subscribes to Redis events
+3. **signal-system** generates signals → stores in SignalStore + publishes back to Redis
+4. **market-scraper** receives signals → saves to MongoDB `signals` collection
+5. Both APIs serve data from their respective storage
 
 ## Quick Start
 
@@ -59,25 +68,55 @@ API documentation and scripts for cryptocurrency data providers.
 - Redis
 - uv package manager
 
-### Run market-scraper
+### Option 1: Quick Start (Development)
+
+Start both servers with a single command:
 
 ```bash
+# Start both servers in background
+./scripts/start-all.sh --background
+
+# Check status
+./scripts/status.sh
+
+# View logs
+tail -f logs/market-scraper.log
+tail -f logs/signal-system.log
+
+# Stop all servers
+./scripts/stop-all.sh
+```
+
+### Option 2: Manual Start
+
+```bash
+# Terminal 1 - market-scraper
 cd market-scraper
 uv sync
-cp .env.example .env
-# Edit .env with MongoDB/Redis URLs
 uv run python -m market_scraper server
-```
 
-### Run signal-system
-
-```bash
+# Terminal 2 - signal-system
 cd smart-money-signal-system
 uv sync
-cp .env.example .env
-# Edit .env with Redis URL
-uv run python -m signal_system
+uv run python -m signal_system server
 ```
+
+### Option 3: Production (systemd)
+
+```bash
+# Install systemd services
+sudo cp systemd/*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# Enable and start
+sudo systemctl enable market-scraper.service signal-system.service
+sudo systemctl start market-scraper.service
+
+# Check status
+sudo systemctl status market-scraper.service signal-system.service
+```
+
+See [systemd/README.md](systemd/README.md) for detailed instructions.
 
 ## Technologies
 
@@ -94,6 +133,37 @@ uv run python -m signal_system
 | Validation | pydantic |
 | Logging | structlog |
 | Testing | pytest |
+
+## Project Structure
+
+```
+cryptodata/
+├── market-scraper/              # Market data collection
+│   ├── src/market_scraper/      # Main source code
+│   ├── scripts/                 # Utility scripts
+│   ├── tests/                   # Test suite
+│   └── docs/                    # Documentation
+├── smart-money-signal-system/   # Signal generation
+│   ├── src/signal_system/       # Main source code
+│   └── tests/                   # Test suite
+├── data-sources/                # API documentation
+├── scripts/                     # Deployment scripts
+│   ├── start-all.sh             # Start all servers
+│   ├── stop-all.sh              # Stop all servers
+│   └── status.sh                # Check server status
+└── systemd/                     # Production services
+    ├── market-scraper.service   # systemd unit file
+    └── signal-system.service    # systemd unit file
+```
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [market-scraper/README.md](market-scraper/README.md) | Market scraper features and API |
+| [smart-money-signal-system/README.md](smart-money-signal-system/README.md) | Signal system features and API |
+| [systemd/README.md](systemd/README.md) | Production deployment with systemd |
+| [market-scraper/docs/guides/deployment.md](market-scraper/docs/guides/deployment.md) | Detailed deployment guide |
 
 ## License
 
