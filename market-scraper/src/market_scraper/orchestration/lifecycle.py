@@ -25,6 +25,7 @@ from market_scraper.processors.signal_generation import SignalGenerationProcesso
 from market_scraper.processors.trader_scoring import TraderScoringProcessor
 from market_scraper.storage.base import DataRepository
 from market_scraper.storage.memory_repository import MemoryRepository
+from market_scraper.storage.models import TradingSignal
 from market_scraper.storage.mongo_repository import MongoRepository
 
 logger = structlog.get_logger(__name__)
@@ -329,7 +330,13 @@ class LifecycleManager:
 
             if self._repository:
                 try:
+                    # Store in events collection
                     await self._repository.store(event)
+
+                    # Also store trading signals in signals collection
+                    if event.event_type == "trading_signal":
+                        await self._store_trading_signal(event)
+
                 except Exception as e:
                     logger.error(
                         "storage_handler_error",
@@ -339,6 +346,38 @@ class LifecycleManager:
 
         # Subscribe to all events
         await self._event_bus.subscribe("*", storage_handler)
+
+    async def _store_trading_signal(self, event: StandardEvent) -> None:
+        """Store a trading signal in the signals collection.
+
+        Args:
+            event: Trading signal event to store.
+        """
+        if not self._repository or not isinstance(self._repository, MongoRepository):
+            return
+
+        payload = event.payload
+        if not isinstance(payload, dict):
+            return
+
+        try:
+            signal = TradingSignal(
+                t=event.timestamp,
+                symbol=payload.get("symbol", "BTC"),
+                rec=payload.get("recommendation", "NEUTRAL"),
+                conf=payload.get("confidence", 0),
+                long_bias=payload.get("longBias", 0),
+                short_bias=payload.get("shortBias", 0),
+                net_exp=payload.get("netExposure", 0),
+                t_long=payload.get("tradersLong", 0),
+                t_short=payload.get("tradersShort", 0),
+                t_flat=payload.get("tradersFlat", 0),
+                price=payload.get("price", 0),
+            )
+            await self._repository.store_signal(signal)
+            logger.debug("trading_signal_stored", symbol=signal.symbol, rec=signal.rec)
+        except Exception as e:
+            logger.error("trading_signal_store_error", error=str(e))
 
     async def _run_candle_backfill(self) -> None:
         """Run historical candle backfill on startup."""
