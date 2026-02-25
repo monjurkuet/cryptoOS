@@ -140,7 +140,9 @@ def main() -> None:
     # Determine collections to archive
     if args.all:
         market_config = load_market_config()
-        collections = list(market_config.storage.retention.keys())
+        # Get collection names from RetentionConfig class
+        from market_scraper.config.market_config import RetentionConfig
+        collections = list(RetentionConfig.model_fields.keys())
     else:
         collections = args.collections
 
