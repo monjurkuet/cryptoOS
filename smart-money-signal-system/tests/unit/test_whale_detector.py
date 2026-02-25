@@ -204,13 +204,9 @@ class TestWhaleAlertDetector:
         detector = WhaleAlertDetector()
         detector.update_trader_info("0xwhale1", account_value=15_000_000)
 
-        # Generate an alert
+        # Generate an alert (generate_alert stores it automatically)
         change = detector.detect_position_change("0xwhale1", "BTC", 100.0)
         alert = detector.generate_alert(change)
-
-        # Store the alert manually (normally done by caller)
-        if alert:
-            detector._alerts.append(alert)
 
         recent = detector.get_recent_alerts(limit=10)
 
@@ -223,12 +219,9 @@ class TestWhaleAlertDetector:
         detector = WhaleAlertDetector()
         detector.update_trader_info("0xwhale1", account_value=15_000_000)
 
-        # Generate an alert
+        # Generate an alert (generate_alert stores it automatically)
         change = detector.detect_position_change("0xwhale1", "BTC", 100.0)
         alert = detector.generate_alert(change)
-
-        if alert:
-            detector._alerts.append(alert)
 
         active = detector.get_active_alerts()
 
@@ -239,14 +232,13 @@ class TestWhaleAlertDetector:
         detector = WhaleAlertDetector()
         detector.update_trader_info("0xwhale1", account_value=15_000_000)
 
-        # Generate an alert
+        # Generate an alert (generate_alert stores it automatically)
         change = detector.detect_position_change("0xwhale1", "BTC", 100.0)
         alert = detector.generate_alert(change)
 
         if alert:
-            # Manually set expired time
+            # Manually set expired time on the already-stored alert
             alert.expires_at = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-            detector._alerts.append(alert)
 
         active = detector.get_active_alerts()
 
@@ -276,7 +268,9 @@ class TestWhaleAlertDetector:
 
         # Manually age the change
         old_time = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-        detector._recent_changes[0].detected_at = old_time
+        # Access the first item in the deque
+        if detector._recent_changes:
+            detector._recent_changes[0].detected_at = old_time
 
         # Clean old changes
         detector._clean_old_changes()

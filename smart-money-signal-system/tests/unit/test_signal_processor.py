@@ -1,6 +1,7 @@
 """Unit tests for the Signal Generation Processor."""
 
 import pytest
+import time
 
 from signal_system.signal_generation.processor import SignalGenerationProcessor
 
@@ -39,8 +40,10 @@ class TestSignalGenerationProcessor:
         signal = await processor.process_position(event)
 
         # No signal should be generated with just one position (no score)
-        # But position should be stored
+        # But position should be stored (as tuple with timestamp)
         assert "0xtrader1" in processor._trader_positions
+        # Position is stored as (payload, timestamp) tuple
+        assert isinstance(processor._trader_positions["0xtrader1"], tuple)
 
     @pytest.mark.asyncio
     async def test_process_position_no_address(self):
@@ -72,8 +75,7 @@ class TestSignalGenerationProcessor:
         assert processor._trader_scores["0xtrader1"] == 85
         assert processor._trader_scores["0xtrader2"] == 70
 
-    @pytest.mark.asyncio
-    async def test_signal_generation_long_bias(self):
+    def test_signal_generation_long_bias(self):
         """Test signal generation with long bias."""
         processor = SignalGenerationProcessor()
 
@@ -84,16 +86,18 @@ class TestSignalGenerationProcessor:
             "0xtrader3": 60,
         }
 
+        # Positions stored as (data, timestamp) tuple
+        now = time.time()
         processor._trader_positions = {
-            "0xtrader1": {
+            "0xtrader1": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "10.0"}}]
-            },
-            "0xtrader2": {
+            }, now),
+            "0xtrader2": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "5.0"}}]
-            },
-            "0xtrader3": {
+            }, now),
+            "0xtrader3": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "-2.0"}}]  # Short
-            },
+            }, now),
         }
 
         signal = processor._generate_signal()
@@ -104,8 +108,7 @@ class TestSignalGenerationProcessor:
         assert signal["traders_long"] == 2
         assert signal["traders_short"] == 1
 
-    @pytest.mark.asyncio
-    async def test_signal_generation_short_bias(self):
+    def test_signal_generation_short_bias(self):
         """Test signal generation with short bias."""
         processor = SignalGenerationProcessor()
 
@@ -116,16 +119,17 @@ class TestSignalGenerationProcessor:
             "0xtrader3": 60,
         }
 
+        now = time.time()
         processor._trader_positions = {
-            "0xtrader1": {
+            "0xtrader1": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "-10.0"}}]
-            },
-            "0xtrader2": {
+            }, now),
+            "0xtrader2": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "-5.0"}}]
-            },
-            "0xtrader3": {
+            }, now),
+            "0xtrader3": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "2.0"}}]  # Long
-            },
+            }, now),
         }
 
         signal = processor._generate_signal()
@@ -136,8 +140,7 @@ class TestSignalGenerationProcessor:
         assert signal["traders_long"] == 1
         assert signal["traders_short"] == 2
 
-    @pytest.mark.asyncio
-    async def test_signal_generation_neutral(self):
+    def test_signal_generation_neutral(self):
         """Test signal generation with neutral bias."""
         processor = SignalGenerationProcessor()
 
@@ -147,13 +150,14 @@ class TestSignalGenerationProcessor:
             "0xtrader2": 70,
         }
 
+        now = time.time()
         processor._trader_positions = {
-            "0xtrader1": {
+            "0xtrader1": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "10.0"}}]
-            },
-            "0xtrader2": {
+            }, now),
+            "0xtrader2": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "-10.0"}}]
-            },
+            }, now),
         }
 
         signal = processor._generate_signal()
@@ -202,7 +206,11 @@ class TestSignalGenerationProcessor:
     def test_get_stats(self):
         """Test getting processor statistics."""
         processor = SignalGenerationProcessor()
-        processor._trader_positions = {"0x1": {}, "0x2": {}}
+        now = time.time()
+        processor._trader_positions = {
+            "0x1": ({}, now),
+            "0x2": ({}, now),
+        }
         processor._trader_scores = {"0x1": 80}
         processor._signals_generated = 5
 
@@ -227,10 +235,11 @@ class TestSignalGenerationProcessor:
         processor = SignalGenerationProcessor()
 
         processor._trader_scores = {"0xtrader1": 70}
+        now = time.time()
         processor._trader_positions = {
-            "0xtrader1": {
+            "0xtrader1": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "10.0"}}]
-            },
+            }, now),
         }
 
         signal = processor._generate_signal()
@@ -251,10 +260,11 @@ class TestSignalGenerationProcessor:
         processor = SignalGenerationProcessor()
 
         processor._trader_scores = {"0xtrader1": 100}
+        now = time.time()
         processor._trader_positions = {
-            "0xtrader1": {
+            "0xtrader1": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "10.0"}}]
-            },
+            }, now),
         }
 
         signal = processor._generate_signal()
@@ -280,10 +290,11 @@ class TestSignalGenerationProcessor:
         processor = SignalGenerationProcessor(symbol="BTC")
 
         processor._trader_scores = {"0xtrader1": 70}
+        now = time.time()
         processor._trader_positions = {
-            "0xtrader1": {
+            "0xtrader1": ({
                 "positions": [{"position": {"coin": "ETH", "szi": "10.0"}}]
-            },
+            }, now),
         }
 
         signal = processor._generate_signal()
@@ -301,13 +312,14 @@ class TestSignalGenerationProcessor:
             "0xlow": 10,    # Weight = 0.1
         }
 
+        now = time.time()
         processor._trader_positions = {
-            "0xhigh": {
+            "0xhigh": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "10.0"}}]  # Long
-            },
-            "0xlow": {
+            }, now),
+            "0xlow": ({
                 "positions": [{"position": {"coin": "BTC", "szi": "-10.0"}}]  # Short
-            },
+            }, now),
         }
 
         signal = processor._generate_signal()
