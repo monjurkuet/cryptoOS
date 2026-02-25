@@ -155,3 +155,17 @@ server.log
 # UV
 .uv/
 market-scraper/.mcp.json
+
+# AI Assistant sessions
+.sessions/
+session-*.md
+*/.sessions/
+*/session-*.md
+
+# AI Assistant configs (keep root level)
+*/AGENTS.md
+*/CLAUDE.md
+!market-scraper/AGENTS.md
+!market-scraper/CLAUDE.md
+!smart-money-signal-system/AGENTS.md
+!smart-money-signal-system/CLAUDE.md
