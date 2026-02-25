@@ -1,0 +1,38 @@
+[Unit]
+Description=CryptoData Smart Money Signal System
+Documentation=https://github.com/monjurkuet/cryptoOS
+After=network.target redis.service market-scraper.service
+Wants=redis.service
+Requires=market-scraper.service
+
+[Service]
+Type=simple
+User=muham
+Group=muham
+WorkingDirectory=/home/muham/development/cryptodata/smart-money-signal-system
+Environment="PATH=/home/muham/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/muham/.local/bin/uv run python -m signal_system server
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/muham/development/cryptodata/logs/signal-system.log
+StandardError=append:/home/muham/development/cryptodata/logs/signal-system.error.log
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=40%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/muham/development/cryptodata/smart-money-signal-system/logs
+                 /home/muham/development/cryptodata/logs
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

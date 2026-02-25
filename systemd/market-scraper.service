@@ -1,0 +1,37 @@
+[Unit]
+Description=CryptoData Market Scraper Service
+Documentation=https://github.com/monjurkuet/cryptoOS
+After=network.target mongodb.service redis.service
+Wants=mongodb.service redis.service
+
+[Service]
+Type=simple
+User=muham
+Group=muham
+WorkingDirectory=/home/muham/development/cryptodata/market-scraper
+Environment="PATH=/home/muham/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/muham/.local/bin/uv run python -m market_scraper server
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/muham/development/cryptodata/logs/market-scraper.log
+StandardError=append:/home/muham/development/cryptodata/logs/market-scraper.error.log
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=80%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/muham/development/cryptodata/market-scraper/logs
+                 /home/muham/development/cryptodata/logs
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
