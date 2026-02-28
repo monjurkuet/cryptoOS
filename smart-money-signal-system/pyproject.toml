@@ -3,7 +3,7 @@ name = "signal-system"
 version = "0.1.0"
 description = "Smart Money Signal System for BTC Trading"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.133.0",
     "httpx>=0.28.1",
@@ -17,6 +17,7 @@ dependencies = [
     "scikit-learn>=1.7.2",
     "structlog>=25.5.0",
     "uvicorn>=0.41.0",
+    "crypto-shared",
 ]
 
 [project.scripts]
@@ -43,15 +44,15 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.black]
 line-length = 100
-target-version = ["py310"]
+target-version = ["py311"]
