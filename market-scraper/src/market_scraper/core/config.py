@@ -4,9 +4,12 @@
 
 import os
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_PROJECT_ROOT = Path(__file__).parents[4]  # cryptoOS/
 
 
 class RedisConfig(BaseModel):
@@ -82,7 +85,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_PROJECT_ROOT / ".env"),
         env_nested_delimiter="__",
         extra="ignore",
     )

@@ -6,7 +6,7 @@ Production systemd service definitions for CryptoData platform.
 
 This directory contains systemd service files for running the CryptoData platform in production:
 
-- **market-scraper.service**: Real-time market data collection and API (port 8000)
+- **market-scraper.service**: Real-time market data collection and API (port 3845)
 - **signal-system.service**: Smart money signal generation (port 4341)
 
 ### Features
@@ -55,7 +55,7 @@ sudo systemctl status market-scraper.service
 sudo systemctl status signal-system.service
 
 # Test API endpoints
-curl http://localhost:8000/health
+curl http://localhost:3845/health
 curl http://localhost:4341/health
 ```
 

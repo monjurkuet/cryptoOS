@@ -50,14 +50,14 @@ check_server() {
     fi
 }
 
-check_server "market-scraper" "8000"
+check_server "market-scraper" "3845"
 check_server "signal-system" "4341"
 
 echo ""
 echo "Endpoints:"
-echo "  - market-scraper API:  http://localhost:8000/api/v1"
+echo "  - market-scraper API:  http://localhost:3845/api/v1"
 echo "  - signal-system API:   http://localhost:4341"
 echo ""
 echo "Health checks:"
-echo "  - curl http://localhost:8000/health"
+echo "  - curl http://localhost:3845/health"
 echo "  - curl http://localhost:4341/health"

@@ -60,7 +60,7 @@ if $BACKGROUND; then
     echo "=========================================="
     echo ""
     echo "Services:"
-    echo "  - market-scraper:  http://localhost:8000"
+    echo "  - market-scraper:  http://localhost:3845"
     echo "  - signal-system:   http://localhost:4341"
     echo ""
     echo "Logs:"

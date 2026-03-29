@@ -1,7 +1,11 @@
 """Signal System Configuration."""
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
+
+_PROJECT_ROOT = Path(__file__).parents[3]  # cryptoOS/
 
 
 class RedisSettings(BaseSettings):
@@ -25,7 +29,11 @@ class SignalSystemSettings(BaseSettings):
     api_port: int = Field(default=4341)
     symbol: str = Field(default="BTC")
 
-    model_config = {"env_file": ".env", "env_nested_delimiter": "__", "extra": "ignore"}
+    model_config = {
+        "env_file": str(_PROJECT_ROOT / ".env"),
+        "env_nested_delimiter": "__",
+        "extra": "ignore",
+    }
 
 
 def get_settings() -> SignalSystemSettings:
