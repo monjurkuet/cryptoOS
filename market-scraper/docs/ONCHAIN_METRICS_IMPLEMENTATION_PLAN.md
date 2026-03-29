@@ -779,7 +779,7 @@ from httpx import AsyncClient
 
 @pytest.mark.asyncio
 async def test_onchain_summary_endpoint():
-    async with AsyncClient(base_url="http://localhost:8000") as client:
+    async with AsyncClient(base_url="http://localhost:3845") as client:
         response = await client.get("/api/v1/onchain/btc/summary")
         assert response.status_code == 200
         data = response.json()

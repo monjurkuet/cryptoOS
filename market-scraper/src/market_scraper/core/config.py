@@ -2,6 +2,7 @@
 
 """Configuration management for the Market Scraper Framework."""
 
+import os
 from functools import lru_cache
 
 from pydantic import BaseModel, Field, field_validator
@@ -20,7 +21,7 @@ class RedisConfig(BaseModel):
 class MongoConfig(BaseModel):
     """MongoDB connection configuration."""
 
-    url: str = Field(default="mongodb://localhost:27017")
+    url: str = Field(description="MongoDB connection string from environment")
     database: str = Field(default="market_scraper")
     max_pool_size: int = Field(default=10)
     min_pool_size: int = Field(default=1)
@@ -96,7 +97,7 @@ class Settings(BaseSettings):
     redis: RedisConfig = Field(default_factory=RedisConfig)
 
     # MongoDB
-    mongo: MongoConfig = Field(default_factory=MongoConfig)
+    mongo: MongoConfig = Field(default_factory=lambda: MongoConfig(url=os.environ["MONGO__URL"]))
 
     # Logging
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
@@ -106,7 +107,7 @@ class Settings(BaseSettings):
 
     # API
     api_host: str = Field(default="0.0.0.0")
-    api_port: int = Field(default=8000)
+    api_port: int = Field(default=3845)
 
 
 @lru_cache

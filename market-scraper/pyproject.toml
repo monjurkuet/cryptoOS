@@ -78,6 +78,7 @@ markers = [
     "integration: Integration tests",
     "e2e: End-to-end tests",
     "slow: Slow tests",
+    "timeout: Per-test timeout for live integration checks",
 ]
 
 [tool.coverage.run]

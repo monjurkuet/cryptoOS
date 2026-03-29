@@ -14,7 +14,7 @@ A production-ready market data system that collects real-time data from Hyperliq
 |-----------|-------------|---------------------|
 | **Candles** | OHLCV candle data (1m, 5m, 15m, 1h, 4h, 1d) via HTTP backfill | Standard |
 | **Leaderboard** | Top trader rankings (hourly) | Standard |
-| **Trader WS** | Real-time position tracking via WebSocket | 85% reduction (event-driven saves) |
+| **Trader WS** | Real-time position tracking via WebSocket | Standard |
 
 **Note:** Individual trades and orderbook data are NOT collected. The system focuses on trader positions for signal generation, not market microstructure. Price data comes from OHLCV candles.
 
@@ -34,7 +34,7 @@ A production-ready market data system that collects real-time data from Hyperliq
 | **FearGreed** | Fear & Greed Index (sentiment) | Daily |
 | **CoinMetrics** | Active addresses, transaction count, supply | On-demand |
 | **CBBI** | Bitcoin Bull Run Index (9 components) | Daily |
-| **Bitview** | SOPR, NUPL, MVRV, HODL Waves | On-demand |
+| **Bitview** | SOPR (24h), NUPL, MVRV, Liveliness, Realized metrics | On-demand |
 | **ExchangeFlow** | Exchange inflows/outflows, netflow | On-demand |
 
 **Note:** On-chain connectors do NOT return price data. Use Hyperliquid candles for price information.
@@ -93,7 +93,7 @@ A production-ready market data system that collects real-time data from Hyperliq
 | GET | `/api/v1/onchain/btc/network` | Hash rate, difficulty, block height |
 | GET | `/api/v1/onchain/btc/sentiment` | Fear & Greed + CBBI confidence |
 | GET | `/api/v1/onchain/btc/valuation` | MVRV, Puell, NUPL, etc. |
-| GET | `/api/v1/onchain/btc/activity` | Active addresses, transaction count |
+| GET | `/api/v1/onchain/health` | On-chain connectors health status |
 | GET | `/api/v1/onchain/btc/sopr` | Spent Output Profit Ratio |
 | GET | `/api/v1/onchain/btc/exchange-flows` | Exchange inflows/outflows |
 | GET | `/api/v1/onchain/btc/nupl` | Net Unrealized Profit/Loss |
@@ -102,7 +102,7 @@ A production-ready market data system that collects real-time data from Hyperliq
 #### WebSocket
 | Endpoint | Description |
 |----------|-------------|
-| `/ws?channel=traders` | Trader position/score updates |
+| `/ws` | Real-time data streaming (traders/signals channels) |
 | `/ws?channel=signals` | Trading signal alerts |
 
 ### Storage
@@ -126,7 +126,7 @@ A production-ready market data system that collects real-time data from Hyperliq
 uv sync
 
 # Copy environment file
-cp .env.example .env
+cp .env.example .env 2>/dev/null || touch .env
 
 # Edit .env with your settings
 # Set MONGO__URL to your MongoDB connection string
@@ -152,16 +152,16 @@ cd /home/muham/development/cryptodata
 
 ```bash
 # Start with default settings (BTC)
-uv run python -m market_scraper server
+uv run uvicorn market_scraper.api.main:app --host 0.0.0.0 --port 3845
 
 # Start with specific symbol
-uv run python -m market_scraper server --symbol ETH
+HYPERLIQUID__SYMBOL=ETH uv run uvicorn market_scraper.api.main:app --port 3845
 
 # Start API only (no collectors)
-uv run python -m market_scraper server --no-collectors
+uv run uvicorn market_scraper.api.main:app --port 3845 --app-dir .
 
 # Custom host/port
-uv run python -m market_scraper server --host 0.0.0.0 --port 8080
+uv run uvicorn market_scraper.api.main:app --host 0.0.0.0 --port 8080
 ```
 
 #### Production (systemd)
@@ -187,6 +187,12 @@ See [systemd/README.md](../systemd/README.md) for detailed instructions.
 ```bash
 # Show help
 uv run python -m market_scraper --help
+
+# Start server (API only, no collectors)
+uv run python -m market_scraper server
+
+# Start server with specific settings
+uv run python -m market_scraper server --symbol ETH --port 8080
 
 # Check system health
 uv run python -m market_scraper health
@@ -223,7 +229,7 @@ HYPERLIQUID__SYMBOL=BTC           # Only save data for this symbol
 
 # API
 API_HOST=0.0.0.0
-API_PORT=8000
+API_PORT=3845
 ```
 
 ### YAML Configuration (Advanced)
@@ -393,13 +399,17 @@ HYPERLIQUID__SYMBOL=ETH uv run python -m market_scraper server
 
 # Signal model
 {
-    "t": datetime,     # Timestamp
+    "timestamp": datetime,     # Timestamp
     "symbol": "BTC",
-    "rec": "BUY",      # BUY, SELL, NEUTRAL
-    "conf": 0.75,      # Confidence (0-1)
-    "long_bias": 0.7,  # Long bias
-    "short_bias": 0.3, # Short bias
-    "net_exp": 0.4     # Net exposure
+    "recommendation": "BUY",  # BUY, SELL, NEUTRAL
+    "confidence": 0.75,       # Confidence (0-1)
+    "long_bias": 0.7,         # Long bias (0-1)
+    "short_bias": 0.3,        # Short bias (0-1)
+    "net_exposure": 0.4,      # Net position (-1 to 1)
+    "traders_long": 45,       # Number of long traders
+    "traders_short": 15,      # Number of short traders
+    "traders_flat": 10,       # Number of flat traders
+    "price": 97000.0          # Price at signal time
 }
 ```
 
@@ -448,8 +458,8 @@ The API validates inputs for security and data integrity:
 ## API Documentation
 
 Interactive API docs available at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+- Swagger UI: `http://localhost:3845/docs`
+- ReDoc: `http://localhost:3845/redoc`
 
 ## License
 

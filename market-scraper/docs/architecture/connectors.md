@@ -335,19 +335,23 @@ Bitcoin on-chain metrics from Bitview.space:
 - **SOPR**: Spent Output Profit Ratio
 - **NUPL**: Net Unrealized Profit/Loss
 - **MVRV**: Market Value to Realized Value
-- **Dormancy**: Average age of spent coins
+- **Liveliness**: Network activity measure (alternative to dormancy)
 
 ```python
-from market_scraper.connectors.bitview import BitviewConnector, BitviewConfig
+from market_scraper.connectors.bitview import BitviewConnector, BitviewConfig, BitviewMetric
 
 async def get_sopr():
     connector = BitviewConnector(BitviewConfig(name="bitview"))
     await connector.connect()
 
+    # Get SOPR (24h)
     event = await connector.get_sopr()
     print(f"SOPR: {event.payload['value']}")
-    print(f"Interpretation: {event.payload['interpretation']}")
-
+    
+    # Or get specific metric
+    event = await connector.get_metric(BitviewMetric.SOPR)
+    print(f"SOPR (24h): {event.payload['value']}")
+    
     await connector.disconnect()
 ```
 
@@ -379,12 +383,15 @@ All on-chain connectors are aggregated through the `/api/v1/onchain` endpoints:
 
 ```bash
 # Get unified summary
-curl http://localhost:8000/api/v1/onchain/btc/summary
+curl http://localhost:3845/api/v1/onchain/btc/summary
 
 # Get specific metrics
-curl http://localhost:8000/api/v1/onchain/btc/network
-curl http://localhost:8000/api/v1/onchain/btc/sentiment
-curl http://localhost:8000/api/v1/onchain/btc/sopr
+curl http://localhost:3845/api/v1/onchain/btc/network
+curl http://localhost:3845/api/v1/onchain/btc/sentiment
+curl http://localhost:3845/api/v1/onchain/btc/sopr
+
+# Health check
+curl http://localhost:3845/api/v1/onchain/health
 ```
 
 See `src/market_scraper/connectors/` for implementation examples.

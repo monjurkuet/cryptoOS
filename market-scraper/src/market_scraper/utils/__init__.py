@@ -7,13 +7,11 @@ from market_scraper.utils.metrics import (
     record_event_published,
     set_connector_connections,
     set_connector_health,
-    start_metrics_server,
 )
 
 __all__ = [
     "configure_logging",
     "get_logger",
-    "start_metrics_server",
     "record_event_published",
     "record_event_delivered",
     "record_event_dropped",

@@ -208,7 +208,7 @@ class CBBIConnector(DataConnector):
 ### Base URL
 
 ```
-http://localhost:8000/api/v1/cbbi
+http://localhost:3845/api/v1/cbbi
 ```
 
 ### Endpoints
@@ -239,7 +239,7 @@ Get current CBBI data including confidence score and all components.
 
 **Example:**
 ```bash
-curl http://localhost:8000/api/v1/cbbi | jq
+curl http://localhost:3845/api/v1/cbbi | jq
 ```
 
 ---
@@ -267,7 +267,7 @@ Get detailed breakdown of all CBBI components with historical data.
 
 **Example:**
 ```bash
-curl http://localhost:8000/api/v1/cbbi/components | jq
+curl http://localhost:3845/api/v1/cbbi/components | jq
 ```
 
 ---
@@ -289,7 +289,7 @@ Get data for a specific component.
 
 **Example:**
 ```bash
-curl http://localhost:8000/api/v1/cbbi/components/MVRV | jq
+curl http://localhost:3845/api/v1/cbbi/components/MVRV | jq
 ```
 
 **Response:**
@@ -651,13 +651,13 @@ If timestamp is > 2 days old, check:
 
 ```bash
 # Check API health
-curl http://localhost:8000/api/v1/cbbi/health
+curl http://localhost:3845/api/v1/cbbi/health
 
 # Check data freshness
-curl -s http://localhost:8000/api/v1/cbbi | jq '.timestamp'
+curl -s http://localhost:3845/api/v1/cbbi | jq '.timestamp'
 
 # Check component availability
-curl -s http://localhost:8000/api/v1/cbbi/components | jq 'length'
+curl -s http://localhost:3845/api/v1/cbbi/components | jq 'length'
 ```
 
 ### Logging
@@ -697,5 +697,5 @@ Log messages you'll see:
 
 ---
 
-*Last Updated: February 2026*
+*Last Updated: March 2026*
 *Version: 1.0*

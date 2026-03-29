@@ -28,7 +28,7 @@ class MockWebSocket:
             raise Exception("WebSocket closed")
         self.sent_messages.append(message)
 
-    async def __aiter__(self):
+    def __aiter__(self):
         """Make async iterable."""
         return self
 
@@ -96,7 +96,8 @@ class TestWebSocketServer:
         mock_event_bus: MagicMock,
     ) -> None:
         """Test server start and stop lifecycle."""
-        mock_server = AsyncMock()
+        mock_server = MagicMock()
+        mock_server.wait_closed = AsyncMock()
         mock_serve = AsyncMock(return_value=mock_server)
 
         with patch("websockets.serve", mock_serve):
@@ -107,18 +108,24 @@ class TestWebSocketServer:
             await server.stop()
             assert server._running is False
             mock_server.close.assert_called_once()
+            mock_server.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_start_without_event_bus(self) -> None:
         """Test server start without event bus."""
         server = WebSocketServer()
-        mock_server = AsyncMock()
+        mock_server = MagicMock()
+        mock_server.wait_closed = AsyncMock()
         mock_serve = AsyncMock(return_value=mock_server)
 
         with patch("websockets.serve", mock_serve):
             await server.start()
             assert server._running is True
             # Should not fail without event bus
+
+            await server.stop()
+            mock_server.close.assert_called_once()
+            mock_server.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_handle_subscribe_message(self, server: WebSocketServer) -> None:

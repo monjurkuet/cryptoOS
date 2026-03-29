@@ -92,9 +92,7 @@ manager = ConnectionManager()
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    channel: str = Query(
-        "traders", description="Channel to subscribe to (traders, signals)"
-    ),
+    channel: str = Query("traders", description="Channel to subscribe to (traders, signals)"),
 ) -> None:
     """WebSocket endpoint for real-time market data streaming.
 
@@ -108,7 +106,7 @@ async def websocket_endpoint(
 
     Example:
         ```javascript
-        const ws = new WebSocket('ws://localhost:8000/ws?channel=traders');
+        const ws = new WebSocket('ws://localhost:3845/ws?channel=traders');
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
             console.log('Received:', data);

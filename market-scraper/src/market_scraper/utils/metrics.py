@@ -2,7 +2,7 @@
 
 """Prometheus metrics for the Market Scraper Framework."""
 
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram
 
 # Event metrics
 EVENTS_PUBLISHED = Counter(
@@ -56,15 +56,6 @@ STORAGE_LATENCY = Histogram(
     ["operation"],
     buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
 )
-
-
-def start_metrics_server(port: int = 8000) -> None:
-    """Start the Prometheus metrics HTTP server.
-
-    Args:
-        port: Port to listen on
-    """
-    start_http_server(port)
 
 
 def record_event_published(event_type: str, source: str) -> None:

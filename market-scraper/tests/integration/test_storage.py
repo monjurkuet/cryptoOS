@@ -165,7 +165,7 @@ class TestMongoRepositoryIntegration:
     @pytest_asyncio.fixture
     async def repository(self):
         """Create and connect a MongoRepository."""
-        mongo_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+        mongo_url = os.environ["MONGO__URL"]
         repo = MongoRepository(
             connection_string=mongo_url,
             database_name="market_scraper_test",
@@ -202,7 +202,7 @@ class TestMongoRepositoryIntegration:
     @pytest.mark.asyncio
     async def test_connect_disconnect(self):
         """Test MongoDB connection lifecycle."""
-        mongo_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+        mongo_url = os.environ["MONGO__URL"]
         repo = MongoRepository(
             connection_string=mongo_url,
             database_name="market_scraper_test",
@@ -217,7 +217,7 @@ class TestMongoRepositoryIntegration:
     @pytest.mark.asyncio
     async def test_context_manager(self):
         """Test async context manager."""
-        mongo_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+        mongo_url = os.environ["MONGO__URL"]
 
         async with MongoRepository(
             connection_string=mongo_url,

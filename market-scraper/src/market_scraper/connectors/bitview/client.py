@@ -102,7 +102,7 @@ class BitviewClient:
         if self._client is None:
             raise RuntimeError("Client not connected. Call connect() first.")
 
-        url = f"{self.config.base_url}/metric/{metric}/dateindex"
+        url = f"{self.config.base_url}/series/{metric}/dateindex"
 
         async with self._rate_limiter:
             response = await self._client.get(url)
@@ -178,10 +178,12 @@ class BitviewClient:
             historical = []
             for i, val in enumerate(values):
                 if val is not None and i < len(dates):
-                    historical.append({
-                        "date": dates[i],
-                        "value": val,
-                    })
+                    historical.append(
+                        {
+                            "date": dates[i],
+                            "value": val,
+                        }
+                    )
 
             # Keep only last 365 days
             historical = historical[-365:]
@@ -326,7 +328,7 @@ class BitviewClient:
             start = time.time()
 
             # Try to fetch a simple metric
-            response = await self._client.get(f"{self.config.base_url}/health")
+            response = await self._client.get(f"{self.config.base_url.rstrip('/api')}/health")
             latency = (time.time() - start) * 1000
 
             if response.status_code == 200:

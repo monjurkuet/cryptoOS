@@ -11,7 +11,7 @@ Real-time cryptocurrency market data collection system for Hyperliquid.
 - Trader scoring and position tracking
 - Signal generation (BUY/SELL/NEUTRAL)
 - Bitcoin on-chain metrics (CBBI, Fear & Greed, MVRV, SOPR, NUPL)
-- REST API + WebSocket streaming (port 8000)
+- REST API + WebSocket streaming (port 3845)
 
 ### [smart-money-signal-system](smart-money-signal-system/)
 Real-time trading signal generation from whale position tracking.
@@ -42,8 +42,8 @@ API documentation and scripts for cryptocurrency data providers.
 │ - Processors    │  events:scored        │ - Weighting Engine  │
 │ - On-chain      │  events:candles       │ - Signal Generator  │
 │                 │                       │ - ML Regime Detect  │
-│  :8000 API      │                       │  :4341 API          │
-│  :8000 WS       │                       │                     │
+│  :3845 API      │                       │  :4341 API          │
+│  :3845 WS       │                       │                     │
 └─────────────────┘                       └─────────────────────┘
         │                                         │
         ▼                                         ▼

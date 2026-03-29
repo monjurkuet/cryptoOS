@@ -84,7 +84,7 @@ MONGO__DATABASE=market_scraper
 
 # API
 API_HOST=0.0.0.0
-API_PORT=8000
+API_PORT=3845
 ```
 
 ### Security Considerations
@@ -166,19 +166,20 @@ The application provides health check endpoints:
 
 ```bash
 # Basic health
-curl http://localhost:8000/health
+curl http://localhost:3845/health/live
 
-# Detailed health with dependencies
-curl http://localhost:8000/health/detailed
+# Readiness with all checks
+curl http://localhost:3845/health/ready
+
+# Detailed component status
+curl http://localhost:3845/health/status
 ```
 
 ### Metrics
 
-Prometheus metrics are available at:
+Prometheus is managed separately at the system level. This application does not start or expose a local Prometheus metrics server.
 
-```bash
-curl http://localhost:8000/metrics
-```
+Configure your system-level Prometheus deployment to scrape the application and any exporter you manage externally.
 
 ### Logging
 
@@ -189,7 +190,7 @@ Logs are written to stdout/stderr. View with:
 journalctl -u market-scraper -f
 
 # Or if running directly
-./run_server.sh 2>&1 | tee server.log
+uv run uvicorn market_scraper.api.main:app 2>&1 | tee server.log
 ```
 
 ## Troubleshooting
@@ -201,7 +202,7 @@ journalctl -u market-scraper -f
 journalctl -u market-scraper -n 100
 
 # Check if ports are in use
-ss -tulpn | grep 8000
+ss -tulpn | grep 3845
 ```
 
 ### Can't Connect to Services
@@ -276,7 +277,7 @@ server {
     ssl_certificate_key /etc/nginx/ssl/key.pem;
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:3845;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -335,5 +336,5 @@ git pull
 uv sync
 
 # Restart service
-sudo systemctl restart market-scraper
+sudo systemctl restart market-scraper.service
 ```

@@ -1,6 +1,7 @@
 """Event Subscriber for market-scraper events."""
 
 import asyncio
+import inspect
 import json
 from typing import Any, Callable
 
@@ -43,9 +44,15 @@ class EventSubscriber:
         self._running = False
         if self._pubsub:
             await self._pubsub.unsubscribe()
-            await self._pubsub.close()
+            if hasattr(self._pubsub, "aclose"):
+                await self._pubsub.aclose()
+            else:
+                await self._pubsub.close()
         if self._redis:
-            await self._redis.close()
+            if hasattr(self._redis, "aclose"):
+                await self._redis.aclose()
+            else:
+                await self._redis.close()
         logger.info("redis_disconnected")
 
     def subscribe(self, event_type: str, handler: Callable) -> None:
@@ -70,8 +77,7 @@ class EventSubscriber:
         # Subscribe to channels: "events:{event_type}"
         # Uses pattern subscribe to match "events:trader_positions" etc.
         channels = [
-            f"{self.settings.channel_prefix}:{event_type}"
-            for event_type in self._handlers.keys()
+            f"{self.settings.channel_prefix}:{event_type}" for event_type in self._handlers.keys()
         ]
         await self._pubsub.psubscribe(*channels)
         logger.info("channels_subscribed", channels=channels)
@@ -118,7 +124,7 @@ class EventSubscriber:
             handlers = self._handlers.get(event_type, [])
             for handler in handlers:
                 try:
-                    if asyncio.iscoroutinefunction(handler):
+                    if inspect.iscoroutinefunction(handler):
                         await handler(data)
                     else:
                         handler(data)

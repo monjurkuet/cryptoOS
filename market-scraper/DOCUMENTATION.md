@@ -47,8 +47,8 @@ Complete documentation for the Market Scraper v2 system.
 ## API Reference
 
 Interactive API documentation available at runtime:
-- **Swagger UI**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
+- **Swagger UI**: `http://localhost:3845/docs`
+- **ReDoc**: `http://localhost:3845/redoc`
 
 ### REST Endpoints Summary
 
@@ -122,7 +122,7 @@ HYPERLIQUID__SYMBOL=BTC
 
 # API
 API_HOST=0.0.0.0
-API_PORT=8000
+API_PORT=3845
 ```
 
 ### YAML Configuration
@@ -206,4 +206,4 @@ The API enforces strict input validation:
 
 ---
 
-*Last Updated: February 2026*
+*Last Updated: March 2026*

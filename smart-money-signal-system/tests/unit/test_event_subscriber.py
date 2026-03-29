@@ -1,10 +1,11 @@
 """Tests for EventSubscriber."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from signal_system.event_subscriber import EventSubscriber
+import pytest
+
 from signal_system.config import RedisSettings
+from signal_system.event_subscriber import EventSubscriber
 
 
 class TestEventSubscriber:
@@ -71,8 +72,8 @@ class TestEventSubscriber:
         subscriber = EventSubscriber(settings)
 
         with patch("redis.asyncio.from_url") as mock_redis:
-            mock_client = AsyncMock()
-            mock_pubsub = AsyncMock()
+            mock_client = MagicMock()
+            mock_pubsub = MagicMock()
             mock_client.pubsub.return_value = mock_pubsub
             mock_redis.return_value = mock_client
 
@@ -87,13 +88,18 @@ class TestEventSubscriber:
         subscriber = EventSubscriber(settings)
 
         # Mock connected state
-        subscriber._redis = AsyncMock()
-        subscriber._pubsub = AsyncMock()
+        subscriber._redis = MagicMock()
+        subscriber._redis.aclose = AsyncMock()
+        subscriber._pubsub = MagicMock()
+        subscriber._pubsub.unsubscribe = AsyncMock()
+        subscriber._pubsub.aclose = AsyncMock()
 
         await subscriber.disconnect()
 
-        subscriber._pubsub.unsubscribe.assert_called_once()
-        subscriber._redis.close.assert_called_once()
+        subscriber._pubsub.unsubscribe.assert_awaited_once()
+        subscriber._pubsub.aclose.assert_awaited_once()
+        subscriber._redis.aclose.assert_awaited_once()
+        subscriber._redis.aclose.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_process_message(self) -> None:

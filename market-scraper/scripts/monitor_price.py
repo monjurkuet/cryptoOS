@@ -12,9 +12,8 @@ from datetime import UTC, datetime
 
 import httpx
 
-
 # Configuration
-OUR_API_URL = "http://localhost:8000"
+OUR_API_URL = "http://localhost:3845"
 HYPERLIQUID_API = "https://api.hyperliquid.xyz"
 MONITOR_DURATION_SECONDS = 120  # 2 minutes
 POLL_INTERVAL_SECONDS = 10  # Check every 10 seconds
@@ -125,19 +124,23 @@ async def run_monitor():
 
                 print(f"  Our API (candle close): ${our_price:,.2f}")
                 print(f"  Hyperliquid (mid):      ${hl_price:,.2f}")
-                print(f"  Difference:             ${accuracy['difference_usd']:,.2f} ({accuracy['difference_pct']:.4f}%)")
+                print(
+                    f"  Difference:             ${accuracy['difference_usd']:,.2f} ({accuracy['difference_pct']:.4f}%)"
+                )
 
                 if accuracy["accurate"]:
                     print(f"  Status: ✅ ACCURATE")
                 else:
                     print(f"  Status: ⚠️  DEVIATION DETECTED")
 
-                results.append({
-                    "timestamp": timestamp,
-                    "our_price": our_price,
-                    "hl_price": hl_price,
-                    "accuracy": accuracy,
-                })
+                results.append(
+                    {
+                        "timestamp": timestamp,
+                        "our_price": our_price,
+                        "hl_price": hl_price,
+                        "accuracy": accuracy,
+                    }
+                )
 
                 # Show candle details
                 if our_data.get("high"):
@@ -166,11 +169,11 @@ async def run_monitor():
         diffs = [r["accuracy"]["difference_pct"] for r in results]
 
         print(f"Total Samples:      {len(results)}")
-        print(f"Our Avg Price:      ${sum(our_prices)/len(our_prices):,.2f}")
-        print(f"HL Avg Price:       ${sum(hl_prices)/len(hl_prices):,.2f}")
+        print(f"Our Avg Price:      ${sum(our_prices) / len(our_prices):,.2f}")
+        print(f"HL Avg Price:       ${sum(hl_prices) / len(hl_prices):,.2f}")
         print(f"Max Difference:     {max(diffs):.4f}%")
         print(f"Min Difference:     {min(diffs):.4f}%")
-        print(f"Avg Difference:     {sum(diffs)/len(diffs):.4f}%")
+        print(f"Avg Difference:     {sum(diffs) / len(diffs):.4f}%")
 
         accurate_count = sum(1 for r in results if r["accuracy"]["accurate"])
         accuracy_rate = (accurate_count / len(results)) * 100
@@ -209,7 +212,9 @@ async def test_historical_data():
                 candles = data.get("candles", [])
                 if candles:
                     latest = candles[-1] if candles else {}
-                    print(f"  {timeframe}: ✅ {count} candles | Latest close: ${latest.get('c', 0):,.2f}")
+                    print(
+                        f"  {timeframe}: ✅ {count} candles | Latest close: ${latest.get('c', 0):,.2f}"
+                    )
                 else:
                     print(f"  {timeframe}: ⚠️  No data yet")
 

@@ -7,7 +7,7 @@
 Returns the latest candle data for a symbol, which includes the current price.
 
 ```bash
-curl http://localhost:8000/api/v1/markets/BTC
+curl http://localhost:3845/api/v1/markets/BTC
 ```
 
 **Response:**
@@ -49,10 +49,10 @@ Returns historical OHLCV candlestick data.
 
 ```bash
 # Basic query - last 100 1-hour candles
-curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h"
+curl "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1h"
 
 # With time range
-curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&start_time=2026-02-01T00:00:00&end_time=2026-02-19T00:00:00&limit=500"
+curl "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1h&start_time=2026-02-01T00:00:00&end_time=2026-02-19T00:00:00&limit=500"
 ```
 
 **Parameters:**
@@ -119,25 +119,25 @@ curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&start_time=2
 ### Get Last 24 Hours of 1-Hour Candles
 
 ```bash
-curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&limit=24"
+curl "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1h&limit=24"
 ```
 
 ### Get Last 7 Days of Daily Candles
 
 ```bash
-curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1d&limit=7"
+curl "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1d&limit=7"
 ```
 
 ### Get Specific Date Range
 
 ```bash
-curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&start_time=2026-02-15T00:00:00&end_time=2026-02-19T00:00:00&limit=200"
+curl "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1h&start_time=2026-02-15T00:00:00&end_time=2026-02-19T00:00:00&limit=200"
 ```
 
 ### Get Last 100 5-Minute Candles for Scalping
 
 ```bash
-curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=5m&limit=100"
+curl "http://localhost:3845/api/v1/markets/BTC/history?timeframe=5m&limit=100"
 ```
 
 ---
@@ -201,21 +201,21 @@ Data is stored in MongoDB collections named:
 
 ```bash
 # Simplest way to get current price
-curl -s "http://localhost:8000/api/v1/markets/BTC" | jq '.latest_candle.c'
+curl -s "http://localhost:3845/api/v1/markets/BTC" | jq '.latest_candle.c'
 ```
 
 ### 2. Calculate Price Change
 
 ```bash
 # Get last 2 candles to calculate change
-curl -s "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&limit=2" | jq '.candles'
+curl -s "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1h&limit=2" | jq '.candles'
 ```
 
 ### 3. Get 24-Hour Statistics
 
 ```bash
 # Get 24 hourly candles and calculate stats
-curl -s "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&limit=24"
+curl -s "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1h&limit=24"
 ```
 
 From this you can calculate:
@@ -228,7 +228,7 @@ From this you can calculate:
 
 ```bash
 # Get candles around a specific time
-curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&start_time=2026-02-15T10:00:00&end_time=2026-02-15T12:00:00&limit=5"
+curl "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1h&start_time=2026-02-15T10:00:00&end_time=2026-02-15T12:00:00&limit=5"
 ```
 
 ---
@@ -238,7 +238,7 @@ curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&start_time=2
 ### Symbol Not Found
 
 ```bash
-curl "http://localhost:8000/api/v1/markets/INVALID"
+curl "http://localhost:3845/api/v1/markets/INVALID"
 ```
 
 ```json
@@ -252,7 +252,7 @@ curl "http://localhost:8000/api/v1/markets/INVALID"
 ### No Data Available
 
 ```bash
-curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&start_time=2030-01-01T00:00:00"
+curl "http://localhost:3845/api/v1/markets/BTC/history?timeframe=1h&start_time=2030-01-01T00:00:00"
 ```
 
 ```json
@@ -282,7 +282,7 @@ curl "http://localhost:8000/api/v1/markets/BTC/history?timeframe=1h&start_time=2
 For real-time trader and signal updates, connect to WebSocket:
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8000/ws?channel=traders');
+const ws = new WebSocket('ws://localhost:3845/ws?channel=traders');
 
 ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
@@ -310,4 +310,4 @@ Available channels:
 
 ---
 
-*Last Updated: February 2026*
+*Last Updated: March 2026*

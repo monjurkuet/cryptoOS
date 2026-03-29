@@ -2,20 +2,25 @@
 
 """Integration tests for the lifecycle manager."""
 
+import os
+
 import pytest
 
-from market_scraper.core.config import HyperliquidSettings, Settings
+from market_scraper.core.config import HyperliquidSettings, MongoConfig, Settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
+
+TEST_MONGO_URL = os.environ["MONGO__URL"]
 
 
 @pytest.fixture
 def test_settings():
     """Create test settings with memory storage."""
     return Settings(
+        mongo=MongoConfig(url=TEST_MONGO_URL),
         hyperliquid=HyperliquidSettings(
             enabled=False,  # Disable actual WebSocket connection for tests
             symbol="BTC",
-        )
+        ),
     )
 
 
@@ -109,10 +114,11 @@ async def test_lifecycle_manager_detailed_health(test_settings):
 async def test_lifecycle_manager_with_custom_symbol():
     """Test lifecycle manager with custom symbol configuration."""
     settings = Settings(
+        mongo=MongoConfig(url=TEST_MONGO_URL),
         hyperliquid=HyperliquidSettings(
             enabled=False,
             symbol="ETH",
-        )
+        ),
     )
     manager = LifecycleManager(settings=settings)
     await manager.startup()

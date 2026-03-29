@@ -13,9 +13,9 @@ class BitviewMetric(StrEnum):
     """Available metrics from Bitview.space API (Bitcoin Research Kit)."""
 
     # SOPR metrics
-    SOPR = "sopr"
-    SOPR_LTH = "lth_sopr"
-    SOPR_STH = "sth_sopr"
+    SOPR = "sopr_24h"
+    SOPR_LTH = "lth_sopr_24h"
+    SOPR_STH = "sth_sopr_24h"
 
     # NUPL metrics
     NUPL = "nupl"

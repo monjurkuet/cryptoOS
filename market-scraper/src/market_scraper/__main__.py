@@ -40,8 +40,8 @@ def create_parser() -> argparse.ArgumentParser:
     server_parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to bind to (default: 8000)",
+        default=3845,
+        help="Port to bind to (default: 3845)",
     )
     server_parser.add_argument(
         "--symbol",

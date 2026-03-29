@@ -60,36 +60,22 @@ HYPERLIQUID__SYMBOL=BTC
 ### Start the Server
 
 ```bash
-# Using the run script (recommended)
-./run_server.sh start
+# Using uv directly (recommended)
+cd /root/codebase/cryptoOS
+source .venv/bin/activate
+uv run uvicorn market_scraper.api.main:app --host 0.0.0.0 --port 3845
 
-# Or directly with uv
+# Or using the market-scraper CLI
 uv run python -m market_scraper server
 
-# Run in foreground for development
-./run_server.sh run
+# Run in background
+nohup uv run uvicorn market_scraper.api.main:app --host 0.0.0.0 --port 3845 > server.log 2>&1 &
 ```
 
 The API will be available at:
-- API: http://localhost:8000
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-### Server Management
-
-```bash
-# Check status
-./run_server.sh status
-
-# View logs
-tail -f server.log
-
-# Stop server
-./run_server.sh stop
-
-# Restart server
-./run_server.sh restart
-```
+- API: http://localhost:3845
+- Swagger UI: http://localhost:3845/docs
+- ReDoc: http://localhost:3845/redoc
 
 ## First Data Fetch
 
@@ -97,25 +83,25 @@ tail -f server.log
 
 ```bash
 # Check health
-curl http://localhost:8000/health/live
+curl http://localhost:3845/health/live
 
 # List available connectors
-curl http://localhost:8000/api/v1/connectors
+curl http://localhost:3845/api/v1/connectors
 
 # Query market data
-curl "http://localhost:8000/api/v1/markets/BTC-USD"
+curl "http://localhost:3845/api/v1/markets/BTC"
 
 # Get current trading signal
-curl http://localhost:8000/api/v1/signals/current
+curl http://localhost:3845/api/v1/signals/current
 
 # Get Bitcoin on-chain metrics
-curl http://localhost:8000/api/v1/onchain/btc/summary
+curl http://localhost:3845/api/v1/onchain/btc/summary
 
 # Get CBBI confidence score
-curl http://localhost:8000/api/v1/cbbi
+curl http://localhost:3845/api/v1/cbbi
 
 # Get Fear & Greed Index
-curl http://localhost:8000/api/v1/onchain/btc/sentiment
+curl http://localhost:3845/api/v1/onchain/btc/sentiment
 ```
 
 ### Using Python
@@ -154,7 +140,7 @@ asyncio.run(main())
 
 ```javascript
 // Connect to WebSocket
-const ws = new WebSocket('ws://localhost:8000/ws?channel=traders');
+const ws = new WebSocket('ws://localhost:3845/ws?channel=traders');
 
 ws.onopen = () => {
     console.log('Connected to trader data stream');
@@ -176,25 +162,15 @@ Verify your installation with the test suite:
 
 ```bash
 # Run all tests
-pytest
+cd /root/codebase/cryptoOS && source .venv/bin/activate
+uv run pytest
 
 # Run specific test types
-pytest -m unit
-pytest -m integration
-pytest -m e2e
+uv run pytest -m unit
+uv run pytest -m integration
 
 # Run with coverage
-pytest --cov=src/market_scraper
-```
-
-## Common Issues
-
-### Port Already in Use
-
-If port 8000 is in use, set a different port:
-
-```bash
-SERVER_PORT=8001 ./run_server.sh start
+uv run pytest --cov=src/market_scraper
 ```
 
 ### MongoDB Connection Failed
@@ -226,4 +202,4 @@ Now that you have the framework running:
 1. Read the [Architecture Overview](../architecture/overview.md) to understand the system
 2. Check out the [Development Guide](../guides/development.md) for testing
 3. Explore the [Deployment Guide](../guides/deployment.md) for production setup
-4. Review the [API Documentation](http://localhost:8000/docs)
+4. Review the [API Documentation](http://localhost:3845/docs)
