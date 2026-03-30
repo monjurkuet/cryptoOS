@@ -5,6 +5,7 @@ from typing import Any
 
 import motor.motor_asyncio
 import structlog
+from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from market_scraper.core.events import StandardEvent
 from market_scraper.core.exceptions import StorageError
@@ -212,10 +213,10 @@ class MongoRepository(DataRepository):
             event: Event to store.
 
         Returns:
-            True if stored successfully.
+            True if stored successfully, False if duplicate.
 
         Raises:
-            StorageError: If not connected or storage fails.
+            StorageError: If not connected or storage fails (excluding duplicates).
         """
         if self._db is None:
             raise StorageError("Not connected to MongoDB")
@@ -223,6 +224,12 @@ class MongoRepository(DataRepository):
         try:
             await self._db.events.insert_one(event.model_dump())
             return True
+        except DuplicateKeyError:
+            logger.debug(
+                "event_duplicate_skipped",
+                event_id=event.event_id,
+            )
+            return False
         except Exception as e:
             raise StorageError(f"Failed to store event: {e}") from e
 
@@ -254,12 +261,20 @@ class MongoRepository(DataRepository):
                 ordered=False,  # Continue on error
             )
             return len(result.inserted_ids)
+        except BulkWriteError as e:
+            # Partial success - some events were inserted, some were duplicates
+            n_inserted = e.details.get("nInserted", 0)
+            n_duplicates = sum(
+                1 for err in e.details.get("writeErrors", []) if err.get("code") == 11000
+            )
+            if n_duplicates > 0:
+                logger.debug(
+                    "store_bulk_duplicates_skipped",
+                    inserted=n_inserted,
+                    duplicates=n_duplicates,
+                )
+            return n_inserted
         except Exception as e:
-            # Check if it's a bulk write error with partial success
-            if hasattr(e, "details") and e.details:
-                n_inserted = e.details.get("nInserted", 0)
-                if n_inserted > 0:
-                    return n_inserted
             raise StorageError(f"Failed to store bulk events: {e}") from e
 
     async def query(

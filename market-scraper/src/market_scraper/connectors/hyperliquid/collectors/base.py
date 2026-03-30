@@ -57,6 +57,7 @@ class BaseCollector(ABC):
         self._buffer_max_size: int = buffer_config.max_size
         self._last_flush: float = time.time()
         self._flush_task: asyncio.Task | None = None
+        self._flush_lock: asyncio.Lock = asyncio.Lock()
 
         # Metrics
         self._messages_received = 0
@@ -157,11 +158,12 @@ class BaseCollector(ABC):
 
     async def _flush_buffer(self) -> None:
         """Flush buffered events to the event bus."""
-        if not self._buffer:
-            return
+        async with self._flush_lock:
+            if not self._buffer:
+                return
 
-        events = self._buffer.copy()
-        self._buffer.clear()
+            events = self._buffer.copy()
+            self._buffer.clear()
 
         try:
             count = await self.event_bus.publish_bulk(events)

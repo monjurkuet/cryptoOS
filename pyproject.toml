@@ -8,7 +8,7 @@ dependencies = [
 ]
 
 [tool.uv]
-workspace = { members = ["market-scraper", "smart-money-signal-system", "shared"] }
+workspace = { members = ["market-scraper", "smart-money-signal-system", "shared", "trading-watchlist"] }
 
 [tool.uv.sources]
 crypto-shared = { workspace = true }
