@@ -207,6 +207,8 @@ def parse_current_metrics(
             "difficulty": metrics.get("difficulty"),
             "block_height": metrics.get("block_count"),
             "total_btc": metrics.get("total_btc"),
+            "price_usd": metrics.get("price_24h"),
+            "market_cap_usd": metrics.get("market_cap"),
             "tx_count_24h": metrics.get("tx_count_24h"),
         },
     )

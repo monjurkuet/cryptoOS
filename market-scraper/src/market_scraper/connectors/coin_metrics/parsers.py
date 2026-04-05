@@ -25,8 +25,9 @@ def parse_metrics_response(
     Raises:
         ValueError: If required fields are missing or invalid
     """
-    if "error" in data:
-        raise ValueError(f"Coin Metrics API error: {data['error']}")
+    error_message = data.get("error") or data.get("error_msg")
+    if error_message:
+        raise ValueError(f"Coin Metrics API error: {error_message}")
 
     data_points = data.get("data", [])
     if not data_points:
@@ -72,7 +73,8 @@ def parse_metrics_historical(
     Returns:
         List of standardized events, one per data point
     """
-    if "error" in data:
+    error_message = data.get("error") or data.get("error_msg")
+    if error_message:
         return []
 
     data_points = data.get("data", [])
@@ -122,8 +124,9 @@ def parse_single_metric(
     Returns:
         Standardized event containing single metric data
     """
-    if "error" in data:
-        raise ValueError(f"Coin Metrics API error: {data['error']}")
+    error_message = data.get("error") or data.get("error_msg")
+    if error_message:
+        raise ValueError(f"Coin Metrics API error: {error_message}")
 
     data_points = data.get("data", [])
     if not data_points:
@@ -180,8 +183,9 @@ def validate_metrics_data(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise ValueError("Coin Metrics data must be a dictionary")
 
-    if "error" in data:
-        raise ValueError(f"API error: {data['error']}")
+    error_message = data.get("error") or data.get("error_msg")
+    if error_message:
+        raise ValueError(f"API error: {error_message}")
 
     data_points = data.get("data")
     if data_points is None:

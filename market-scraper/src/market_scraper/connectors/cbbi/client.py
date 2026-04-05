@@ -13,9 +13,6 @@ from market_scraper.connectors.cbbi.config import CBBIConfig
 
 logger = structlog.get_logger(__name__)
 
-# CBBI API endpoint
-CBBI_LATEST_URL = "https://colintalkscrypto.com/cbbi/data/latest.json"
-
 
 class CBBIClient:
     """HTTP client for fetching CBBI data.
@@ -41,6 +38,10 @@ class CBBIClient:
         self._client: httpx.AsyncClient | None = None
         self._rate_limiter = asyncio.Lock()
         self._last_fetch_time: float = 0
+
+    def _latest_url(self) -> str:
+        """Build the canonical latest data endpoint from configuration."""
+        return f"{str(self.config.base_url).rstrip('/')}/latest.json"
 
     async def connect(self) -> None:
         """Establish HTTP connection pool.
@@ -100,7 +101,7 @@ class CBBIClient:
         async with self._rate_limiter:
             try:
                 start_time = time.time()
-                response = await self._client.get(CBBI_LATEST_URL)
+                response = await self._client.get(self._latest_url())
                 response.raise_for_status()
 
                 data = response.json()

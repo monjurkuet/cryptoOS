@@ -22,7 +22,7 @@ class FearGreedConfig(ConnectorConfig):
     """
 
     base_url: HttpUrl = Field(
-        default="https://api.alternative.me/fng",
+        default="https://api.alternative.me/fng/",
         description="Base URL for Fear & Greed Index API",
     )
     update_interval_seconds: int = Field(

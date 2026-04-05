@@ -326,23 +326,21 @@ class BitviewClient:
 
         try:
             start = time.time()
-
-            # Try to fetch a simple metric
-            response = await self._client.get(f"{self.config.base_url.rstrip('/api')}/health")
+            data = await self._fetch_metric("date")
             latency = (time.time() - start) * 1000
 
-            if response.status_code == 200:
+            if data.get("data"):
                 return {
                     "status": "healthy",
                     "latency_ms": round(latency, 2),
                     "message": "Bitview API responding",
                 }
-            else:
-                return {
-                    "status": "unhealthy",
-                    "latency_ms": round(latency, 2),
-                    "message": f"API returned status {response.status_code}",
-                }
+
+            return {
+                "status": "degraded",
+                "latency_ms": round(latency, 2),
+                "message": "Bitview API returned no date index data",
+            }
 
         except Exception as e:
             return {

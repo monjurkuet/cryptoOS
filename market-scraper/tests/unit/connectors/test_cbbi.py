@@ -2,6 +2,9 @@
 
 """Unit tests for CBBI connector skeleton."""
 
+import asyncio
+from unittest.mock import AsyncMock
+
 from market_scraper.connectors.base import ConnectorConfig, DataConnector
 from market_scraper.connectors.cbbi import (
     CBBIClient,
@@ -98,6 +101,22 @@ class TestCBBIConnector:
 
         assert hasattr(connector, "get_current_index")
         assert hasattr(connector, "get_component_breakdown")
+
+    def test_cbbi_connector_updates_connection_state(self):
+        """Test that connect/disconnect updates is_connected."""
+        config = CBBIConfig(name="cbbi")
+        connector = CBBIConnector(config)
+        connector._client.connect = AsyncMock()
+        connector._client.close = AsyncMock()
+
+        async def run_test() -> None:
+            await connector.connect()
+            assert connector.is_connected is True
+
+            await connector.disconnect()
+            assert connector.is_connected is False
+
+        asyncio.run(run_test())
 
 
 class TestCBBIParsers:

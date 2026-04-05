@@ -20,6 +20,7 @@ Example usage:
         # Get latest metrics
         metrics = await connector.get_latest_metrics()
         print(f"Price: ${metrics.payload['metrics']['PriceUSD']:,.2f}")
+        print(f"Market Cap: ${metrics.payload['metrics']['CapMrktCurUSD']:,.2f}")
         print(f"Active Addresses: {metrics.payload['metrics']['AdrActCnt']:,}")
 
         # Get specific metric history

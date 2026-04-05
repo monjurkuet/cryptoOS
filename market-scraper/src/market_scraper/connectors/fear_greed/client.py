@@ -98,9 +98,7 @@ class FearGreedClient:
         if limit is None:
             limit = self.config.historical_limit
 
-        params = {}
-        if limit > 0:
-            params["limit"] = limit
+        params = {"limit": limit}
 
         async with self._rate_limiter:
             try:

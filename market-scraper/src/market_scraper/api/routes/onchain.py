@@ -84,6 +84,7 @@ class OnchainSummaryResponse(BaseModel):
 
     timestamp: str = Field(..., description="When data was fetched")
     price_usd: float | None = Field(None, description="Current BTC price in USD")
+    market_cap_usd: float | None = Field(None, description="Current BTC market cap in USD")
     network: NetworkMetrics = Field(default_factory=NetworkMetrics)
     sentiment: SentimentMetrics = Field(default_factory=SentimentMetrics)
     valuation: dict[str, float] = Field(
@@ -139,6 +140,7 @@ async def get_onchain_summary() -> dict[str, Any]:
         response = {
             "timestamp": datetime.now(UTC).isoformat(),
             "price_usd": None,
+            "market_cap_usd": None,
             "network": {},
             "sentiment": {"fear_greed": {}, "cbbi_confidence": None},
             "valuation": {},
@@ -156,6 +158,7 @@ async def get_onchain_summary() -> dict[str, Any]:
                 "total_btc": network.payload.get("total_btc"),
             }
             response["price_usd"] = network.payload.get("price_usd")
+            response["market_cap_usd"] = network.payload.get("market_cap_usd")
         else:
             logger.warning("onchain_network_fetch_failed", error=str(network))
 
@@ -186,6 +189,12 @@ async def get_onchain_summary() -> dict[str, Any]:
                 "supply": metrics.get("SplyCur"),
                 "market_cap": metrics.get("CapMrktCurUSD"),
             }
+            if metrics.get("PriceUSD") is not None and (
+                response["price_usd"] is None or not response["network"]
+            ):
+                response["price_usd"] = metrics.get("PriceUSD")
+            if response["market_cap_usd"] is None:
+                response["market_cap_usd"] = metrics.get("CapMrktCurUSD")
         else:
             logger.warning("onchain_activity_fetch_failed", error=str(activity))
 
@@ -612,12 +621,17 @@ async def onchain_health() -> dict[str, Any]:
             },
         }
 
-        # Overall status
-        all_healthy = all(
-            r.get("status") == "healthy" if isinstance(r, dict) else False
-            for r in health_status["connectors"].values()
-        )
-        health_status["status"] = "healthy" if all_healthy else "degraded"
+        statuses = [
+            connector.get("status", "unhealthy")
+            for connector in health_status["connectors"].values()
+            if isinstance(connector, dict)
+        ]
+        if statuses and all(status == "healthy" for status in statuses):
+            health_status["status"] = "healthy"
+        elif statuses and all(status == "unhealthy" for status in statuses):
+            health_status["status"] = "unhealthy"
+        else:
+            health_status["status"] = "degraded"
 
         return health_status
 

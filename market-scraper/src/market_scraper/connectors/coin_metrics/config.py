@@ -12,6 +12,10 @@ from market_scraper.connectors.base import ConnectorConfig
 class CoinMetricsMetric(StrEnum):
     """Available metrics from Coin Metrics Community API."""
 
+    # Market metrics
+    PRICE_USD = "PriceUSD"
+    MARKET_CAP = "CapMrktCurUSD"
+
     # Network activity metrics
     ACTIVE_ADDRESSES = "AdrActCnt"
     TRANSACTION_COUNT = "TxCnt"
@@ -59,6 +63,8 @@ class CoinMetricsConfig(ConnectorConfig):
     )
     metrics: list[str] = Field(
         default=[
+            CoinMetricsMetric.PRICE_USD.value,
+            CoinMetricsMetric.MARKET_CAP.value,
             CoinMetricsMetric.ACTIVE_ADDRESSES.value,
             CoinMetricsMetric.TRANSACTION_COUNT.value,
             CoinMetricsMetric.BLOCK_COUNT.value,

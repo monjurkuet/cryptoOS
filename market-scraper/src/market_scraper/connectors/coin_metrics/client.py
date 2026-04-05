@@ -4,13 +4,13 @@
 
 import asyncio
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import structlog
 
-from market_scraper.connectors.coin_metrics.config import CoinMetricsConfig
+from market_scraper.connectors.coin_metrics.config import CoinMetricsConfig, CoinMetricsMetric
 
 logger = structlog.get_logger(__name__)
 
@@ -85,6 +85,7 @@ class CoinMetricsClient:
         metrics: list[str] | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
+        frequency: str | None = "1d",
     ) -> dict[str, Any]:
         """Fetch asset metrics from Coin Metrics.
 
@@ -119,6 +120,8 @@ class CoinMetricsClient:
             params["start_time"] = start_time
         if end_time:
             params["end_time"] = end_time
+        if frequency:
+            params["frequency"] = frequency
 
         async with self._rate_limiter:
             try:
@@ -165,14 +168,15 @@ class CoinMetricsClient:
         Returns:
             Dictionary with latest metric values
         """
-        today = datetime.now(UTC).strftime("%Y-%m-%d")
-        yesterday = datetime.now(UTC).strftime("%Y-%m-%d")
+        end_time = datetime.now(UTC)
+        start_time = end_time - timedelta(days=2)
 
         data = await self.get_asset_metrics(
             asset=asset,
             metrics=metrics,
-            start_time=yesterday,
-            end_time=today,
+            start_time=start_time.strftime("%Y-%m-%d"),
+            end_time=end_time.strftime("%Y-%m-%d"),
+            frequency="1d",
         )
 
         if data.get("data"):
@@ -195,8 +199,6 @@ class CoinMetricsClient:
         Returns:
             List of historical data points
         """
-        from datetime import timedelta
-
         end_time = datetime.now(UTC)
         start_time = end_time - timedelta(days=days)
 
@@ -205,6 +207,7 @@ class CoinMetricsClient:
             metrics=[metric],
             start_time=start_time.strftime("%Y-%m-%d"),
             end_time=end_time.strftime("%Y-%m-%d"),
+            frequency="1d",
         )
 
         return data.get("data", [])
@@ -227,8 +230,31 @@ class CoinMetricsClient:
 
         try:
             start = time.time()
-            await self.get_latest_metrics()
+            end_time = datetime.now(UTC)
+            start_time = end_time - timedelta(days=2)
+            health_metrics = [
+                CoinMetricsMetric.PRICE_USD.value,
+                CoinMetricsMetric.MARKET_CAP.value,
+                CoinMetricsMetric.ACTIVE_ADDRESSES.value,
+                CoinMetricsMetric.TRANSACTION_COUNT.value,
+                CoinMetricsMetric.BLOCK_COUNT.value,
+                CoinMetricsMetric.SUPPLY_CURRENT.value,
+            ]
+            data = await self.get_asset_metrics(
+                asset=self.config.asset,
+                metrics=health_metrics,
+                start_time=start_time.strftime("%Y-%m-%d"),
+                end_time=end_time.strftime("%Y-%m-%d"),
+                frequency="1d",
+            )
             latency = (time.time() - start) * 1000
+
+            if not data.get("data"):
+                return {
+                    "status": "degraded",
+                    "latency_ms": round(latency, 2),
+                    "message": "API returned no data",
+                }
 
             return {
                 "status": "healthy",

@@ -19,6 +19,19 @@ This document contains only APIs that were **actually tested and verified workin
 
 ---
 
+## Canonical Probe Notes
+
+Provider base URLs are not reliable health probes on their own. Connector health checks should use the
+same canonical resource endpoints the connector actually consumes:
+
+- `Blockchain.info`: probe `https://blockchain.info/q/getblockcount`
+- `Alternative.me`: probe `https://api.alternative.me/fng/`
+- `Coin Metrics`: probe `https://community-api.coinmetrics.io/v4/timeseries/asset-metrics` with explicit asset/metric params
+
+This avoids false negatives from base-path `404` responses or trailing-slash redirects.
+
+---
+
 ## 1. Blockchain.info Charts API ⭐⭐⭐⭐⭐ (FULLY WORKING)
 
 **Base URL:** `https://api.blockchain.info/charts/{chart_name}`

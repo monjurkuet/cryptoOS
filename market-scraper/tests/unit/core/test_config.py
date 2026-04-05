@@ -86,9 +86,10 @@ class TestMongoConfig:
 class TestSettings:
     """Test suite for Settings."""
 
+    @patch.dict(os.environ, {}, clear=True)
     def test_defaults(self) -> None:
         """Test default settings."""
-        settings = Settings(mongo=MongoConfig(url="mongodb+srv://example.mongodb.net/"))
+        settings = Settings(_env_file=None, mongo=MongoConfig(url="mongodb+srv://example.mongodb.net/"))
         assert settings.app_name == "market-scraper"
         assert settings.app_version == "0.1.0"
         assert settings.debug is False
@@ -97,9 +98,10 @@ class TestSettings:
         assert settings.api_port == 3845
         assert settings.mongo.url == "mongodb+srv://example.mongodb.net/"
 
+    @patch.dict(os.environ, {}, clear=True)
     def test_nested_configs(self) -> None:
         """Test nested configuration objects."""
-        settings = Settings(mongo=MongoConfig(url="mongodb+srv://example.mongodb.net/"))
+        settings = Settings(_env_file=None, mongo=MongoConfig(url="mongodb+srv://example.mongodb.net/"))
         assert isinstance(settings.redis, RedisConfig)
         assert isinstance(settings.mongo, MongoConfig)
         assert isinstance(settings.logging, LoggingConfig)
@@ -144,6 +146,26 @@ class TestSettings:
         assert settings.environment == "production"
         assert settings.api_port == 9000
         assert settings.mongo.url == "mongodb+srv://example.mongodb.net/"
+
+    @patch.dict(
+        os.environ,
+        {"DEBUG": "release"},
+        clear=False,
+    )
+    def test_legacy_release_debug_value(self) -> None:
+        """Legacy release/debug strings should not crash settings parsing."""
+        settings = Settings(mongo=MongoConfig(url="mongodb+srv://example.mongodb.net/"))
+        assert settings.debug is False
+
+    @patch.dict(
+        os.environ,
+        {"DEBUG": "debug"},
+        clear=False,
+    )
+    def test_legacy_debug_string_enables_debug(self) -> None:
+        """The legacy 'debug' string should map to True."""
+        settings = Settings(mongo=MongoConfig(url="mongodb+srv://example.mongodb.net/"))
+        assert settings.debug is True
 
 
 class TestGetSettings:

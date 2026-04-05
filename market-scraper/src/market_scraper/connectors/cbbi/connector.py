@@ -60,6 +60,7 @@ class CBBIConnector(DataConnector):
         """
         try:
             await self._client.connect()
+            self._connected = True
             logger.info("cbbi_connector_connected")
         except Exception as e:
             logger.error("cbbi_connector_connect_failed", error=str(e))
@@ -71,6 +72,7 @@ class CBBIConnector(DataConnector):
         Closes HTTP sessions and releases resources.
         """
         self._running = False
+        self._connected = False
         await self._client.close()
         logger.info("cbbi_connector_disconnected")
 

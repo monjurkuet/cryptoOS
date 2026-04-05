@@ -5,6 +5,7 @@
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -111,6 +112,26 @@ class Settings(BaseSettings):
     # API
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=3845)
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def normalize_debug_value(cls, value: Any) -> Any:
+        """Accept legacy string environment values for DEBUG."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            legacy_map = {
+                "release": False,
+                "production": False,
+                "prod": False,
+                "development": False,
+                "dev": False,
+                "debug": True,
+            }
+            if normalized in legacy_map:
+                return legacy_map[normalized]
+        return value
 
 
 @lru_cache
