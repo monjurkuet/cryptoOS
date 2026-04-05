@@ -2,20 +2,39 @@
 
 """Integration tests for the lifecycle manager."""
 
+import asyncio
 import os
 
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
-from market_scraper.core.config import HyperliquidSettings, MongoConfig, Settings
+from market_scraper.api.routes.traders import router as traders_router
+from market_scraper.config.market_config import CandleBackfillConfig, MarketConfig, SchedulerConfig
+from market_scraper.core.events import StandardEvent
+from market_scraper.core.config import HyperliquidSettings, MongoConfig, RedisConfig, Settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
 
-TEST_MONGO_URL = os.environ["MONGO__URL"]
+TEST_MONGO_URL = os.environ.get("MONGO__URL", "mongodb://localhost:27017")
+
+
+@pytest.fixture(autouse=True)
+def disable_background_jobs(monkeypatch: pytest.MonkeyPatch):
+    """Disable network/backfill and scheduler side effects during lifecycle tests."""
+    monkeypatch.setattr(
+        "market_scraper.orchestration.lifecycle.load_market_config",
+        lambda: MarketConfig(
+            candle_backfill=CandleBackfillConfig(enabled=False, run_on_startup=False),
+            scheduler=SchedulerConfig(enabled=False),
+        ),
+    )
 
 
 @pytest.fixture
 def test_settings():
     """Create test settings with memory storage."""
     return Settings(
+        redis=RedisConfig(url=""),
         mongo=MongoConfig(url=TEST_MONGO_URL),
         hyperliquid=HyperliquidSettings(
             enabled=False,  # Disable actual WebSocket connection for tests
@@ -114,6 +133,7 @@ async def test_lifecycle_manager_detailed_health(test_settings):
 async def test_lifecycle_manager_with_custom_symbol():
     """Test lifecycle manager with custom symbol configuration."""
     settings = Settings(
+        redis=RedisConfig(url=""),
         mongo=MongoConfig(url=TEST_MONGO_URL),
         hyperliquid=HyperliquidSettings(
             enabled=False,
@@ -128,3 +148,92 @@ async def test_lifecycle_manager_with_custom_symbol():
     assert markets[0]["symbol"] == "ETH"
 
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_trader_returns_latest_ingested_position(test_settings):
+    """GET /traders/{address} returns latest current-state after trader_positions ingestion."""
+    manager = LifecycleManager(settings=test_settings)
+    await manager.startup()
+
+    try:
+        repository = manager.repository
+        event_bus = manager.event_bus
+        assert repository is not None
+        assert event_bus is not None
+
+        address = "0x1234567890123456789012345678901234567890"
+        await repository.upsert_tracked_trader_data(
+            {
+                "eth": address,
+                "name": "tracked trader",
+                "score": 88.0,
+                "tags": ["whale"],
+                "acct_val": 1_000_000,
+                "active": True,
+            }
+        )
+
+        first_event = StandardEvent.create(
+            event_type="trader_positions",
+            source="hyperliquid_ws",
+            payload={
+                "address": address,
+                "symbol": "BTC",
+                "positions": [
+                    {
+                        "position": {
+                            "coin": "BTC",
+                            "szi": 1.0,
+                            "entryPx": 50000,
+                            "markPx": 50500,
+                            "unrealizedPnl": 500,
+                            "leverage": {"value": 2},
+                        }
+                    }
+                ],
+                "marginSummary": {"accountValue": 1_000_000},
+            },
+        )
+        second_event = StandardEvent.create(
+            event_type="trader_positions",
+            source="hyperliquid_ws",
+            payload={
+                "address": address,
+                "symbol": "BTC",
+                "positions": [
+                    {
+                        "position": {
+                            "coin": "BTC",
+                            "szi": 2.5,
+                            "entryPx": 50000,
+                            "markPx": 52000,
+                            "unrealizedPnl": 5000,
+                            "leverage": {"value": 3},
+                        }
+                    }
+                ],
+                "marginSummary": {"accountValue": 1_100_000},
+            },
+        )
+
+        await event_bus.publish(first_event)
+        await event_bus.publish(second_event)
+        await asyncio.sleep(0.05)
+
+        app = FastAPI()
+        app.include_router(traders_router, prefix="/api/v1/traders")
+        app.state.lifecycle = manager
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(f"/api/v1/traders/{address}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["positions"]) == 1
+        assert data["positions"][0]["coin"] == "BTC"
+        assert data["positions"][0]["size"] == 2.5
+        assert data["positions"][0]["mark_price"] == 52000.0
+        assert data["positions"][0]["leverage"] == 3.0
+    finally:
+        await manager.shutdown()

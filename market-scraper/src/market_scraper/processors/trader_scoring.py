@@ -191,13 +191,19 @@ class TraderScoringProcessor(Processor):
 
         payload = event.payload
         if not isinstance(payload, dict):
+            logger.warning("trader_scoring_invalid_payload", payload_type=type(payload).__name__)
             return None
 
         rows = payload.get("rows", [])
         if not rows:
             rows = payload.get("traders", [])
 
+        if rows and not isinstance(rows, list):
+            logger.warning("trader_scoring_invalid_rows_shape", shape=type(rows).__name__)
+            return None
+
         if not rows:
+            logger.debug("trader_scoring_no_rows", event_id=event.event_id)
             return None
 
         # Score all traders

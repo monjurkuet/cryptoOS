@@ -48,6 +48,31 @@ class Archiver:
         self._compressor = compressor or Compressor()
         self._batch_size = batch_size
 
+        # Collection-specific time field mapping for archival queries.
+        self._date_field_map: dict[str, str] = {
+            "events": "timestamp",
+            "tracked_traders": "updated_at",
+            "trader_current_state": "updated_at",
+        }
+
+    def _resolve_date_field(self, collection_name: str) -> str:
+        """Resolve archival date field for a collection."""
+        if collection_name in self._date_field_map:
+            return self._date_field_map[collection_name]
+
+        # Default for time-series model collections.
+        if collection_name in {
+            "leaderboard_history",
+            "trader_positions",
+            "trader_scores",
+            "signals",
+            "trader_signals",
+            "mark_prices",
+        }:
+            return "t"
+
+        return "created_at"
+
     async def archive_collection(
         self,
         collection_name: str,
@@ -198,12 +223,13 @@ class Archiver:
         results = []
         for collection_name in collections:
             output_path = output_dir / f"{collection_name}_{date_str}.zst"
+            date_field = self._resolve_date_field(collection_name)
 
             try:
                 result = await self.archive_collection(
                     collection_name=collection_name,
                     output_path=output_path,
-                    query={"created_at": {"$lt": cutoff_date}},
+                    query={date_field: {"$lt": cutoff_date}},
                 )
                 results.append(result)
             except Exception as e:
@@ -213,10 +239,12 @@ class Archiver:
                     error=str(e),
                     exc_info=True,
                 )
-                results.append({
-                    "collection": collection_name,
-                    "error": str(e),
-                })
+                results.append(
+                    {
+                        "collection": collection_name,
+                        "error": str(e),
+                    }
+                )
 
         return results
 
@@ -241,8 +269,7 @@ class Archiver:
                 result[key] = self._serialize_document(value)
             elif isinstance(value, list):
                 result[key] = [
-                    self._serialize_document(v) if isinstance(v, dict) else v
-                    for v in value
+                    self._serialize_document(v) if isinstance(v, dict) else v for v in value
                 ]
             else:
                 result[key] = value

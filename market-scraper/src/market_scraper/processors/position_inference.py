@@ -152,10 +152,21 @@ class PositionInferenceProcessor(Processor):
 
         payload = event.payload
         if not isinstance(payload, dict):
+            logger.warning(
+                "position_inference_invalid_payload", payload_type=type(payload).__name__
+            )
             return None
 
         traders = payload.get("traders", [])
         if not traders:
+            traders = payload.get("rows", [])
+
+        if traders and not isinstance(traders, list):
+            logger.warning("position_inference_invalid_traders_shape", shape=type(traders).__name__)
+            return None
+
+        if not traders:
+            logger.debug("position_inference_no_traders", event_id=event.event_id)
             return None
 
         inferred = []

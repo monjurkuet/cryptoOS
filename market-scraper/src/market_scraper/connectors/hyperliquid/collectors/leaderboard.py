@@ -18,6 +18,7 @@ from market_scraper.config.market_config import MarketConfig, load_market_config
 from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
+from market_scraper.storage.base import DataRepository
 from market_scraper.utils.hyperliquid import parse_window_performances
 
 logger = structlog.get_logger(__name__)
@@ -33,8 +34,8 @@ class LeaderboardCollector:
     - Configurable scoring weights via YAML
     - Configurable filter criteria (min_score, max_count, etc.)
     - Configurable tag thresholds
-    - Direct database storage (bypasses event bus for large data)
-    - Lightweight event emission for monitoring
+    - Repository-backed storage for snapshots and tracked traders
+    - Canonical leaderboard event emission for downstream processors
     """
 
     # Use the stats-data endpoint for leaderboard (GET request, not POST)
@@ -44,7 +45,7 @@ class LeaderboardCollector:
         self,
         event_bus: EventBus,
         config: HyperliquidSettings,
-        db: Any = None,
+        repository: DataRepository | None = None,
         market_config: MarketConfig | None = None,
         refresh_interval: int | None = None,
     ) -> None:
@@ -53,13 +54,13 @@ class LeaderboardCollector:
         Args:
             event_bus: Event bus for publishing events
             config: Hyperliquid settings
-            db: Optional MongoDB database instance for direct storage
+            repository: Optional repository for persistence operations
             market_config: Market configuration (loaded from YAML if not provided)
             refresh_interval: Seconds between refreshes (uses config if not provided)
         """
         self.event_bus = event_bus
         self.config = config
-        self._db = db
+        self._repository = repository
 
         # Load market configuration
         self._market_config = market_config or load_market_config()
@@ -158,28 +159,30 @@ class LeaderboardCollector:
 
                 self._last_tracked_count = len(filtered)
 
-                # Store to database if available
-                if self._db is not None:
+                # Store derived data via repository if available
+                if self._repository is not None:
                     await self._store_derived_data(filtered, total_traders)
 
-                # Emit lightweight event (not full traders list - too large)
+                # Emit canonical leaderboard event consumed by processors.
                 event = StandardEvent.create(
-                    event_type="leaderboard_processed",
+                    event_type="leaderboard",
                     source="hyperliquid_leaderboard",
                     payload={
                         "symbol": self.config.symbol,
+                        "rows": rows,
+                        "traders": rows,
                         "total_traders": total_traders,
-                        "tracked_count": len(filtered),
+                        "tracked_count": self._last_tracked_count,
                         "fetch_time": self._last_fetch.isoformat(),
                         "min_score": self._market_config.filters.min_score,
                         "max_count": self._market_config.filters.max_count,
                     },
                 )
 
-                await self.event_bus.publish(event)
+                await self._publish_with_retry(event)
 
                 logger.info(
-                    "leaderboard_processed",
+                    "leaderboard_published",
                     total_traders=total_traders,
                     tracked_count=len(filtered),
                     min_score=self._market_config.filters.min_score,
@@ -396,50 +399,48 @@ class LeaderboardCollector:
             traders: Filtered list of traders to track
             total_count: Total number of traders in leaderboard
         """
-        if self._db is None:
+        if self._repository is None:
             return
 
         try:
-            from market_scraper.storage.models import CollectionName
-
             now = datetime.now(UTC)
 
             # 1. Store lightweight snapshot
             if self._market_config.storage.keep_snapshots:
-                snapshot = {
-                    "t": now,
-                    "symbol": self.config.symbol,
-                    "traderCount": total_count,
-                    "trackedCount": len(traders),
-                }
-                await self._db[CollectionName.LEADERBOARD_HISTORY].insert_one(snapshot)
+                await self._repository.store_leaderboard_snapshot(
+                    symbol=self.config.symbol,
+                    total_count=total_count,
+                    tracked_count=len(traders),
+                    timestamp=now,
+                )
 
             # 2. Upsert traders
-            selected_addresses = {t["eth"] for t in traders}
+            selected_addresses = []
 
             for trader in traders:
-                doc = {
-                    "eth": trader["eth"],
-                    "name": trader["name"],
-                    "score": trader["score"],
-                    "acct_val": trader["acct_val"],
-                    "tags": trader["tags"],
-                    "performances": trader.get("performances", {}),
-                    "active": True,
-                    "updated_at": now,
-                }
+                address = str(trader.get("eth", "")).lower()
+                if not address:
+                    continue
+                selected_addresses.append(address)
 
-                await self._db[CollectionName.TRACKED_TRADERS].update_one(
-                    {"eth": trader["eth"]},
-                    {"$set": doc, "$setOnInsert": {"added_at": now}},
-                    upsert=True,
+                await self._repository.upsert_tracked_trader_data(
+                    {
+                        "eth": address,
+                        "name": trader.get("name"),
+                        "score": trader.get("score", 0),
+                        "acct_val": trader.get("acct_val", 0),
+                        "tags": trader.get("tags", []),
+                        "performances": trader.get("performances", {}),
+                        "active": True,
+                    },
+                    updated_at=now,
                 )
 
             # 3. Deactivate traders not in selection
             if selected_addresses:
-                await self._db[CollectionName.TRACKED_TRADERS].update_many(
-                    {"eth": {"$nin": list(selected_addresses)}, "active": True},
-                    {"$set": {"active": False, "updated_at": now}},
+                await self._repository.deactivate_unselected_traders(
+                    selected_addresses=selected_addresses,
+                    updated_at=now,
                 )
 
             logger.info(
@@ -450,6 +451,25 @@ class LeaderboardCollector:
 
         except Exception as e:
             logger.error("leaderboard_storage_error", error=str(e), exc_info=True)
+
+    async def _publish_with_retry(self, event: StandardEvent, retries: int = 3) -> None:
+        """Publish an event with bounded retries and exponential backoff."""
+        delay_seconds = 0.2
+        for attempt in range(1, retries + 1):
+            try:
+                await self.event_bus.publish(event)
+                return
+            except Exception as e:
+                if attempt == retries:
+                    raise
+                logger.warning(
+                    "leaderboard_publish_retry",
+                    attempt=attempt,
+                    max_attempts=retries,
+                    error=str(e),
+                )
+                await asyncio.sleep(delay_seconds)
+                delay_seconds *= 2
 
     async def _fetch_leaderboard(self) -> dict[str, Any] | None:
         """Fetch leaderboard from Stats Data API.
@@ -540,17 +560,12 @@ class LeaderboardCollector:
         Returns:
             List of Ethereum addresses for tracked traders
         """
-        if self._db is None:
-            logger.warning("get_tracked_addresses_no_database")
+        if self._repository is None:
+            logger.warning("get_tracked_addresses_no_repository")
             return []
 
         try:
-            from market_scraper.storage.models import CollectionName
-
-            cursor = self._db[CollectionName.TRACKED_TRADERS].find(
-                {"active": True}, {"eth": 1, "_id": 0}
-            )
-            addresses = [doc["eth"] async for doc in cursor]
+            addresses = await self._repository.get_active_trader_addresses()
             logger.debug("get_tracked_addresses_found", count=len(addresses))
             return addresses
         except Exception as e:

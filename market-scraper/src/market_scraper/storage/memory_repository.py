@@ -27,6 +27,10 @@ class MemoryRepository(DataRepository):
         """
         super().__init__(connection_string)
         self._events: list[StandardEvent] = []
+        self._leaderboard_history: list[dict[str, Any]] = []
+        self._tracked_traders: dict[str, dict[str, Any]] = {}
+        self._trader_current_state: dict[str, dict[str, Any]] = {}
+        self._trader_positions_history: list[dict[str, Any]] = []
 
     async def connect(self) -> None:
         """Establish connection (no-op for in-memory storage)."""
@@ -35,6 +39,10 @@ class MemoryRepository(DataRepository):
     async def disconnect(self) -> None:
         """Close connection and clear all events."""
         self._events = []
+        self._leaderboard_history = []
+        self._tracked_traders = {}
+        self._trader_current_state = {}
+        self._trader_positions_history = []
         self._connected = False
 
     async def store(self, event: StandardEvent) -> bool:
@@ -412,6 +420,10 @@ class MemoryRepository(DataRepository):
         This is useful for testing to reset state between tests.
         """
         self._events = []
+        self._leaderboard_history = []
+        self._tracked_traders = {}
+        self._trader_current_state = {}
+        self._trader_positions_history = []
 
     # ============== Trader Query Methods ==============
 
@@ -422,7 +434,7 @@ class MemoryRepository(DataRepository):
         active_only: bool = True,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Get tracked traders (stub for testing).
+        """Get tracked traders from in-memory state.
 
         Args:
             min_score: Minimum score filter.
@@ -431,9 +443,20 @@ class MemoryRepository(DataRepository):
             limit: Maximum results.
 
         Returns:
-            Empty list (stub implementation).
+            Filtered tracked trader dictionaries sorted by score descending.
         """
-        return []
+        traders = list(self._tracked_traders.values())
+
+        if active_only:
+            traders = [t for t in traders if t.get("active", True)]
+
+        traders = [t for t in traders if float(t.get("score", 0) or 0) >= min_score]
+
+        if tag:
+            traders = [t for t in traders if tag in t.get("tags", [])]
+
+        traders.sort(key=lambda t: float(t.get("score", 0) or 0), reverse=True)
+        return traders[:limit]
 
     async def count_tracked_traders(
         self,
@@ -441,7 +464,7 @@ class MemoryRepository(DataRepository):
         tag: str | None = None,
         active_only: bool = True,
     ) -> int:
-        """Count tracked traders (stub for testing).
+        """Count tracked traders from in-memory state.
 
         Args:
             min_score: Minimum score filter.
@@ -449,31 +472,41 @@ class MemoryRepository(DataRepository):
             active_only: Only count active traders.
 
         Returns:
-            0 (stub implementation).
+            Number of matching tracked traders.
         """
-        return 0
+        traders = list(self._tracked_traders.values())
+
+        if active_only:
+            traders = [t for t in traders if t.get("active", True)]
+
+        traders = [t for t in traders if float(t.get("score", 0) or 0) >= min_score]
+
+        if tag:
+            traders = [t for t in traders if tag in t.get("tags", [])]
+
+        return len(traders)
 
     async def get_trader_by_address(self, address: str) -> dict[str, Any] | None:
-        """Get a trader by address (stub for testing).
+        """Get a trader by address from in-memory state.
 
         Args:
             address: Trader Ethereum address.
 
         Returns:
-            None (stub implementation).
+            Trader dictionary or None.
         """
-        return None
+        return self._tracked_traders.get(address.lower())
 
     async def get_trader_current_state(self, address: str) -> dict[str, Any] | None:
-        """Get a trader's current state (stub for testing).
+        """Get a trader's current state from in-memory state.
 
         Args:
             address: Trader Ethereum address.
 
         Returns:
-            None (stub implementation).
+            Current-state dictionary or None.
         """
-        return None
+        return self._trader_current_state.get(address.lower())
 
     async def get_trader_positions_history(
         self,
@@ -481,7 +514,7 @@ class MemoryRepository(DataRepository):
         start_time: datetime,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Get position history for a trader (stub for testing).
+        """Get position history for a trader from in-memory state.
 
         Args:
             address: Trader Ethereum address.
@@ -489,9 +522,18 @@ class MemoryRepository(DataRepository):
             limit: Maximum results.
 
         Returns:
-            Empty list (stub implementation).
+            Position history ordered by time descending.
         """
-        return []
+        normalized = address.lower()
+        rows = [
+            p
+            for p in self._trader_positions_history
+            if p.get("eth") == normalized
+            and isinstance(p.get("t"), datetime)
+            and p["t"] >= start_time
+        ]
+        rows.sort(key=lambda p: p.get("t", datetime.min), reverse=True)
+        return rows[:limit]
 
     async def get_trader_signals(
         self,
@@ -510,6 +552,102 @@ class MemoryRepository(DataRepository):
             Empty list (stub implementation).
         """
         return []
+
+    async def store_leaderboard_snapshot(
+        self,
+        symbol: str,
+        total_count: int,
+        tracked_count: int,
+        timestamp: datetime | None = None,
+    ) -> bool:
+        """Store a lightweight leaderboard snapshot (in-memory)."""
+        self._leaderboard_history.append(
+            {
+                "t": timestamp or datetime.now(),
+                "symbol": symbol,
+                "traderCount": total_count,
+                "trackedCount": tracked_count,
+            }
+        )
+        return True
+
+    async def upsert_tracked_trader_data(
+        self,
+        trader: dict[str, Any],
+        updated_at: datetime | None = None,
+    ) -> bool:
+        """Upsert tracked trader data (in-memory)."""
+        address = str(trader.get("eth", "")).lower()
+        if not address:
+            return False
+
+        now = updated_at or datetime.now()
+        existing = self._tracked_traders.get(address, {})
+        added_at = existing.get("added_at", now)
+
+        self._tracked_traders[address] = {
+            **existing,
+            **trader,
+            "eth": address,
+            "active": trader.get("active", True),
+            "updated_at": now,
+            "added_at": added_at,
+        }
+        return True
+
+    async def deactivate_unselected_traders(
+        self,
+        selected_addresses: list[str],
+        updated_at: datetime | None = None,
+    ) -> int:
+        """Deactivate unselected tracked traders (in-memory)."""
+        selected = {a.lower() for a in selected_addresses}
+        now = updated_at or datetime.now()
+        modified = 0
+
+        for address, trader in self._tracked_traders.items():
+            if address in selected:
+                continue
+            if trader.get("active", True):
+                trader["active"] = False
+                trader["updated_at"] = now
+                modified += 1
+
+        return modified
+
+    async def get_active_trader_addresses(self, limit: int = 5000) -> list[str]:
+        """Get active trader addresses (in-memory)."""
+        addresses = [a for a, d in self._tracked_traders.items() if d.get("active", True)]
+        return addresses[:limit]
+
+    async def upsert_trader_current_state(
+        self,
+        address: str,
+        symbol: str,
+        positions: list[dict[str, Any]],
+        margin_summary: dict[str, Any] | None,
+        event_timestamp: datetime,
+        source: str,
+    ) -> bool:
+        """Upsert trader current state (in-memory)."""
+        normalized = address.lower()
+        self._trader_current_state[normalized] = {
+            "eth": normalized,
+            "symbol": symbol,
+            "positions": positions,
+            "margin_summary": margin_summary or {},
+            "last_event_time": event_timestamp,
+            "updated_at": datetime.now(),
+            "source": source,
+        }
+        return True
+
+    async def store_trader_position(self, position: Any) -> bool:
+        """Store a normalized trader position history row (in-memory)."""
+        data = position.model_dump() if hasattr(position, "model_dump") else dict(position)
+        data["eth"] = str(data.get("eth", "")).lower()
+        self._trader_positions_history.append(data)
+        return True
 
     # ============== Signal Query Methods ==============
 

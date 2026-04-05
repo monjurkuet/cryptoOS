@@ -3,7 +3,6 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-import pytest_asyncio
 
 from market_scraper.core.events import EventType, MarketDataPayload, StandardEvent
 from market_scraper.core.exceptions import StorageError
@@ -14,7 +13,7 @@ from market_scraper.storage.memory_repository import MemoryRepository
 class TestMemoryRepository:
     """Test suite for MemoryRepository."""
 
-    @pytest_asyncio.fixture
+    @pytest.fixture
     async def repository(self):
         """Create and connect a MemoryRepository."""
         repo = MemoryRepository()
@@ -430,3 +429,78 @@ class TestMemoryRepository:
         # Query should work with both dict and MarketDataPayload
         results = await repository.query(QueryFilter(symbol="BTC-USD"))
         assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_tracked_traders_queries(self, repository: MemoryRepository):
+        """Tracked trader queries return repository-backed data."""
+        await repository.upsert_tracked_trader_data(
+            {
+                "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0001",
+                "name": "alpha",
+                "score": 91,
+                "tags": ["whale"],
+                "active": True,
+            }
+        )
+        await repository.upsert_tracked_trader_data(
+            {
+                "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0002",
+                "name": "beta",
+                "score": 45,
+                "tags": ["small"],
+                "active": True,
+            }
+        )
+
+        top = await repository.get_tracked_traders(min_score=50, tag="whale", active_only=True)
+        assert len(top) == 1
+        assert top[0]["eth"] == "0xabcdefabcdefabcdefabcdefabcdefabcdef0001"
+
+        count = await repository.count_tracked_traders(min_score=40, active_only=True)
+        assert count == 2
+
+        fetched = await repository.get_trader_by_address(
+            "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0001"
+        )
+        assert fetched is not None
+        assert fetched["name"] == "alpha"
+
+    @pytest.mark.asyncio
+    async def test_trader_current_state_and_history(self, repository: MemoryRepository):
+        """Current state and position history are persisted for traders."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0003"
+        event_time = datetime(2024, 1, 1, 12, 0, 0)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[{"position": {"coin": "BTC", "szi": 1.25}}],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=event_time,
+            source="hyperliquid_ws",
+        )
+
+        state = await repository.get_trader_current_state(address)
+        assert state is not None
+        assert state["eth"] == "0xabcdefabcdefabcdefabcdefabcdefabcdef0003"
+        assert state["positions"][0]["position"]["coin"] == "BTC"
+
+        await repository.store_trader_position(
+            {
+                "eth": address,
+                "t": event_time,
+                "coin": "BTC",
+                "sz": 1.25,
+                "ep": 50000,
+                "mp": 51000,
+                "upnl": 1250,
+                "lev": 2,
+            }
+        )
+
+        history = await repository.get_trader_positions_history(
+            address=address,
+            start_time=event_time.replace(hour=0),
+        )
+        assert len(history) == 1
+        assert history[0]["coin"] == "BTC"

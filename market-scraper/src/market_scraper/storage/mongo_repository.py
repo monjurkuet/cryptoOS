@@ -182,8 +182,19 @@ class MongoRepository(DataRepository):
             await self._db[CollectionName.TRACKED_TRADERS].create_index([("score", -1)])
             await self._db[CollectionName.TRACKED_TRADERS].create_index([("active", 1)])
 
+            # Trader current state - latest materialized snapshot per trader/symbol
+            await self._db[CollectionName.TRADER_CURRENT_STATE].create_index(
+                [("eth", 1), ("symbol", 1)],
+                unique=True,
+            )
+            await self._db[CollectionName.TRADER_CURRENT_STATE].create_index([("updated_at", -1)])
+
             # Signals - symbol and time
             await self._db[CollectionName.SIGNALS].create_index([("symbol", 1), ("t", -1)])
+
+            # Dead letter events for failed persistence/publish handling.
+            await self._db["dead_letters"].create_index([("timestamp", -1)])
+            await self._db["dead_letters"].create_index([("event_type", 1), ("source", 1)])
 
             # Trader signals - compound indexes
             await self._db[CollectionName.TRADER_SIGNALS].create_index([("eth", 1), ("t", -1)])
@@ -1071,12 +1082,178 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRADER_CURRENT_STATE]
-            doc = await collection.find_one({"ethAddress": address})
+            doc = await collection.find_one({"eth": address})
+            if not doc:
+                # Backward-compatible fallback for legacy field name.
+                doc = await collection.find_one({"ethAddress": address})
             if doc:
                 doc.pop("_id", None)
             return doc
         except Exception as e:
             raise StorageError(f"Failed to get trader current state: {e}") from e
+
+    async def store_leaderboard_snapshot(
+        self,
+        symbol: str,
+        total_count: int,
+        tracked_count: int,
+        timestamp: datetime | None = None,
+    ) -> bool:
+        """Store a lightweight leaderboard snapshot."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            now = timestamp or datetime.now(UTC)
+            collection = self._db[CollectionName.LEADERBOARD_HISTORY]
+            await collection.insert_one(
+                {
+                    "t": now,
+                    "symbol": symbol,
+                    "traderCount": total_count,
+                    "trackedCount": tracked_count,
+                }
+            )
+            return True
+        except Exception as e:
+            raise StorageError(f"Failed to store leaderboard snapshot: {e}") from e
+
+    async def upsert_tracked_trader_data(
+        self,
+        trader: dict[str, Any],
+        updated_at: datetime | None = None,
+    ) -> bool:
+        """Upsert normalized tracked trader data."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            address = str(trader.get("eth", "")).lower()
+            if not address:
+                return False
+
+            now = updated_at or datetime.now(UTC)
+            collection = self._db[CollectionName.TRACKED_TRADERS]
+            doc = {
+                "eth": address,
+                "name": trader.get("name"),
+                "score": float(trader.get("score", 0)),
+                "acct_val": float(trader.get("acct_val", 0)),
+                "tags": trader.get("tags", []),
+                "performances": trader.get("performances", {}),
+                "active": bool(trader.get("active", True)),
+                "updated_at": now,
+            }
+
+            await collection.update_one(
+                {"eth": address},
+                {"$set": doc, "$setOnInsert": {"added_at": now}},
+                upsert=True,
+            )
+            return True
+        except Exception as e:
+            raise StorageError(f"Failed to upsert tracked trader data: {e}") from e
+
+    async def deactivate_unselected_traders(
+        self,
+        selected_addresses: list[str],
+        updated_at: datetime | None = None,
+    ) -> int:
+        """Deactivate active traders not in the selected address set."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            now = updated_at or datetime.now(UTC)
+            normalized = [a.lower() for a in selected_addresses if a]
+            collection = self._db[CollectionName.TRACKED_TRADERS]
+
+            query: dict[str, Any] = {"active": True}
+            if normalized:
+                query["eth"] = {"$nin": normalized}
+
+            result = await collection.update_many(
+                query,
+                {"$set": {"active": False, "updated_at": now}},
+            )
+            return int(result.modified_count)
+        except Exception as e:
+            raise StorageError(f"Failed to deactivate unselected traders: {e}") from e
+
+    async def get_active_trader_addresses(self, limit: int = 5000) -> list[str]:
+        """Get active tracked trader addresses."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            collection = self._db[CollectionName.TRACKED_TRADERS]
+            cursor = collection.find({"active": True}, {"eth": 1, "_id": 0}).limit(limit)
+            docs = await cursor.to_list(length=limit)
+            return [str(d.get("eth", "")).lower() for d in docs if d.get("eth")]
+        except Exception as e:
+            raise StorageError(f"Failed to get active trader addresses: {e}") from e
+
+    async def upsert_trader_current_state(
+        self,
+        address: str,
+        symbol: str,
+        positions: list[dict[str, Any]],
+        margin_summary: dict[str, Any] | None,
+        event_timestamp: datetime,
+        source: str,
+    ) -> bool:
+        """Upsert latest trader current state snapshot."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            now = datetime.now(UTC)
+            normalized_address = address.lower()
+            collection = self._db[CollectionName.TRADER_CURRENT_STATE]
+            await collection.update_one(
+                {"eth": normalized_address, "symbol": symbol},
+                {
+                    "$set": {
+                        "eth": normalized_address,
+                        "symbol": symbol,
+                        "positions": positions,
+                        "margin_summary": margin_summary or {},
+                        "last_event_time": event_timestamp,
+                        "updated_at": now,
+                        "source": source,
+                    }
+                },
+                upsert=True,
+            )
+            return True
+        except Exception as e:
+            raise StorageError(f"Failed to upsert trader current state: {e}") from e
+
+    async def store_dead_letter(
+        self,
+        event: StandardEvent,
+        reason: str,
+        error_message: str,
+    ) -> bool:
+        """Store failed events in a dead-letter collection."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            await self._db["dead_letters"].insert_one(
+                {
+                    "event_id": event.event_id,
+                    "event_type": str(event.event_type),
+                    "source": event.source,
+                    "timestamp": datetime.now(UTC),
+                    "reason": reason,
+                    "error": error_message,
+                    "event": event.model_dump(),
+                }
+            )
+            return True
+        except Exception as e:
+            raise StorageError(f"Failed to store dead letter event: {e}") from e
 
     async def get_trader_positions_history(
         self,

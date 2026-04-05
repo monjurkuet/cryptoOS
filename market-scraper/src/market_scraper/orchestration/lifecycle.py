@@ -25,7 +25,7 @@ from market_scraper.processors.signal_generation import SignalGenerationProcesso
 from market_scraper.processors.trader_scoring import TraderScoringProcessor
 from market_scraper.storage.base import DataRepository
 from market_scraper.storage.memory_repository import MemoryRepository
-from market_scraper.storage.models import TradingSignal
+from market_scraper.storage.models import TraderPosition, TradingSignal
 from market_scraper.storage.mongo_repository import MongoRepository
 
 logger = structlog.get_logger(__name__)
@@ -331,17 +331,30 @@ class LifecycleManager:
             if self._repository:
                 try:
                     # Store in events collection
-                    await self._repository.store(event)
+                    await self._retry_repository_op(
+                        self._repository.store,
+                        event,
+                        operation_name="store_event",
+                    )
 
                     # Also store trading signals in signals collection
                     if event.event_type == "trading_signal":
                         await self._store_trading_signal(event)
+
+                    # Materialize latest trader state and append history snapshots.
+                    if event.event_type == "trader_positions":
+                        await self._store_trader_positions_state(event)
 
                 except Exception as e:
                     logger.error(
                         "storage_handler_error",
                         event_id=event.event_id,
                         error=str(e),
+                    )
+                    await self._store_dead_letter(
+                        event=event,
+                        reason="event_storage_failed",
+                        error=e,
                     )
 
         # Subscribe to all events
@@ -353,8 +366,9 @@ class LifecycleManager:
         Args:
             event: Trading signal event to store.
         """
-        if not self._repository or not isinstance(self._repository, MongoRepository):
+        if not self._repository or not hasattr(self._repository, "store_signal"):
             return
+        repository = self._repository
 
         payload = event.payload
         if not isinstance(payload, dict):
@@ -374,10 +388,140 @@ class LifecycleManager:
                 t_flat=payload.get("tradersFlat", 0),
                 price=payload.get("price", 0),
             )
-            await self._repository.store_signal(signal)
+            await self._retry_repository_op(
+                getattr(repository, "store_signal"),
+                signal,
+                operation_name="store_trading_signal",
+            )
             logger.debug("trading_signal_stored", symbol=signal.symbol, rec=signal.rec)
         except Exception as e:
             logger.error("trading_signal_store_error", error=str(e))
+
+    async def _store_trader_positions_state(self, event: StandardEvent) -> None:
+        """Persist trader position event into current-state and history collections."""
+        if not self._repository or not hasattr(self._repository, "upsert_trader_current_state"):
+            return
+        repository = self._repository
+
+        payload = event.payload
+        if not isinstance(payload, dict):
+            return
+
+        address = str(payload.get("address", "")).lower()
+        symbol = str(payload.get("symbol", self._settings.hyperliquid.symbol))
+        positions = payload.get("positions", [])
+        margin_summary = payload.get("marginSummary", {})
+
+        if not address or not isinstance(positions, list):
+            logger.warning("trader_positions_invalid_payload", event_id=event.event_id)
+            return
+
+        # Parse event-specific timestamp, fallback to event envelope timestamp.
+        event_timestamp = event.timestamp
+        payload_timestamp = payload.get("timestamp")
+        if isinstance(payload_timestamp, str):
+            try:
+                event_timestamp = datetime.fromisoformat(payload_timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                logger.debug("trader_positions_timestamp_parse_failed", value=payload_timestamp)
+
+        try:
+            await self._retry_repository_op(
+                getattr(repository, "upsert_trader_current_state"),
+                address,
+                symbol,
+                positions,
+                margin_summary if isinstance(margin_summary, dict) else {},
+                event_timestamp,
+                event.source,
+                operation_name="upsert_trader_current_state",
+            )
+
+            # Keep normalized position history in trader_positions time-series when supported.
+            if hasattr(repository, "store_trader_position"):
+                for pos in positions:
+                    p = pos.get("position", pos) if isinstance(pos, dict) else {}
+                    coin = p.get("coin")
+                    if not coin:
+                        continue
+
+                    position_model = TraderPosition(
+                        eth=address,
+                        t=event_timestamp,
+                        coin=str(coin),
+                        sz=float(p.get("szi", 0) or 0),
+                        ep=float(p.get("entryPx", 0) or 0),
+                        mp=float(p.get("markPx", 0) or 0),
+                        upnl=float(p.get("unrealizedPnl", 0) or 0),
+                        lev=float(
+                            (p.get("leverage") or {}).get("value", 1)
+                            if isinstance(p.get("leverage"), dict)
+                            else p.get("leverage", 1)
+                        ),
+                        liq=(
+                            float(p.get("liquidationPx", 0))
+                            if p.get("liquidationPx") not in (None, "")
+                            else None
+                        ),
+                    )
+                    await self._retry_repository_op(
+                        getattr(repository, "store_trader_position"),
+                        position_model,
+                        operation_name="store_trader_position",
+                    )
+
+        except Exception as e:
+            logger.error("trader_positions_store_error", error=str(e), event_id=event.event_id)
+            await self._store_dead_letter(
+                event=event,
+                reason="trader_positions_persistence_failed",
+                error=e,
+            )
+
+    async def _retry_repository_op(
+        self,
+        operation: Any,
+        *args: Any,
+        operation_name: str,
+        max_retries: int = 3,
+    ) -> Any:
+        """Run repository operation with bounded exponential-backoff retries."""
+        delay = 0.1
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await operation(*args)
+            except Exception as e:
+                if attempt == max_retries:
+                    raise
+                logger.warning(
+                    "repository_operation_retry",
+                    operation=operation_name,
+                    attempt=attempt,
+                    max_attempts=max_retries,
+                    error=str(e),
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
+
+    async def _store_dead_letter(
+        self,
+        event: StandardEvent,
+        reason: str,
+        error: Exception,
+    ) -> None:
+        """Store a failed event in dead-letter collection when available."""
+        if not self._repository or not hasattr(self._repository, "store_dead_letter"):
+            return
+        repository = self._repository
+
+        try:
+            await getattr(repository, "store_dead_letter")(
+                event=event,
+                reason=reason,
+                error_message=str(error),
+            )
+        except Exception as dlq_error:
+            logger.error("dead_letter_store_failed", error=str(dlq_error), event_id=event.event_id)
 
     async def _run_candle_backfill(self) -> None:
         """Run historical candle backfill on startup."""
@@ -392,6 +536,9 @@ class LifecycleManager:
             return
 
         try:
+            if self._repository is None:
+                raise RuntimeError("Repository not initialized")
+
             client = HyperliquidClient(
                 base_url=self._settings.hyperliquid.api_url,
                 timeout=self._settings.hyperliquid.timeout_seconds,
@@ -512,15 +659,13 @@ class LifecycleManager:
         # Load market configuration from YAML
         market_config = load_market_config()
 
-        # Get database reference for direct storage
-        db = None
-        if hasattr(self._repository, "_db"):
-            db = self._repository._db
+        if self._repository is None:
+            raise RuntimeError("Repository not initialized")
 
         self._leaderboard_collector = LeaderboardCollector(
             event_bus=self._event_bus,
             config=self._settings.hyperliquid,
-            db=db,
+            repository=self._repository,
             market_config=market_config,
         )
 
@@ -928,9 +1073,12 @@ class LifecycleManager:
                 await self._leaderboard_collector.start()
                 return
             if not self._leaderboard_collector and self._event_bus:
+                if self._repository is None:
+                    raise RuntimeError("Repository not initialized")
                 self._leaderboard_collector = LeaderboardCollector(
                     event_bus=self._event_bus,
                     config=self._settings.hyperliquid,
+                    repository=self._repository,
                 )
                 await self._leaderboard_collector.start()
                 return

@@ -409,6 +409,113 @@ class DataRepository(ABC):
         """
         pass
 
+    @abstractmethod
+    async def store_leaderboard_snapshot(
+        self,
+        symbol: str,
+        total_count: int,
+        tracked_count: int,
+        timestamp: datetime | None = None,
+    ) -> bool:
+        """Store a lightweight leaderboard snapshot.
+
+        Args:
+            symbol: Trading symbol.
+            total_count: Total traders seen in leaderboard.
+            tracked_count: Traders selected for tracking.
+            timestamp: Snapshot time (defaults to now if omitted).
+
+        Returns:
+            True if successful.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
+    async def upsert_tracked_trader_data(
+        self,
+        trader: dict[str, Any],
+        updated_at: datetime | None = None,
+    ) -> bool:
+        """Upsert tracked trader data from leaderboard selection.
+
+        Args:
+            trader: Trader dictionary containing normalized tracking fields.
+            updated_at: Update timestamp (defaults to now if omitted).
+
+        Returns:
+            True if successful.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
+    async def deactivate_unselected_traders(
+        self,
+        selected_addresses: list[str],
+        updated_at: datetime | None = None,
+    ) -> int:
+        """Deactivate tracked traders that are not currently selected.
+
+        Args:
+            selected_addresses: Addresses that should remain active.
+            updated_at: Update timestamp (defaults to now if omitted).
+
+        Returns:
+            Number of modified documents.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
+    async def get_active_trader_addresses(self, limit: int = 5000) -> list[str]:
+        """Get active tracked trader addresses.
+
+        Args:
+            limit: Maximum addresses to return.
+
+        Returns:
+            List of Ethereum addresses.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
+    async def upsert_trader_current_state(
+        self,
+        address: str,
+        symbol: str,
+        positions: list[dict[str, Any]],
+        margin_summary: dict[str, Any] | None,
+        event_timestamp: datetime,
+        source: str,
+    ) -> bool:
+        """Upsert the latest trader current state snapshot.
+
+        Args:
+            address: Trader Ethereum address.
+            symbol: Trading symbol.
+            positions: Latest position payload list.
+            margin_summary: Latest margin summary payload.
+            event_timestamp: Event time.
+            source: Event source identifier.
+
+        Returns:
+            True if successful.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
     # ============== Signal Query Methods ==============
 
     @abstractmethod
