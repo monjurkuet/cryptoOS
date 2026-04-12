@@ -204,6 +204,23 @@ class DataRepository(ABC):
     # ============== Candle Query Methods ==============
 
     @abstractmethod
+    async def store_candle(self, candle: Any, symbol: str, interval: str) -> bool:
+        """Store a candle in the canonical candle collection.
+
+        Args:
+            candle: Candle snapshot to store.
+            symbol: Trading symbol.
+            interval: Candle interval.
+
+        Returns:
+            True if successful.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
     async def get_latest_candle(
         self,
         symbol: str,
@@ -507,6 +524,36 @@ class DataRepository(ABC):
             margin_summary: Latest margin summary payload.
             event_timestamp: Event time.
             source: Event source identifier.
+
+        Returns:
+            True if successful.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
+    async def store_trader_position(self, position: Any) -> bool:
+        """Store a normalized trader position history row.
+
+        Args:
+            position: Position snapshot to store.
+
+        Returns:
+            True if successful.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
+    async def store_trader_score(self, score: Any) -> bool:
+        """Store a trader score history row.
+
+        Args:
+            score: Score snapshot to store.
 
         Returns:
             True if successful.

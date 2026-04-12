@@ -19,6 +19,7 @@ from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
 from market_scraper.storage.base import DataRepository
+from market_scraper.storage.models import TraderScore
 from market_scraper.utils.hyperliquid import parse_window_performances
 
 logger = structlog.get_logger(__name__)
@@ -393,7 +394,8 @@ class LeaderboardCollector:
 
         Stores:
         1. Lightweight snapshot to leaderboard_history
-        2. Upsert traders to tracked_traders
+        2. Optional score snapshots to trader_scores
+        3. Upsert traders to tracked_traders
 
         Args:
             traders: Filtered list of traders to track
@@ -422,6 +424,21 @@ class LeaderboardCollector:
                 if not address:
                     continue
                 selected_addresses.append(address)
+
+                if self._market_config.storage.keep_score_history:
+                    performances = trader.get("performances") or {}
+                    await self._repository.store_trader_score(
+                        TraderScore(
+                            eth=address,
+                            t=now,
+                            score=float(trader.get("score", 0) or 0),
+                            tags=list(trader.get("tags") or []),
+                            acct_val=float(trader.get("acct_val", 0) or 0),
+                            all_roi=float((performances.get("allTime") or {}).get("roi", 0) or 0),
+                            month_roi=float((performances.get("month") or {}).get("roi", 0) or 0),
+                            week_roi=float((performances.get("week") or {}).get("roi", 0) or 0),
+                        )
+                    )
 
                 await self._repository.upsert_tracked_trader_data(
                     {

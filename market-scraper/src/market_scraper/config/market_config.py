@@ -99,7 +99,7 @@ class RetentionConfig(BaseModel):
     Controls how long data is kept before automatic deletion via MongoDB TTL indexes.
     """
 
-    events: int = Field(default=7, description="Days to keep raw events (catch-all audit log)")
+    events: int = Field(default=2, description="Days to keep raw audit events only")
     leaderboard_history: int = Field(default=90, description="Days to keep leaderboard history")
     trader_positions: int = Field(default=30, description="Days to keep position snapshots")
     trader_scores: int = Field(default=90, description="Days to keep score history")

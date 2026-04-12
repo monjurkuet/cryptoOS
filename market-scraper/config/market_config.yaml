@@ -108,7 +108,7 @@ storage:
 
   # Per-collection retention (days) - automatic deletion via MongoDB TTL indexes
   retention:
-    events: 7                  # Raw events (catch-all audit log)
+    events: 2                  # Raw audit events only (canonical data lives elsewhere)
     leaderboard_history: 90    # Leaderboard snapshots
     trader_positions: 30       # Position snapshots
     trader_scores: 90          # Score history
@@ -230,4 +230,3 @@ archival:
 
   # Archive data older than retention_days before TTL deletion
   archive_before_ttl_days: 2  # Archive 2 days before TTL expires
-

@@ -217,6 +217,64 @@ class MongoRepository(DataRepository):
 
             return RetentionConfig()
 
+    @staticmethod
+    def _normalize_tags(tags: Any) -> list[str]:
+        """Normalize tag collections for stable equality comparisons."""
+        return sorted(str(tag) for tag in (tags or []))
+
+    @staticmethod
+    def _normalize_mapping(value: Any) -> dict[str, Any]:
+        """Normalize mapping values for stable persistence comparisons."""
+        return dict(value or {})
+
+    @staticmethod
+    def _position_snapshot_payload(position: TraderPosition | dict[str, Any]) -> dict[str, Any]:
+        """Build comparable payload for trader position history rows."""
+        data = position.model_dump() if hasattr(position, "model_dump") else dict(position)
+        return {
+            "eth": str(data.get("eth", "")).lower(),
+            "coin": str(data.get("coin", "")),
+            "sz": float(data.get("sz", 0) or 0),
+            "ep": float(data.get("ep", 0) or 0),
+            "mp": float(data.get("mp", 0) or 0),
+            "upnl": float(data.get("upnl", 0) or 0),
+            "lev": float(data.get("lev", 0) or 0),
+            "liq": data.get("liq"),
+        }
+
+    @staticmethod
+    def _score_snapshot_payload(score: TraderScore | dict[str, Any]) -> dict[str, Any]:
+        """Build comparable payload for trader score history rows."""
+        data = score.model_dump() if hasattr(score, "model_dump") else dict(score)
+        return {
+            "eth": str(data.get("eth", "")).lower(),
+            "score": float(data.get("score", 0) or 0),
+            "tags": MongoRepository._normalize_tags(data.get("tags")),
+            "acct_val": float(data.get("acct_val", 0) or 0),
+            "all_roi": float(data.get("all_roi", 0) or 0),
+            "month_roi": float(data.get("month_roi", 0) or 0),
+            "week_roi": float(data.get("week_roi", 0) or 0),
+        }
+
+    @staticmethod
+    def _current_state_payload(
+        address: str,
+        symbol: str,
+        positions: list[dict[str, Any]],
+        margin_summary: dict[str, Any] | None,
+        event_timestamp: datetime,
+        source: str,
+    ) -> dict[str, Any]:
+        """Build comparable payload for materialized trader current state."""
+        return {
+            "eth": address.lower(),
+            "symbol": symbol,
+            "positions": positions,
+            "margin_summary": dict(margin_summary or {}),
+            "last_event_time": event_timestamp,
+            "source": source,
+        }
+
     async def store(self, event: StandardEvent) -> bool:
         """Store a single event.
 
@@ -696,7 +754,29 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRADER_POSITIONS]
-            await collection.insert_one(position.model_dump())
+            normalized = position.model_dump()
+            normalized["eth"] = str(normalized.get("eth", "")).lower()
+            comparable = self._position_snapshot_payload(normalized)
+
+            latest = await collection.find_one(
+                {"eth": comparable["eth"], "coin": comparable["coin"]},
+                {
+                    "_id": 0,
+                    "eth": 1,
+                    "coin": 1,
+                    "sz": 1,
+                    "ep": 1,
+                    "mp": 1,
+                    "upnl": 1,
+                    "lev": 1,
+                    "liq": 1,
+                },
+                sort=[("t", -1)],
+            )
+            if latest and self._position_snapshot_payload(latest) == comparable:
+                return True
+
+            await collection.insert_one(normalized)
             return True
         except Exception as e:
             raise StorageError(f"Failed to store position: {e}") from e
@@ -766,7 +846,29 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRADER_SCORES]
-            await collection.insert_one(score.model_dump())
+            normalized = score.model_dump()
+            normalized["eth"] = str(normalized.get("eth", "")).lower()
+            normalized["tags"] = self._normalize_tags(normalized.get("tags"))
+            comparable = self._score_snapshot_payload(normalized)
+
+            latest = await collection.find_one(
+                {"eth": comparable["eth"]},
+                {
+                    "_id": 0,
+                    "eth": 1,
+                    "score": 1,
+                    "tags": 1,
+                    "acct_val": 1,
+                    "all_roi": 1,
+                    "month_roi": 1,
+                    "week_roi": 1,
+                },
+                sort=[("t", -1)],
+            )
+            if latest and self._score_snapshot_payload(latest) == comparable:
+                return True
+
+            await collection.insert_one(normalized)
             return True
         except Exception as e:
             raise StorageError(f"Failed to store trader score: {e}") from e
@@ -1139,11 +1241,28 @@ class MongoRepository(DataRepository):
                 "name": trader.get("name"),
                 "score": float(trader.get("score", 0)),
                 "acct_val": float(trader.get("acct_val", 0)),
-                "tags": trader.get("tags", []),
-                "performances": trader.get("performances", {}),
+                "tags": self._normalize_tags(trader.get("tags")),
+                "performances": self._normalize_mapping(trader.get("performances")),
                 "active": bool(trader.get("active", True)),
-                "updated_at": now,
             }
+
+            existing = await collection.find_one(
+                {"eth": address},
+                {
+                    "_id": 0,
+                    "eth": 1,
+                    "name": 1,
+                    "score": 1,
+                    "acct_val": 1,
+                    "tags": 1,
+                    "performances": 1,
+                    "active": 1,
+                },
+            )
+            if existing and all(existing.get(key) == value for key, value in doc.items()):
+                return True
+
+            doc["updated_at"] = now
 
             await collection.update_one(
                 {"eth": address},
@@ -1208,21 +1327,35 @@ class MongoRepository(DataRepository):
 
         try:
             now = datetime.now(UTC)
-            normalized_address = address.lower()
             collection = self._db[CollectionName.TRADER_CURRENT_STATE]
-            await collection.update_one(
-                {"eth": normalized_address, "symbol": symbol},
+            doc = self._current_state_payload(
+                address=address,
+                symbol=symbol,
+                positions=positions,
+                margin_summary=margin_summary,
+                event_timestamp=event_timestamp,
+                source=source,
+            )
+
+            existing = await collection.find_one(
+                {"eth": doc["eth"], "symbol": symbol},
                 {
-                    "$set": {
-                        "eth": normalized_address,
-                        "symbol": symbol,
-                        "positions": positions,
-                        "margin_summary": margin_summary or {},
-                        "last_event_time": event_timestamp,
-                        "updated_at": now,
-                        "source": source,
-                    }
+                    "_id": 0,
+                    "eth": 1,
+                    "symbol": 1,
+                    "positions": 1,
+                    "margin_summary": 1,
+                    "last_event_time": 1,
+                    "source": 1,
                 },
+            )
+            if existing and existing == doc:
+                return True
+
+            doc["updated_at"] = now
+            await collection.update_one(
+                {"eth": doc["eth"], "symbol": symbol},
+                {"$set": doc},
                 upsert=True,
             )
             return True

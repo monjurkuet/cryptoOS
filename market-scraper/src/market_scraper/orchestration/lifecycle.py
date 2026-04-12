@@ -25,7 +25,7 @@ from market_scraper.processors.signal_generation import SignalGenerationProcesso
 from market_scraper.processors.trader_scoring import TraderScoringProcessor
 from market_scraper.storage.base import DataRepository
 from market_scraper.storage.memory_repository import MemoryRepository
-from market_scraper.storage.models import TraderPosition, TradingSignal
+from market_scraper.storage.models import Candle, TraderPosition, TradingSignal
 from market_scraper.storage.mongo_repository import MongoRepository
 
 logger = structlog.get_logger(__name__)
@@ -71,6 +71,26 @@ class LifecycleManager:
         # Scheduler and Health Monitor
         self._scheduler: Scheduler | None = None
         self._health_monitor: HealthMonitor | None = None
+
+    RAW_EVENT_ALLOWLIST = {
+        "trading_signal",
+        "coin_metrics",
+        "coin_metrics_historical",
+        "coin_metrics_single",
+        "blockchain_chart",
+        "blockchain_chart_historical",
+        "blockchain_metric",
+        "blockchain_network_summary",
+        "blockchain_current_metrics",
+        "fear_greed_index",
+        "fear_greed_historical",
+        "fear_greed_summary",
+        "exchange_flow",
+        "cbbi_index",
+        "cbbi_historical",
+        "cbbi_component",
+        "onchain_metric",
+    }
 
     @property
     def is_ready(self) -> bool:
@@ -319,31 +339,25 @@ class LifecycleManager:
         if not self._event_bus:
             raise RuntimeError("Event bus not initialized")
 
-        # Events that are too large to store (skip storage)
-        skip_storage_events = {"leaderboard"}  # Leaderboard is ~30MB, exceeds MongoDB 16MB limit
-
         async def storage_handler(event: StandardEvent) -> None:
             """Handle events by storing them in the repository."""
-            # Skip events that are too large
-            if event.event_type in skip_storage_events:
-                return
-
             if self._repository:
                 try:
-                    # Store in events collection
-                    await self._retry_repository_op(
-                        self._repository.store,
-                        event,
-                        operation_name="store_event",
-                    )
+                    if self._should_store_raw_event(event):
+                        await self._retry_repository_op(
+                            self._repository.store,
+                            event,
+                            operation_name="store_event",
+                        )
 
-                    # Also store trading signals in signals collection
                     if event.event_type == "trading_signal":
                         await self._store_trading_signal(event)
 
-                    # Materialize latest trader state and append history snapshots.
                     if event.event_type == "trader_positions":
                         await self._store_trader_positions_state(event)
+
+                    if event.event_type == "ohlcv":
+                        await self._store_ohlcv_candle(event)
 
                 except Exception as e:
                     logger.error(
@@ -359,6 +373,58 @@ class LifecycleManager:
 
         # Subscribe to all events
         await self._event_bus.subscribe("*", storage_handler)
+
+    def _should_store_raw_event(self, event: StandardEvent) -> bool:
+        """Decide whether an event should be persisted to the raw audit log."""
+        event_type = str(event.event_type)
+        return event_type in self.RAW_EVENT_ALLOWLIST
+
+    async def _store_ohlcv_candle(self, event: StandardEvent) -> None:
+        """Persist live OHLCV events into canonical candle collections."""
+        if not self._repository or not hasattr(self._repository, "store_candle"):
+            return
+
+        payload = event.payload
+        if not isinstance(payload, dict):
+            return
+
+        symbol = str(payload.get("symbol", self._settings.hyperliquid.symbol))
+        interval = str(payload.get("interval", "")).strip()
+        if not interval:
+            logger.warning("ohlcv_missing_interval", event_id=event.event_id)
+            return
+
+        timestamp = event.timestamp
+        payload_timestamp = payload.get("timestamp")
+        if isinstance(payload_timestamp, str):
+            try:
+                timestamp = datetime.fromisoformat(payload_timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                logger.debug("ohlcv_timestamp_parse_failed", value=payload_timestamp)
+
+        try:
+            candle = Candle(
+                t=timestamp,
+                o=float(payload.get("open", 0) or 0),
+                h=float(payload.get("high", 0) or 0),
+                l=float(payload.get("low", 0) or 0),
+                c=float(payload.get("close", 0) or 0),
+                v=float(payload.get("volume", 0) or 0),
+            )
+            await self._retry_repository_op(
+                getattr(self._repository, "store_candle"),
+                candle,
+                symbol,
+                interval,
+                operation_name="store_candle",
+            )
+        except Exception as e:
+            logger.error("ohlcv_store_error", error=str(e), event_id=event.event_id)
+            await self._store_dead_letter(
+                event=event,
+                reason="ohlcv_persistence_failed",
+                error=e,
+            )
 
     async def _store_trading_signal(self, event: StandardEvent) -> None:
         """Store a trading signal in the signals collection.

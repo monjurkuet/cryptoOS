@@ -7,6 +7,7 @@ Uses webData2 subscription type for comprehensive trader data.
 """
 
 import asyncio
+import json
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -73,7 +74,7 @@ class TraderWebSocketCollector:
         self._tracked_traders: list[str] = []
 
         # Event-driven optimization: Track last saved state per trader with TTL
-        # address -> {positions, normalized, timestamp}
+        # address -> {positions, normalized, margin_summary, timestamp}
         self._last_positions: dict[str, dict] = {}
         self._position_max_interval = config.position_max_interval
 
@@ -282,7 +283,20 @@ class TraderWebSocketCollector:
             await asyncio.sleep(self._flush_interval)
             await self._flush_messages()
 
-    def _normalize_positions(self, positions: list[dict]) -> str:
+    def _serialize_for_comparison(self, value: Any) -> Any:
+        """Recursively normalize a payload for deterministic comparisons."""
+        if isinstance(value, dict):
+            return {
+                str(key): self._serialize_for_comparison(val)
+                for key, val in sorted(value.items())
+            }
+        if isinstance(value, list):
+            return [self._serialize_for_comparison(item) for item in value]
+        if isinstance(value, float):
+            return round(value, 10)
+        return value
+
+    def _normalize_positions(self, positions: list[dict] | None) -> str:
         """Normalize positions for comparison.
 
         Args:
@@ -297,23 +311,40 @@ class TraderWebSocketCollector:
         # Sort by coin for consistent comparison
         sorted_positions = sorted(
             positions,
-            key=lambda x: x.get("position", {}).get("coin", ""),
+            key=lambda x: str(
+                (x.get("position", x) if isinstance(x, dict) else {}).get("coin", "")
+            ),
         )
 
-        parts = []
-        for pos in sorted_positions:
-            coin = pos.get("position", {}).get("coin", "")
-            szi = float(pos.get("position", {}).get("szi", 0))
-            parts.append(f"{coin}:{szi:.8f}")
+        return json.dumps(
+            self._serialize_for_comparison(sorted_positions),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
-        return "|".join(parts)
+    def _normalize_margin_summary(self, margin_summary: dict[str, Any] | None) -> str:
+        """Normalize margin summary payload for deterministic comparisons."""
+        if not margin_summary:
+            return ""
 
-    def _has_significant_change(self, address: str, positions: list[dict]) -> bool:
+        return json.dumps(
+            self._serialize_for_comparison(margin_summary),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _has_significant_change(
+        self,
+        address: str,
+        positions: list[dict],
+        margin_summary: dict[str, Any] | None = None,
+    ) -> bool:
         """Check if positions have changed significantly.
 
         Args:
             address: Trader address
             positions: Current positions
+            margin_summary: Latest margin summary
 
         Returns:
             True if should save
@@ -330,8 +361,12 @@ class TraderWebSocketCollector:
         # Compare normalized positions
         last_normalized = last_saved.get("normalized", "")
         current_normalized = self._normalize_positions(positions)
+        if last_normalized != current_normalized:
+            return True
 
-        return last_normalized != current_normalized
+        last_margin_summary = last_saved.get("margin_summary", "")
+        current_margin_summary = self._normalize_margin_summary(margin_summary)
+        return last_margin_summary != current_margin_summary
 
     def _cleanup_stale_positions(self) -> None:
         """Remove stale position entries to prevent unbounded memory growth."""
@@ -411,6 +446,7 @@ class TraderWebSocketCollector:
         address = data.get("user", "")
         clearinghouse = data.get("clearinghouseState", {})
         positions = clearinghouse.get("assetPositions", [])
+        margin_summary = clearinghouse.get("marginSummary", {})
 
         if not address or not positions:
             return None
@@ -431,7 +467,7 @@ class TraderWebSocketCollector:
             return None
 
         # EVENT-DRIVEN: Check if position actually changed
-        if not self._has_significant_change(address, symbol_positions):
+        if not self._has_significant_change(address, symbol_positions, margin_summary):
             self._positions_skipped += 1
             logger.debug(
                 "trader_ws_position_unchanged",
@@ -452,6 +488,7 @@ class TraderWebSocketCollector:
         self._last_positions[address] = {
             "positions": symbol_positions,
             "normalized": self._normalize_positions(symbol_positions),
+            "margin_summary": self._normalize_margin_summary(margin_summary),
             "timestamp": time.time(),
         }
 
@@ -463,7 +500,7 @@ class TraderWebSocketCollector:
                 "address": address,
                 "symbol": self.config.symbol,
                 "positions": symbol_positions,
-                "marginSummary": clearinghouse.get("marginSummary", {}),
+                "marginSummary": margin_summary,
                 "timestamp": datetime.now(UTC).isoformat(),
             },
         )

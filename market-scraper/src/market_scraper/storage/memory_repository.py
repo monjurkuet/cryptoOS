@@ -7,6 +7,7 @@ from market_scraper.core.events import StandardEvent
 from market_scraper.core.exceptions import StorageError
 from market_scraper.core.types import Symbol, Timeframe
 from market_scraper.storage.base import DataRepository, QueryFilter
+from market_scraper.storage.models import Candle
 
 
 class MemoryRepository(DataRepository):
@@ -29,8 +30,43 @@ class MemoryRepository(DataRepository):
         self._events: list[StandardEvent] = []
         self._leaderboard_history: list[dict[str, Any]] = []
         self._tracked_traders: dict[str, dict[str, Any]] = {}
-        self._trader_current_state: dict[str, dict[str, Any]] = {}
+        self._trader_current_state: dict[tuple[str, str], dict[str, Any]] = {}
         self._trader_positions_history: list[dict[str, Any]] = []
+        self._trader_scores_history: list[dict[str, Any]] = []
+        self._candles: dict[tuple[str, str], dict[datetime, dict[str, Any]]] = {}
+        self._signals: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _normalize_tags(tags: Any) -> list[str]:
+        """Normalize tag collections for stable equality checks."""
+        return sorted(str(tag) for tag in (tags or []))
+
+    @staticmethod
+    def _position_snapshot_payload(position: dict[str, Any]) -> dict[str, Any]:
+        """Build comparable payload for position history rows."""
+        return {
+            "eth": str(position.get("eth", "")).lower(),
+            "coin": str(position.get("coin", "")),
+            "sz": float(position.get("sz", 0) or 0),
+            "ep": float(position.get("ep", 0) or 0),
+            "mp": float(position.get("mp", 0) or 0),
+            "upnl": float(position.get("upnl", 0) or 0),
+            "lev": float(position.get("lev", 0) or 0),
+            "liq": position.get("liq"),
+        }
+
+    @staticmethod
+    def _score_snapshot_payload(score: dict[str, Any]) -> dict[str, Any]:
+        """Build comparable payload for trader score history rows."""
+        return {
+            "eth": str(score.get("eth", "")).lower(),
+            "score": float(score.get("score", 0) or 0),
+            "tags": MemoryRepository._normalize_tags(score.get("tags")),
+            "acct_val": float(score.get("acct_val", 0) or 0),
+            "all_roi": float(score.get("all_roi", 0) or 0),
+            "month_roi": float(score.get("month_roi", 0) or 0),
+            "week_roi": float(score.get("week_roi", 0) or 0),
+        }
 
     async def connect(self) -> None:
         """Establish connection (no-op for in-memory storage)."""
@@ -43,6 +79,9 @@ class MemoryRepository(DataRepository):
         self._tracked_traders = {}
         self._trader_current_state = {}
         self._trader_positions_history = []
+        self._trader_scores_history = []
+        self._candles = {}
+        self._signals = []
         self._connected = False
 
     async def store(self, event: StandardEvent) -> bool:
@@ -189,6 +228,18 @@ class MemoryRepository(DataRepository):
         # Return most recent (highest timestamp)
         return max(matching, key=lambda e: e.timestamp)
 
+    async def store_candle(self, candle: Candle, symbol: str, interval: str) -> bool:
+        """Store a candle in canonical in-memory candle storage."""
+        if not self._connected:
+            raise StorageError("Repository not connected")
+
+        key = (symbol, interval)
+        if key not in self._candles:
+            self._candles[key] = {}
+
+        self._candles[key][candle.t] = candle.model_dump()
+        return True
+
     async def aggregate_ohlcv(
         self,
         symbol: Symbol,
@@ -311,33 +362,12 @@ class MemoryRepository(DataRepository):
         if not self._connected:
             raise StorageError("Repository not connected")
 
-        # Find matching candle events
-        matching = []
-        for event in self._events:
-            if event.event_type != "ohlcv":
-                continue
-
-            payload = event.payload
-            if isinstance(payload, dict):
-                if payload.get("symbol") != symbol:
-                    continue
-                if payload.get("interval") != interval:
-                    continue
-                matching.append(event)
-
-        if not matching:
+        candles = self._candles.get((symbol, interval), {})
+        if not candles:
             return None
 
-        # Return most recent
-        latest = max(matching, key=lambda e: e.timestamp)
-        return {
-            "t": latest.timestamp,
-            "o": latest.payload.get("open", 0) if isinstance(latest.payload, dict) else 0,
-            "h": latest.payload.get("high", 0) if isinstance(latest.payload, dict) else 0,
-            "l": latest.payload.get("low", 0) if isinstance(latest.payload, dict) else 0,
-            "c": latest.payload.get("close", 0) if isinstance(latest.payload, dict) else 0,
-            "v": latest.payload.get("volume", 0) if isinstance(latest.payload, dict) else 0,
-        }
+        latest_timestamp = max(candles)
+        return dict(candles[latest_timestamp])
 
     async def get_candles(
         self,
@@ -362,44 +392,17 @@ class MemoryRepository(DataRepository):
         if not self._connected:
             raise StorageError("Repository not connected")
 
-        # Find matching candle events
         matching = []
-        for event in self._events:
-            if event.event_type != "ohlcv":
+        for timestamp, candle in self._candles.get((symbol, interval), {}).items():
+            if start_time and timestamp < start_time:
                 continue
+            if end_time and timestamp > end_time:
+                continue
+            matching.append(candle)
 
-            payload = event.payload
-            if isinstance(payload, dict):
-                if payload.get("symbol") != symbol:
-                    continue
-                if payload.get("interval") != interval:
-                    continue
-                if start_time and event.timestamp < start_time:
-                    continue
-                if end_time and event.timestamp > end_time:
-                    continue
-                matching.append(event)
-
-        # Sort by timestamp descending, limit, then reverse for chronological order
-        matching.sort(key=lambda e: e.timestamp, reverse=True)
+        matching.sort(key=lambda candle: candle["t"], reverse=True)
         matching = matching[:limit]
-
-        candles = []
-        for event in reversed(matching):
-            payload = event.payload
-            if isinstance(payload, dict):
-                candles.append(
-                    {
-                        "t": event.timestamp,
-                        "o": payload.get("open", 0),
-                        "h": payload.get("high", 0),
-                        "l": payload.get("low", 0),
-                        "c": payload.get("close", 0),
-                        "v": payload.get("volume", 0),
-                    }
-                )
-
-        return candles
+        return list(reversed([dict(candle) for candle in matching]))
 
     async def health_check(self) -> dict:
         """Check storage health.
@@ -424,6 +427,8 @@ class MemoryRepository(DataRepository):
         self._tracked_traders = {}
         self._trader_current_state = {}
         self._trader_positions_history = []
+        self._trader_scores_history = []
+        self._candles = {}
 
     # ============== Trader Query Methods ==============
 
@@ -506,7 +511,11 @@ class MemoryRepository(DataRepository):
         Returns:
             Current-state dictionary or None.
         """
-        return self._trader_current_state.get(address.lower())
+        normalized = address.lower()
+        for (eth, _symbol), state in self._trader_current_state.items():
+            if eth == normalized:
+                return state
+        return None
 
     async def get_trader_positions_history(
         self,
@@ -584,12 +593,22 @@ class MemoryRepository(DataRepository):
         now = updated_at or datetime.now()
         existing = self._tracked_traders.get(address, {})
         added_at = existing.get("added_at", now)
+        normalized_doc = {
+            "eth": address,
+            "name": trader.get("name"),
+            "score": float(trader.get("score", 0)),
+            "acct_val": float(trader.get("acct_val", 0)),
+            "tags": self._normalize_tags(trader.get("tags")),
+            "performances": dict(trader.get("performances") or {}),
+            "active": bool(trader.get("active", True)),
+        }
+
+        if existing and all(existing.get(key) == value for key, value in normalized_doc.items()):
+            return True
 
         self._tracked_traders[address] = {
             **existing,
-            **trader,
-            "eth": address,
-            "active": trader.get("active", True),
+            **normalized_doc,
             "updated_at": now,
             "added_at": added_at,
         }
@@ -631,22 +650,60 @@ class MemoryRepository(DataRepository):
     ) -> bool:
         """Upsert trader current state (in-memory)."""
         normalized = address.lower()
-        self._trader_current_state[normalized] = {
+        state_key = (normalized, symbol)
+        payload = {
             "eth": normalized,
             "symbol": symbol,
             "positions": positions,
             "margin_summary": margin_summary or {},
             "last_event_time": event_timestamp,
-            "updated_at": datetime.now(),
             "source": source,
         }
+
+        existing = self._trader_current_state.get(state_key)
+        if existing and all(existing.get(key) == value for key, value in payload.items()):
+            return True
+
+        payload["updated_at"] = datetime.now()
+        self._trader_current_state[state_key] = payload
         return True
 
     async def store_trader_position(self, position: Any) -> bool:
         """Store a normalized trader position history row (in-memory)."""
         data = position.model_dump() if hasattr(position, "model_dump") else dict(position)
         data["eth"] = str(data.get("eth", "")).lower()
+        comparable = self._position_snapshot_payload(data)
+        for latest in reversed(self._trader_positions_history):
+            latest_payload = self._position_snapshot_payload(latest)
+            if (
+                latest_payload["eth"] == comparable["eth"]
+                and latest_payload["coin"] == comparable["coin"]
+            ):
+                if latest_payload == comparable:
+                    return True
+                break
         self._trader_positions_history.append(data)
+        return True
+
+    async def store_trader_score(self, score: Any) -> bool:
+        """Store a trader score history row (in-memory)."""
+        data = score.model_dump() if hasattr(score, "model_dump") else dict(score)
+        data["eth"] = str(data.get("eth", "")).lower()
+        data["tags"] = self._normalize_tags(data.get("tags"))
+        comparable = self._score_snapshot_payload(data)
+        for latest in reversed(self._trader_scores_history):
+            latest_payload = self._score_snapshot_payload(latest)
+            if latest_payload["eth"] == comparable["eth"]:
+                if latest_payload == comparable:
+                    return True
+                break
+        self._trader_scores_history.append(data)
+        return True
+
+    async def store_signal(self, signal: Any) -> bool:
+        """Store a trading signal row (in-memory)."""
+        data = signal.model_dump() if hasattr(signal, "model_dump") else dict(signal)
+        self._signals.append(data)
         return True
 
     # ============== Signal Query Methods ==============
@@ -672,37 +729,64 @@ class MemoryRepository(DataRepository):
         return []
 
     async def get_current_signal(self, symbol: str) -> dict[str, Any] | None:
-        """Get the current/latest signal for a symbol (stub for testing).
+        """Get the current/latest signal for a symbol.
 
         Args:
             symbol: Trading symbol.
 
         Returns:
-            None (stub implementation).
+            Latest signal row or None.
         """
-        return None
+        matching = [s for s in self._signals if s.get("symbol") == symbol]
+        if not matching:
+            return None
+        return max(matching, key=lambda s: s.get("t", datetime.min))
 
     async def get_signal_stats(
         self,
         symbol: str,
         start_time: datetime,
     ) -> dict[str, Any]:
-        """Get aggregated signal statistics (stub for testing).
+        """Get aggregated signal statistics.
 
         Args:
             symbol: Trading symbol.
             start_time: Start time for statistics.
 
         Returns:
-            Empty stats (stub implementation).
+            Aggregated signal statistics.
         """
+        matching = [
+            s
+            for s in self._signals
+            if s.get("symbol") == symbol
+            and isinstance(s.get("t"), datetime)
+            and s["t"] >= start_time
+        ]
+        if not matching:
+            return {
+                "total": 0,
+                "buy": 0,
+                "sell": 0,
+                "neutral": 0,
+                "avg_confidence": 0.0,
+                "avg_long_bias": 0.0,
+            }
+
+        total = len(matching)
+        buy = sum(1 for s in matching if s.get("rec") == "BUY")
+        sell = sum(1 for s in matching if s.get("rec") == "SELL")
+        neutral = sum(1 for s in matching if s.get("rec") == "NEUTRAL")
+        avg_confidence = sum(float(s.get("conf", 0) or 0) for s in matching) / total
+        avg_long_bias = sum(float(s.get("long_bias", 0) or 0) for s in matching) / total
+
         return {
-            "total": 0,
-            "buy": 0,
-            "sell": 0,
-            "neutral": 0,
-            "avg_confidence": 0.0,
-            "avg_long_bias": 0.0,
+            "total": total,
+            "buy": buy,
+            "sell": sell,
+            "neutral": neutral,
+            "avg_confidence": round(avg_confidence, 4),
+            "avg_long_bias": round(avg_long_bias, 4),
         }
 
     async def get_signal_by_id(self, signal_id: str) -> dict[str, Any] | None:

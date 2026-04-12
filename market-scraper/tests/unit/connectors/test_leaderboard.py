@@ -1,11 +1,11 @@
 """Tests for LeaderboardCollector."""
 
-import pytest
-from datetime import datetime, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from market_scraper.config.market_config import FilterConfig, MarketConfig, StorageConfig
 from market_scraper.connectors.hyperliquid.collectors.leaderboard import LeaderboardCollector
-from market_scraper.config.market_config import MarketConfig, StorageConfig, FilterConfig
 from market_scraper.core.config import HyperliquidSettings
 
 
@@ -22,6 +22,7 @@ def mock_repository() -> AsyncMock:
     """Create mock repository with leaderboard/trader persistence methods."""
     repo = AsyncMock()
     repo.store_leaderboard_snapshot = AsyncMock(return_value=True)
+    repo.store_trader_score = AsyncMock(return_value=True)
     repo.upsert_tracked_trader_data = AsyncMock(return_value=True)
     repo.deactivate_unselected_traders = AsyncMock(return_value=0)
     repo.get_active_trader_addresses = AsyncMock(return_value=[])
@@ -308,6 +309,7 @@ class TestLeaderboardCollector:
         assert first_payload["eth"] == "0xabcdefabcdefabcdefabcdefabcdefabcdef0001"
         assert second_payload["eth"] == "0xabcdefabcdefabcdefabcdefabcdefabcdef0002"
 
+        mock_repository.store_trader_score.assert_not_awaited()
         mock_repository.deactivate_unselected_traders.assert_awaited_once()
         selected_addresses = mock_repository.deactivate_unselected_traders.await_args.kwargs[
             "selected_addresses"
@@ -316,6 +318,57 @@ class TestLeaderboardCollector:
             "0xabcdefabcdefabcdefabcdefabcdefabcdef0001",
             "0xabcdefabcdefabcdefabcdefabcdefabcdef0002",
         ]
+
+    @pytest.mark.asyncio
+    async def test_store_derived_data_stores_score_history_when_enabled(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+        mock_repository: AsyncMock,
+    ) -> None:
+        """Score history is only persisted when enabled in config."""
+        market_config = MarketConfig(
+            storage=StorageConfig(
+                refresh_interval=3600,
+                keep_snapshots=True,
+                keep_score_history=True,
+            ),
+            filters=FilterConfig(
+                min_score=50,
+                max_count=500,
+                min_account_value=10000,
+            ),
+        )
+        collector = LeaderboardCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+            repository=mock_repository,
+            market_config=market_config,
+        )
+
+        tracked = [
+            {
+                "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0001",
+                "score": 81,
+                "acct_val": 20000,
+                "tags": ["whale"],
+                "performances": {
+                    "allTime": {"roi": 1.2},
+                    "month": {"roi": 0.3},
+                    "week": {"roi": 0.1},
+                },
+            }
+        ]
+
+        await collector._store_derived_data(traders=tracked, total_count=42)
+
+        mock_repository.store_trader_score.assert_awaited_once()
+        score_model = mock_repository.store_trader_score.await_args.args[0]
+        assert score_model.eth == "0xabcdefabcdefabcdefabcdefabcdefabcdef0001"
+        assert score_model.score == 81
+        assert score_model.all_roi == 1.2
+        assert score_model.month_roi == 0.3
+        assert score_model.week_roi == 0.1
 
 
 class TestLeaderboardScoring:

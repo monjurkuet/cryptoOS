@@ -14,6 +14,7 @@ from market_scraper.config.market_config import CandleBackfillConfig, MarketConf
 from market_scraper.core.events import StandardEvent
 from market_scraper.core.config import HyperliquidSettings, MongoConfig, RedisConfig, Settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
+from market_scraper.storage.base import QueryFilter
 
 TEST_MONGO_URL = os.environ.get("MONGO__URL", "mongodb://localhost:27017")
 
@@ -235,5 +236,138 @@ async def test_get_trader_returns_latest_ingested_position(test_settings):
         assert data["positions"][0]["size"] == 2.5
         assert data["positions"][0]["mark_price"] == 52000.0
         assert data["positions"][0]["leverage"] == 3.0
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_trader_positions_are_materialized_but_not_kept_in_raw_events(test_settings):
+    """Trader position events should update canonical collections without bloating raw events."""
+    manager = LifecycleManager(settings=test_settings)
+    await manager.startup()
+
+    try:
+        repository = manager.repository
+        event_bus = manager.event_bus
+        assert repository is not None
+        assert event_bus is not None
+
+        address = "0x1234567890123456789012345678901234567890"
+        event = StandardEvent.create(
+            event_type="trader_positions",
+            source="hyperliquid_ws",
+            payload={
+                "address": address,
+                "symbol": "BTC",
+                "positions": [
+                    {
+                        "position": {
+                            "coin": "BTC",
+                            "szi": 1.0,
+                            "entryPx": 50000,
+                            "markPx": 50500,
+                            "unrealizedPnl": 500,
+                            "leverage": {"value": 2},
+                        }
+                    }
+                ],
+                "marginSummary": {"accountValue": 1_000_000},
+            },
+        )
+
+        await event_bus.publish(event)
+        await asyncio.sleep(0.05)
+
+        state = await repository.get_trader_current_state(address)
+        history = await repository.get_trader_positions_history(
+            address=address, start_time=event.timestamp
+        )
+        raw_events = await repository.query(QueryFilter(event_type="trader_positions"))
+
+        assert state is not None
+        assert len(history) == 1
+        assert raw_events == []
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_trading_signal_remains_in_raw_events_and_signals_collection(test_settings):
+    """Trading signals should still be kept in both audit and canonical signal storage."""
+    manager = LifecycleManager(settings=test_settings)
+    await manager.startup()
+
+    try:
+        repository = manager.repository
+        event_bus = manager.event_bus
+        assert repository is not None
+        assert event_bus is not None
+
+        event = StandardEvent.create(
+            event_type="trading_signal",
+            source="signal_generation",
+            payload={
+                "symbol": "BTC",
+                "recommendation": "BUY",
+                "confidence": 0.82,
+                "longBias": 0.71,
+                "shortBias": 0.29,
+                "netExposure": 1.5,
+                "tradersLong": 12,
+                "tradersShort": 3,
+                "tradersFlat": 4,
+                "price": 65000,
+            },
+        )
+
+        await event_bus.publish(event)
+        await asyncio.sleep(0.05)
+
+        raw_events = await repository.query(QueryFilter(event_type="trading_signal"))
+        signal = await repository.get_current_signal("BTC")
+
+        assert len(raw_events) == 1
+        assert signal is not None
+        assert signal["rec"] == "BUY"
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_ohlcv_events_are_materialized_without_raw_event_duplication(test_settings):
+    """Live OHLCV events should be persisted to candle storage instead of raw events."""
+    manager = LifecycleManager(settings=test_settings)
+    await manager.startup()
+
+    try:
+        repository = manager.repository
+        event_bus = manager.event_bus
+        assert repository is not None
+        assert event_bus is not None
+
+        event = StandardEvent.create(
+            event_type="ohlcv",
+            source="hyperliquid",
+            payload={
+                "symbol": "BTC",
+                "timestamp": "2026-01-01T12:00:00+00:00",
+                "interval": "1h",
+                "open": 60000,
+                "high": 61000,
+                "low": 59500,
+                "close": 60500,
+                "volume": 123.45,
+            },
+        )
+
+        await event_bus.publish(event)
+        await asyncio.sleep(0.05)
+
+        latest_candle = await repository.get_latest_candle("BTC", "1h")
+        raw_events = await repository.query(QueryFilter(event_type="ohlcv"))
+
+        assert latest_candle is not None
+        assert latest_candle["c"] == 60500
+        assert raw_events == []
     finally:
         await manager.shutdown()

@@ -8,6 +8,7 @@ from market_scraper.core.events import EventType, MarketDataPayload, StandardEve
 from market_scraper.core.exceptions import StorageError
 from market_scraper.storage.base import QueryFilter
 from market_scraper.storage.memory_repository import MemoryRepository
+from market_scraper.storage.models import Candle, TradingSignal
 
 
 class TestMemoryRepository:
@@ -466,6 +467,29 @@ class TestMemoryRepository:
         assert fetched["name"] == "alpha"
 
     @pytest.mark.asyncio
+    async def test_upsert_tracked_trader_data_skips_unchanged_updates(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Unchanged tracked trader refreshes should not bump updated_at."""
+        initial_time = datetime(2024, 1, 1, 12, 0, 0)
+        later_time = datetime(2024, 1, 1, 13, 0, 0)
+        trader = {
+            "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0001",
+            "name": "alpha",
+            "score": 91,
+            "tags": ["whale"],
+            "active": True,
+        }
+
+        await repository.upsert_tracked_trader_data(trader, updated_at=initial_time)
+        await repository.upsert_tracked_trader_data(trader, updated_at=later_time)
+
+        assert (
+            repository._tracked_traders["0xabcdefabcdefabcdefabcdefabcdefabcdef0001"]["updated_at"]
+            == initial_time
+        )
+
+    @pytest.mark.asyncio
     async def test_trader_current_state_and_history(self, repository: MemoryRepository):
         """Current state and position history are persisted for traders."""
         address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0003"
@@ -504,3 +528,220 @@ class TestMemoryRepository:
         )
         assert len(history) == 1
         assert history[0]["coin"] == "BTC"
+
+    @pytest.mark.asyncio
+    async def test_trader_current_state_skips_unchanged_updates(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Current state writes are suppressed when the payload is unchanged."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0003"
+        event_time = datetime(2024, 1, 1, 12, 0, 0)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[{"position": {"coin": "BTC", "szi": 1.25}}],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=event_time,
+            source="hyperliquid_ws",
+        )
+        state_key = (address.lower(), "BTC")
+        first_updated_at = repository._trader_current_state[state_key]["updated_at"]
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[{"position": {"coin": "BTC", "szi": 1.25}}],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=event_time,
+            source="hyperliquid_ws",
+        )
+
+        assert repository._trader_current_state[state_key]["updated_at"] == first_updated_at
+
+    @pytest.mark.asyncio
+    async def test_store_trader_position_skips_duplicate_snapshot(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Position history does not keep identical consecutive snapshots."""
+        position = {
+            "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0003",
+            "t": datetime(2024, 1, 1, 12, 0, 0),
+            "coin": "BTC",
+            "sz": 1.25,
+            "ep": 50000,
+            "mp": 51000,
+            "upnl": 1250,
+            "lev": 2,
+        }
+
+        await repository.store_trader_position(position)
+        await repository.store_trader_position({**position, "t": datetime(2024, 1, 1, 12, 5, 0)})
+
+        assert len(repository._trader_positions_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_store_trader_position_keeps_material_change(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Position history keeps snapshots when position values change."""
+        base = {
+            "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0003",
+            "t": datetime(2024, 1, 1, 12, 0, 0),
+            "coin": "BTC",
+            "sz": 1.25,
+            "ep": 50000,
+            "mp": 51000,
+            "upnl": 1250,
+            "lev": 2,
+        }
+
+        await repository.store_trader_position(base)
+        await repository.store_trader_position(
+            {**base, "t": datetime(2024, 1, 1, 12, 5, 0), "mp": 51500, "upnl": 1875}
+        )
+
+        assert len(repository._trader_positions_history) == 2
+
+    @pytest.mark.asyncio
+    async def test_store_trader_score_history(self, repository: MemoryRepository) -> None:
+        """Score history can be stored via the repository abstraction."""
+        event_time = datetime(2024, 1, 1, 12, 0, 0)
+
+        await repository.store_trader_score(
+            {
+                "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0003",
+                "t": event_time,
+                "score": 88,
+                "tags": ["whale"],
+                "acct_val": 150000,
+                "all_roi": 1.2,
+                "month_roi": 0.2,
+                "week_roi": 0.05,
+            }
+        )
+
+        assert len(repository._trader_scores_history) == 1
+        assert repository._trader_scores_history[0]["eth"] == (
+            "0xabcdefabcdefabcdefabcdefabcdefabcdef0003"
+        )
+
+    @pytest.mark.asyncio
+    async def test_store_trader_score_skips_duplicate_snapshot(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Score history does not keep identical consecutive snapshots."""
+        score = {
+            "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0003",
+            "t": datetime(2024, 1, 1, 12, 0, 0),
+            "score": 88,
+            "tags": ["whale", "elite"],
+            "acct_val": 150000,
+            "all_roi": 1.2,
+            "month_roi": 0.2,
+            "week_roi": 0.05,
+        }
+
+        await repository.store_trader_score(score)
+        await repository.store_trader_score(
+            {**score, "t": datetime(2024, 1, 1, 12, 5, 0), "tags": ["elite", "whale"]}
+        )
+
+        assert len(repository._trader_scores_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_store_trader_score_keeps_material_change(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Score history keeps snapshots when score values change."""
+        score = {
+            "eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0003",
+            "t": datetime(2024, 1, 1, 12, 0, 0),
+            "score": 88,
+            "tags": ["whale"],
+            "acct_val": 150000,
+            "all_roi": 1.2,
+            "month_roi": 0.2,
+            "week_roi": 0.05,
+        }
+
+        await repository.store_trader_score(score)
+        await repository.store_trader_score(
+            {**score, "t": datetime(2024, 1, 1, 12, 5, 0), "score": 89}
+        )
+
+        assert len(repository._trader_scores_history) == 2
+
+    @pytest.mark.asyncio
+    async def test_store_and_get_canonical_candles(self, repository: MemoryRepository) -> None:
+        """Canonical candle storage backs latest and historical candle queries."""
+        first = Candle(
+            t=datetime(2024, 1, 1, 12, 0, 0),
+            o=50000,
+            h=50500,
+            l=49900,
+            c=50400,
+            v=12.5,
+        )
+        second = Candle(
+            t=datetime(2024, 1, 1, 13, 0, 0),
+            o=50400,
+            h=51000,
+            l=50350,
+            c=50900,
+            v=18.0,
+        )
+
+        await repository.store_candle(first, symbol="BTC", interval="1h")
+        await repository.store_candle(second, symbol="BTC", interval="1h")
+
+        latest = await repository.get_latest_candle("BTC", "1h")
+        history = await repository.get_candles("BTC", "1h", limit=10)
+
+        assert latest is not None
+        assert latest["c"] == 50900
+        assert len(history) == 2
+        assert history[0]["t"] == first.t
+        assert history[1]["t"] == second.t
+
+    @pytest.mark.asyncio
+    async def test_store_and_get_current_signal(self, repository: MemoryRepository) -> None:
+        """Canonical signal storage backs current signal and stats queries."""
+        first = TradingSignal(
+            t=datetime(2024, 1, 1, 12, 0, 0),
+            symbol="BTC",
+            rec="BUY",
+            conf=0.7,
+            long_bias=0.7,
+            short_bias=0.3,
+            net_exp=1.1,
+            t_long=10,
+            t_short=3,
+            t_flat=2,
+            price=50000,
+        )
+        second = TradingSignal(
+            t=datetime(2024, 1, 1, 13, 0, 0),
+            symbol="BTC",
+            rec="SELL",
+            conf=0.8,
+            long_bias=0.2,
+            short_bias=0.8,
+            net_exp=-1.4,
+            t_long=2,
+            t_short=11,
+            t_flat=1,
+            price=49000,
+        )
+
+        await repository.store_signal(first)
+        await repository.store_signal(second)
+
+        latest = await repository.get_current_signal("BTC")
+        stats = await repository.get_signal_stats("BTC", start_time=datetime(2024, 1, 1, 0, 0, 0))
+
+        assert latest is not None
+        assert latest["rec"] == "SELL"
+        assert stats["total"] == 2
+        assert stats["buy"] == 1
+        assert stats["sell"] == 1

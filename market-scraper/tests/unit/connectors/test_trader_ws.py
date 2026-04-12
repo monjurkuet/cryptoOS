@@ -1,14 +1,15 @@
 """Tests for TraderWebSocketCollector."""
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 import time
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from market_scraper.config.market_config import BufferConfig
 from market_scraper.connectors.hyperliquid.collectors.trader_ws import (
     TraderWebSocketCollector,
     TraderWSClient,
 )
-from market_scraper.config.market_config import BufferConfig
 from market_scraper.core.config import HyperliquidSettings
 
 
@@ -99,11 +100,14 @@ class TestTraderWebSocketCollector:
             {"position": {"coin": "BTC", "szi": 1.5}},
             {"position": {"coin": "ETH", "szi": -2.0}},
         ]
+        reversed_positions = list(reversed(positions))
 
         normalized = collector._normalize_positions(positions)
+        reversed_normalized = collector._normalize_positions(reversed_positions)
 
-        assert "BTC:1.5" in normalized
-        assert "ETH:-2.0" in normalized
+        assert normalized == reversed_normalized
+        assert '"coin":"BTC"' in normalized
+        assert '"coin":"ETH"' in normalized
 
     def test_normalize_positions_empty(
         self,
@@ -158,6 +162,65 @@ class TestTraderWebSocketCollector:
 
         # Same position should not be significant
         assert collector._has_significant_change(address, positions) is False
+
+    def test_has_significant_change_same_size_different_mark_price(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """Price and PnL updates should still be treated as a real change."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        address = "test_address"
+        original_positions = [
+            {"position": {"coin": "BTC", "szi": 1.0, "markPx": 50000, "unrealizedPnl": 100}}
+        ]
+        updated_positions = [
+            {"position": {"coin": "BTC", "szi": 1.0, "markPx": 50500, "unrealizedPnl": 600}}
+        ]
+
+        collector._last_positions[address] = {
+            "positions": original_positions,
+            "normalized": collector._normalize_positions(original_positions),
+            "margin_summary": collector._normalize_margin_summary({"accountValue": 100000}),
+            "timestamp": time.time(),
+        }
+
+        assert collector._has_significant_change(
+            address,
+            updated_positions,
+            {"accountValue": 100000},
+        ) is True
+
+    def test_has_significant_change_margin_summary_update(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """Margin summary changes should still be emitted for current-state accuracy."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        address = "test_address"
+        positions = [{"position": {"coin": "BTC", "szi": 1.0}}]
+
+        collector._last_positions[address] = {
+            "positions": positions,
+            "normalized": collector._normalize_positions(positions),
+            "margin_summary": collector._normalize_margin_summary({"accountValue": 100000}),
+            "timestamp": time.time(),
+        }
+
+        assert collector._has_significant_change(
+            address,
+            positions,
+            {"accountValue": 125000},
+        ) is True
 
     def test_has_significant_change_time_elapsed(
         self,
@@ -249,6 +312,58 @@ class TestTraderWebSocketCollector:
         assert event.event_type == "trader_positions"
         assert event.payload["address"] == "test_address"
         assert event.payload["symbol"] == "BTC"
+
+    @pytest.mark.asyncio
+    async def test_process_webdata2_same_size_price_change_still_emits_event(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """Same-size updates should still emit when the persisted state changed."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        first_msg = {
+            "channel": "webData2",
+            "data": {
+                "user": "test_address",
+                "clearinghouseState": {
+                    "assetPositions": [
+                        {
+                            "position": {
+                                "coin": "BTC",
+                                "szi": 1.5,
+                                "markPx": 50000,
+                            }
+                        }
+                    ],
+                    "marginSummary": {"accountValue": 100000},
+                },
+            },
+        }
+        second_msg = {
+            "channel": "webData2",
+            "data": {
+                "user": "test_address",
+                "clearinghouseState": {
+                    "assetPositions": [
+                        {
+                            "position": {
+                                "coin": "BTC",
+                                "szi": 1.5,
+                                "markPx": 50500,
+                            }
+                        }
+                    ],
+                    "marginSummary": {"accountValue": 100000},
+                },
+            },
+        }
+
+        assert collector._process_webdata2(first_msg) is not None
+        assert collector._process_webdata2(second_msg) is not None
 
     @pytest.mark.asyncio
     async def test_process_webdata2_no_positions(
