@@ -71,6 +71,7 @@ class LeaderboardCollector:
 
         self._running = False
         self._session: aiohttp.ClientSession | None = None
+        self._session_closed = False
         self._refresh_task: asyncio.Task | None = None
 
         # Cached data
@@ -92,7 +93,12 @@ class LeaderboardCollector:
             return
 
         self._running = True
-        self._session = aiohttp.ClientSession()
+        try:
+            self._session = aiohttp.ClientSession()
+        except Exception as e:
+            self._running = False
+            logger.error("leaderboard_session_creation_error", error=str(e), exc_info=True)
+            raise
 
         # Start periodic refresh (includes initial fetch)
         self._refresh_task = asyncio.create_task(self._refresh_loop_with_initial())
@@ -123,8 +129,15 @@ class LeaderboardCollector:
             except asyncio.CancelledError:
                 logger.debug("leaderboard_refresh_task_cancelled")
 
-        if self._session:
-            await self._session.close()
+        # Close session with proper error handling
+        if self._session and not self._session_closed:
+            try:
+                await self._session.close()
+                self._session_closed = True
+            except Exception as e:
+                logger.error("leaderboard_session_close_error", error=str(e), exc_info=True)
+            finally:
+                self._session = None
 
         logger.info("leaderboard_collector_stopped", stats=self.get_stats())
 
@@ -425,33 +438,33 @@ class LeaderboardCollector:
                     continue
                 selected_addresses.append(address)
 
-                if self._market_config.storage.keep_score_history:
-                    performances = trader.get("performances") or {}
-                    await self._repository.store_trader_score(
-                        TraderScore(
-                            eth=address,
-                            t=now,
-                            score=float(trader.get("score", 0) or 0),
-                            tags=list(trader.get("tags") or []),
-                            acct_val=float(trader.get("acct_val", 0) or 0),
-                            all_roi=float((performances.get("allTime") or {}).get("roi", 0) or 0),
-                            month_roi=float((performances.get("month") or {}).get("roi", 0) or 0),
-                            week_roi=float((performances.get("week") or {}).get("roi", 0) or 0),
-                        )
+            if self._market_config.storage.keep_score_history:
+                performances = trader.get("performances") or {}
+                await self._repository.store_trader_score(
+                    TraderScore(
+                        eth=address,
+                        t=now,
+                        score=float(trader.get("score", 0) or 0),
+                        tags=list(trader.get("tags") or []),
+                        acct_val=float(trader.get("acct_val", 0) or 0),
+                        all_roi=float((performances.get("allTime") or {}).get("roi", 0) or 0),
+                        month_roi=float((performances.get("month") or {}).get("roi", 0) or 0),
+                        week_roi=float((performances.get("week") or {}).get("roi", 0) or 0),
                     )
-
-                await self._repository.upsert_tracked_trader_data(
-                    {
-                        "eth": address,
-                        "name": trader.get("name"),
-                        "score": trader.get("score", 0),
-                        "acct_val": trader.get("acct_val", 0),
-                        "tags": trader.get("tags", []),
-                        "performances": trader.get("performances", {}),
-                        "active": True,
-                    },
-                    updated_at=now,
                 )
+
+            await self._repository.upsert_tracked_trader_data(
+                {
+                    "eth": address,
+                    "name": trader.get("name"),
+                    "score": trader.get("score", 0),
+                    "acct_val": trader.get("acct_val", 0),
+                    "tags": trader.get("tags", []),
+                    "performances": trader.get("performances", {}),
+                    "active": True,
+                },
+                updated_at=now,
+            )
 
             # 3. Deactivate traders not in selection
             if selected_addresses:

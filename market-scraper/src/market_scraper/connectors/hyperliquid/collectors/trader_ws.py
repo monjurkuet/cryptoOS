@@ -546,6 +546,7 @@ class TraderWSClient:
         self.config = config
 
         self._session: aiohttp.ClientSession | None = None
+        self._session_closed = False
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._running = False
         self._reconnect_attempts = 0
@@ -560,6 +561,7 @@ class TraderWSClient:
         try:
             self._running = True
             self._session = aiohttp.ClientSession()
+            self._session_closed = False
 
             self._ws = await self._session.ws_connect(
                 TraderWebSocketCollector.WS_URL,
@@ -612,9 +614,20 @@ class TraderWSClient:
                 logger.debug("trader_ws_listen_task_cancelled", client_id=self.client_id)
 
         if self._ws:
-            await self._ws.close()
-        if self._session:
-            await self._session.close()
+            try:
+                await self._ws.close()
+            except Exception as e:
+                logger.debug("trader_ws_close_error", client_id=self.client_id, error=str(e))
+
+        # Close session with proper error handling
+        if self._session and not self._session_closed:
+            try:
+                await self._session.close()
+                self._session_closed = True
+            except Exception as e:
+                logger.error("trader_ws_session_close_error", client_id=self.client_id, error=str(e))
+            finally:
+                self._session = None
 
         logger.info("trader_ws_client_stopped", client_id=self.client_id)
 
@@ -715,6 +728,16 @@ class TraderWSClient:
                 await self._ws.close()
             except Exception as e:
                 logger.debug("trader_ws_close_error", client_id=self.client_id, error=str(e))
+
+        # Close session before reconnecting
+        if self._session and not self._session_closed:
+            try:
+                await self._session.close()
+                self._session_closed = True
+            except Exception as e:
+                logger.debug("trader_ws_session_cleanup_error", client_id=self.client_id, error=str(e))
+            finally:
+                self._session = None
 
         await self.start()
 
