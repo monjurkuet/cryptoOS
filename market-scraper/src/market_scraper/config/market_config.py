@@ -128,11 +128,11 @@ class BufferConfig(BaseModel):
     """
 
     flush_interval: float = Field(
-        default=5.0,
-        description="Seconds between automatic buffer flushes to database",
+        default=60.0,  # Changed from 5.0 to 60.0 for reduced resource usage
+        description="Seconds between automatic buffer flushes to database (60s = 1 min latency)",
     )
     max_size: int = Field(
-        default=100,
+        default=500,  # Increased from 100 to allow larger batches
         description="Maximum events to buffer before forced flush",
     )
     broadcast_batch_size: int = Field(

@@ -66,7 +66,7 @@ class TraderWebSocketCollector:
 
         # Connection management
         self._clients: list[TraderWSClient] = []
-        self._num_clients = 5  # Number of concurrent connections
+        self._num_clients = 2  # Number of concurrent connections (reduced from 5 for resource efficiency)
         self._batch_size = 100  # Traders per connection
 
         # State
@@ -469,11 +469,7 @@ class TraderWebSocketCollector:
         # EVENT-DRIVEN: Check if position actually changed
         if not self._has_significant_change(address, symbol_positions, margin_summary):
             self._positions_skipped += 1
-            logger.debug(
-                "trader_ws_position_unchanged",
-                address=address[:10],
-                symbol=self.config.symbol,
-            )
+            # Silent skip - no logging to avoid debug spam
             return None
 
         self._positions_saved += 1

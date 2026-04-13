@@ -6,18 +6,20 @@ Wants=mongodb.service redis.service
 
 [Service]
 Type=simple
-User=muham
-Group=muham
-WorkingDirectory=/home/muham/development/cryptodata/market-scraper
-Environment="PATH=/home/muham/.local/bin:/usr/local/bin:/usr/bin:/bin"
+User=administrator
+Group=administrator
+WorkingDirectory=/home/administrator/githubrepo/cryptoOS/market-scraper
+Environment="PATH=/home/administrator/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
-ExecStart=/home/muham/.local/bin/uv run python -m market_scraper server
+Environment="UV_CACHE_DIR=/home/administrator/githubrepo/cryptoOS/logs/.uv-cache"
+Environment="LOG_LEVEL=INFO"
+ExecStart=/home/administrator/.local/bin/uv run python -m market_scraper server --host 127.0.0.1 --port 3845
 Restart=always
 RestartSec=5
-StandardOutput=append:/home/muham/development/cryptodata/logs/market-scraper.log
-StandardError=append:/home/muham/development/cryptodata/logs/market-scraper.error.log
+StandardOutput=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper.log
+StandardError=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper.error.log
 
-# Resource limits
+# Resource limits - optimized for budget constraints
 MemoryMax=1G
 CPUQuota=80%
 
@@ -25,8 +27,7 @@ CPUQuota=80%
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/muham/development/cryptodata/market-scraper/logs
-                 /home/muham/development/cryptodata/logs
+ReadWritePaths=/home/administrator/githubrepo/cryptoOS/logs
 
 # Graceful shutdown
 TimeoutStopSec=30
