@@ -18,6 +18,7 @@ COPY shared/src ./shared/src
 
 # Copy market-scraper
 COPY market-scraper/pyproject.toml ./market-scraper/
+COPY market-scraper/README.md ./market-scraper/
 COPY market-scraper/src ./market-scraper/src
 COPY market-scraper/config ./market-scraper/config
 
