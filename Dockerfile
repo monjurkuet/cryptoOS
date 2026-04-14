@@ -1,9 +1,10 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies including git for version control
 RUN apt-get update && apt-get install -y --no-install-recommends \
 gcc \
 curl \
+git \
 && rm -rf /var/lib/apt/lists/*
 
 # Install uv for faster package management
