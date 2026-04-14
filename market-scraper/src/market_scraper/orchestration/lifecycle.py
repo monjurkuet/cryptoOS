@@ -465,12 +465,21 @@ class LifecycleManager:
 
     async def _store_trader_positions_state(self, event: StandardEvent) -> None:
         """Persist trader position event into current-state and history collections."""
+        logger.info(
+            "trader_positions_handler_called",
+            event_id=event.event_id,
+            event_type=event.event_type,
+            source=event.source,
+        )
+
         if not self._repository or not hasattr(self._repository, "upsert_trader_current_state"):
+            logger.warning("trader_positions_handler_no_repository")
             return
         repository = self._repository
 
         payload = event.payload
         if not isinstance(payload, dict):
+            logger.warning("trader_positions_handler_invalid_payload", event_id=event.event_id)
             return
 
         address = str(payload.get("address", "")).lower()
@@ -481,6 +490,13 @@ class LifecycleManager:
         if not address or not isinstance(positions, list):
             logger.warning("trader_positions_invalid_payload", event_id=event.event_id)
             return
+
+        logger.info(
+            "trader_positions_handler_processing",
+            address=address[:16],
+            symbol=symbol,
+            position_count=len(positions),
+        )
 
         # Parse event-specific timestamp, fallback to event envelope timestamp.
         event_timestamp = event.timestamp

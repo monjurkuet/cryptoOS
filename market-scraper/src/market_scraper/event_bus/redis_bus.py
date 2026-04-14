@@ -7,10 +7,13 @@ import json
 from contextlib import suppress
 
 import redis.asyncio as redis
+import structlog
 
 from market_scraper.core.events import StandardEvent
 from market_scraper.core.exceptions import EventBusError
 from market_scraper.event_bus.base import EventBus, EventHandler, EventPriority
+
+logger = structlog.get_logger(__name__)
 
 
 class RedisEventBus(EventBus):
@@ -100,12 +103,12 @@ class RedisEventBus(EventBus):
 
         if event_type not in self._handlers:
             self._handlers[event_type] = []
-            if event_type == "*":
-                # Use pattern subscribe for wildcard
-                await self._pubsub.psubscribe("events:*")
-            else:
-                channel = f"events:{event_type}"
-                await self._pubsub.subscribe(channel)
+        if event_type == "*":
+            # Use pattern subscribe for wildcard
+            await self._pubsub.psubscribe("events:*")
+        else:
+            channel = f"events:{event_type}"
+            await self._pubsub.subscribe(channel)
 
         self._handlers[event_type].append((priority, handler))
         # Sort by priority
@@ -122,13 +125,13 @@ class RedisEventBus(EventBus):
                 (p, h) for p, h in self._handlers[event_type] if h != handler
             ]
 
-            if not self._handlers[event_type] and self._pubsub:
-                if event_type == "*":
-                    await self._pubsub.punsubscribe("events:*")
-                else:
-                    channel = f"events:{event_type}"
-                    await self._pubsub.unsubscribe(channel)
-                del self._handlers[event_type]
+        if not self._handlers[event_type] and self._pubsub:
+            if event_type == "*":
+                await self._pubsub.punsubscribe("events:*")
+            else:
+                channel = f"events:{event_type}"
+                await self._pubsub.unsubscribe(channel)
+            del self._handlers[event_type]
 
     async def publish_bulk(
         self,
@@ -200,25 +203,40 @@ class RedisEventBus(EventBus):
                     if "*" in self._handlers:
                         handlers.extend(self._handlers["*"])
 
+                    logger.debug(
+                        "redis_listener_dispatching",
+                        event_type=event.event_type,
+                        handlers_count=len(handlers),
+                    )
+
                     # Execute handlers
                     for _priority, handler in handlers:
                         try:
                             await handler(event)
                             self._metrics["delivered"] += 1
-                        except Exception:
+                        except Exception as e:
                             self._metrics["errors"] += 1
                             # Log error but continue with other handlers
+                            logger.error(
+                                "redis_event_handler_error",
+                                event_type=event.event_type,
+                                error=str(e),
+                                exc_info=True,
+                            )
 
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
                     self._metrics["errors"] += 1
-                except Exception:
+                    logger.warning("redis_listener_json_error", error=str(e))
+                except Exception as e:
                     self._metrics["errors"] += 1
+                    logger.error("redis_listener_event_error", error=str(e), exc_info=True)
 
             except TimeoutError:
                 # No message received, check _running and continue
                 continue
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception as e:
                 self._metrics["errors"] += 1
+                logger.error("redis_listener_error", error=str(e), exc_info=True)
                 await asyncio.sleep(0.1)  # Brief pause on error
