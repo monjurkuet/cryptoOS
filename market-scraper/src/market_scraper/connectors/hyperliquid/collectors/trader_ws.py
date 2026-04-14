@@ -66,7 +66,7 @@ class TraderWebSocketCollector:
 
         # Connection management
         self._clients: list[TraderWSClient] = []
-        self._num_clients = 2  # Number of concurrent connections (reduced from 5 for resource efficiency)
+        self._num_clients = 5  # Number of concurrent connections (supports up to 500 traders with batch_size=100)
         self._batch_size = 100  # Traders per connection
 
         # State
@@ -123,8 +123,15 @@ class TraderWebSocketCollector:
             for i in range(0, len(self._tracked_traders), self._batch_size)
         ]
 
-        # Create and start clients (up to num_clients)
-        for i, batch in enumerate(trader_batches[: self._num_clients]):
+        # Determine how many clients we need (limited by _num_clients max)
+        # Each client handles up to _batch_size traders
+        num_needed_clients = len(trader_batches)
+        num_clients_to_create = min(num_needed_clients, self._num_clients)
+
+        # Create and start clients
+        # If we have more batches than clients, later batches will be assigned
+        # to clients when they have room (via add_trader)
+        for i, batch in enumerate(trader_batches[:num_clients_to_create]):
             client = TraderWSClient(
                 client_id=i,
                 traders=batch,
