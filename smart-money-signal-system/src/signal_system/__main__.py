@@ -18,6 +18,7 @@ from signal_system.whale_alerts.detector import WhaleAlertDetector
 from signal_system.ml.regime_detection import MarketRegimeDetector
 from signal_system.ml.feature_importance import FeatureImportanceAnalyzer
 from signal_system.services.event_processor import EventProcessor
+from signal_system.rl.outcome_tracker import SignalOutcomeTracker
 from signal_system.api.main import app
 
 logger = structlog.get_logger(__name__)
@@ -36,6 +37,7 @@ class SignalSystem:
         self.signal_store = SignalStore()
         self.weighting_engine = TraderWeightingEngine()
         self.whale_detector = WhaleAlertDetector()
+        self.outcome_tracker = SignalOutcomeTracker()
 
         # Shared event processor
         self.event_processor = EventProcessor(
@@ -43,6 +45,7 @@ class SignalSystem:
             whale_detector=self.whale_detector,
             signal_store=self.signal_store,
             settings=self.settings,
+            outcome_tracker=self.outcome_tracker,
         )
 
         # ML components (optional, lazy-loaded)
@@ -95,9 +98,14 @@ class SignalSystem:
         async def handle_candles(event: dict) -> None:
             await self._process_candles(event)
 
+        # Handle mark price for outcome tracking
+        async def handle_mark_price(event: dict) -> None:
+            await self._process_mark_price(event)
+
         self.event_subscriber.subscribe("trader_positions", handle_trader_positions)
         self.event_subscriber.subscribe("scored_traders", handle_scored_traders)
         self.event_subscriber.subscribe("candles", handle_candles)
+        self.event_subscriber.subscribe("mark_price", handle_mark_price)
 
     async def _process_candles(self, event: dict) -> None:
         """Process candle data for regime detection.
@@ -139,6 +147,27 @@ class SignalSystem:
 
         except Exception as e:
             logger.error("candles_processing_error", error=str(e), exc_info=True)
+
+    async def _process_mark_price(self, event: dict) -> None:
+        """Process mark price event for outcome tracking.
+
+        Args:
+            event: Mark price event from market-scraper
+        """
+        try:
+            payload = event.get("payload", {})
+            mark_price = payload.get("mark_price", 0)
+            if mark_price:
+                resolved = await self.event_processor.handle_price_update(
+                    float(mark_price)
+                )
+                if resolved:
+                    logger.debug(
+                        "outcomes_resolved_from_mark_price",
+                        count=len(resolved),
+                    )
+        except Exception as e:
+            logger.error("mark_price_processing_error", error=str(e), exc_info=True)
 
     def _prepare_regime_features(self, candles: list[dict]) -> np.ndarray | None:
         """Prepare feature vector for regime detection from candles.

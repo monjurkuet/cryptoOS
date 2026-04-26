@@ -16,6 +16,7 @@ from signal_system.signal_generation.processor import SignalGenerationProcessor
 from signal_system.signal_store import SignalStore
 from signal_system.whale_alerts.detector import WhaleAlertDetector
 from signal_system.services.event_processor import EventProcessor
+from signal_system.rl.outcome_tracker import SignalOutcomeTracker
 
 logger = structlog.get_logger(__name__)
 
@@ -24,6 +25,7 @@ _event_subscriber: EventSubscriber | None = None
 _signal_processor: SignalGenerationProcessor | None = None
 _whale_detector: WhaleAlertDetector | None = None
 _signal_store: SignalStore | None = None
+_outcome_tracker: SignalOutcomeTracker | None = None
 _event_processor: EventProcessor | None = None
 _subscriber_task: asyncio.Task | None = None
 
@@ -31,7 +33,7 @@ _subscriber_task: asyncio.Task | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan."""
-    global _event_subscriber, _signal_processor, _whale_detector, _signal_store, _event_processor, _subscriber_task
+    global _event_subscriber, _signal_processor, _whale_detector, _signal_store, _outcome_tracker, _event_processor, _subscriber_task
 
     settings = get_settings()
 
@@ -39,6 +41,7 @@ async def lifespan(app: FastAPI):
     _signal_processor = SignalGenerationProcessor(symbol=settings.symbol)
     _whale_detector = WhaleAlertDetector()
     _signal_store = SignalStore()
+    _outcome_tracker = SignalOutcomeTracker()
 
     # Setup event subscriber
     _event_subscriber = EventSubscriber(settings.redis)
@@ -49,6 +52,7 @@ async def lifespan(app: FastAPI):
         whale_detector=_whale_detector,
         signal_store=_signal_store,
         settings=settings,
+        outcome_tracker=_outcome_tracker,
     )
 
     # Set components for dependency injection
@@ -66,8 +70,15 @@ async def lifespan(app: FastAPI):
     async def handle_scored_traders(event: dict) -> None:
         await _event_processor.handle_scored_traders(event)
 
+    async def handle_mark_price(event: dict) -> None:
+        payload = event.get("payload", {})
+        mark_price = payload.get("mark_price", 0)
+        if mark_price and _event_processor:
+            await _event_processor.handle_price_update(float(mark_price))
+
     _event_subscriber.subscribe("trader_positions", handle_position)
     _event_subscriber.subscribe("scored_traders", handle_scored_traders)
+    _event_subscriber.subscribe("mark_price", handle_mark_price)
 
     # Connect and start subscriber in background
     try:

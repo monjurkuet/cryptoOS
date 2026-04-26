@@ -1,6 +1,8 @@
 """Shared event processing logic for standalone and API modes."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -9,6 +11,9 @@ from signal_system.signal_store import SignalStore
 from signal_system.whale_alerts.detector import WhaleAlertDetector
 from signal_system.config import SignalSystemSettings
 from signal_system.utils.safe_convert import safe_float
+
+if TYPE_CHECKING:
+    from signal_system.rl.outcome_tracker import SignalOutcomeTracker
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +32,7 @@ class EventProcessor:
         whale_detector: WhaleAlertDetector,
         signal_store: SignalStore | None,
         settings: SignalSystemSettings,
+        outcome_tracker: SignalOutcomeTracker | None = None,
     ) -> None:
         """Initialize the event processor.
 
@@ -35,11 +41,13 @@ class EventProcessor:
             whale_detector: Whale alert detector instance
             signal_store: Optional signal store for persisting signals
             settings: Application settings
+            outcome_tracker: Optional outcome tracker for RL reward computation
         """
         self._signal_processor = signal_processor
         self._whale_detector = whale_detector
         self._signal_store = signal_store
         self._settings = settings
+        self._outcome_tracker = outcome_tracker
 
     async def handle_position_event(self, event: dict) -> None:
         """Process trader position event.
@@ -48,6 +56,7 @@ class EventProcessor:
         1. Updating whale detector with trader info
         2. Detecting whale alerts for BTC positions
         3. Generating trading signals
+        4. Registering signals with outcome tracker (if configured)
 
         Args:
             event: Raw event from market-scraper
@@ -94,21 +103,67 @@ class EventProcessor:
                                         "detected_at": alert.detected_at,
                                     })
 
-            # Generate signal
-            signal = await self._signal_processor.process_position(event)
-            if signal:
-                # Store the signal if store available
-                if self._signal_store:
-                    self._signal_store.store_signal(signal)
-                logger.info(
-                    "signal_generated",
-                    action=signal["action"],
-                    confidence=signal["confidence"],
-                    net_bias=signal["net_bias"],
-                )
+                # Generate signal
+                signal = await self._signal_processor.process_position(event)
+                if signal:
+                    # Store the signal if store available
+                    if self._signal_store:
+                        self._signal_store.store_signal(signal)
+                    logger.info(
+                        "signal_generated",
+                        action=signal["action"],
+                        confidence=signal["confidence"],
+                        net_bias=signal["net_bias"],
+                    )
+
+                    # Register signal with outcome tracker for RL reward computation
+                    if self._outcome_tracker is not None:
+                        # Extract mark price from payload if available
+                        mark_price = safe_float(payload.get("mark_price", 0), 0)
+                        if mark_price == 0:
+                            # Try from position data
+                            for pos in positions:
+                                pos_data = pos.get("position", pos)
+                                if pos_data.get("coin") == self._settings.symbol:
+                                    mark_price = safe_float(
+                                        pos_data.get("markPx", 0), 0
+                                    )
+                                    break
+                        self._outcome_tracker.register_signal(
+                            signal_id=None,
+                            action=signal["action"],
+                            confidence=signal["confidence"],
+                            price=mark_price,
+                        )
 
         except Exception as e:
             logger.error("position_processing_error", error=str(e), exc_info=True)
+
+    async def handle_price_update(self, price: float) -> list:
+        """Feed a price update to the outcome tracker.
+
+        Called when a mark_price event arrives. Resolves any pending
+        signals whose evaluation horizons have expired.
+
+        Args:
+            price: Current mark price
+
+        Returns:
+            List of resolved SignalOutcome objects (empty if no tracker)
+        """
+        if self._outcome_tracker is None:
+            return []
+        return self._outcome_tracker.update_price(price)
+
+    def get_outcome_stats(self) -> dict[str, Any]:
+        """Get outcome tracker statistics.
+
+        Returns:
+            Tracker stats dict, or empty dict if no tracker configured
+        """
+        if self._outcome_tracker is None:
+            return {}
+        return self._outcome_tracker.get_stats()
 
     async def handle_scored_traders(self, event: dict) -> None:
         """Process scored traders event.
