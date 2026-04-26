@@ -5,19 +5,22 @@ description = "Smart Money Signal System for BTC Trading"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.133.0",
-    "httpx>=0.28.1",
-    "joblib>=1.5.3",
-    "numpy>=2.2.6",
-    "pandas>=2.3.3",
-    "pydantic>=2.12.5",
-    "pydantic-settings>=2.13.1",
-    "python-dotenv>=1.2.1",
-    "redis>=7.2.0",
-    "scikit-learn>=1.7.2",
-    "structlog>=25.5.0",
-    "uvicorn>=0.41.0",
-    "crypto-shared",
+ "fastapi>=0.133.0",
+ "gymnasium>=0.29.0",
+ "httpx>=0.28.1",
+ "joblib>=1.5.3",
+ "numpy>=2.2.6",
+ "pandas>=2.3.3",
+ "pymongo>=4.7.0",
+ "pydantic>=2.12.5",
+ "pydantic-settings>=2.13.1",
+ "python-dotenv>=1.2.1",
+ "redis>=7.2.0",
+ "scikit-learn>=1.7.2",
+ "structlog>=25.5.0",
+ "torch>=2.11.0",
+ "uvicorn>=0.41.0",
+ "crypto-shared",
 ]
 
 [project.scripts]
