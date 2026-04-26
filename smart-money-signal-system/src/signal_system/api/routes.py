@@ -5,7 +5,13 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from signal_system.api.dependencies import get_signal_processor, get_whale_detector, get_signal_store
+from signal_system.api.dependencies import (
+    get_signal_processor,
+    get_whale_detector,
+    get_signal_store,
+    get_outcome_store,
+    get_rl_param_server,
+)
 
 router = APIRouter()
 
@@ -215,3 +221,138 @@ async def get_signal_store_stats() -> dict[str, Any]:
         "signals": store.get_signal_stats(),
         "alerts": store.get_alert_stats(),
     }
+
+
+# ── RL Endpoints ──────────────────────────────────────────────
+
+
+class RLParamsUpdate(BaseModel):
+    """Request body for updating RL params."""
+
+    bias_threshold: float | None = None
+    conf_scale: float | None = None
+    min_confidence: float | None = None
+    trend_weight: float | None = None
+    volume_weight: float | None = None
+    momentum_weight: float | None = None
+    volatility_weight: float | None = None
+
+
+@router.get("/rl/status")
+async def get_rl_status() -> dict[str, Any]:
+    """Get RL agent status including current params and metadata.
+
+    Returns:
+        RL parameter server status
+    """
+    server = get_rl_param_server()
+    return server.get_status()
+
+
+@router.get("/rl/params")
+async def get_rl_params() -> dict[str, Any]:
+    """Get current RL-adjusted signal parameters.
+
+    Returns:
+        Current signal parameters from the RL agent
+    """
+    server = get_rl_param_server()
+    return {"params": server.get_params()}
+
+
+@router.put("/rl/params")
+async def update_rl_params(update: RLParamsUpdate) -> dict[str, Any]:
+    """Update RL signal parameters (e.g. after retraining).
+
+    Args:
+        update: Parameters to update (only non-None fields are applied)
+
+    Returns:
+        Updated parameter values
+    """
+    server = get_rl_param_server()
+    # Build dict of only provided fields
+    new_params = {k: v for k, v in update.model_dump().items() if v is not None}
+    if new_params:
+        server.update_params(new_params)
+        # Also push to signal processor
+        processor = get_signal_processor()
+        processor.set_rl_params(server.get_params())
+    return {"params": server.get_params()}
+
+
+@router.get("/rl/outcomes")
+async def get_rl_outcomes(limit: int = 100) -> dict[str, Any]:
+    """Get recent signal outcomes for RL training.
+
+    Args:
+        limit: Maximum outcomes to return
+
+    Returns:
+        Recent outcomes with summary stats
+    """
+    store = get_outcome_store()
+    outcomes = store.get_recent_outcomes(limit=limit)
+
+    resolved = [o for o in outcomes if o.resolved_at is not None]
+    pnl_values = [o.pnl_pct for o in resolved if o.pnl_pct is not None]
+
+    return {
+        "count": len(outcomes),
+        "resolved_count": len(resolved),
+        "outcomes": [
+            {
+                "signal_id": o.signal_id,
+                "action": o.action,
+                "confidence": o.confidence,
+                "pnl_pct": o.pnl_pct,
+                "timestamp": o.timestamp,
+                "resolved_at": o.resolved_at,
+            }
+            for o in outcomes
+        ],
+        "summary": {
+            "total_signals": len(outcomes),
+            "resolved_signals": len(resolved),
+            "avg_pnl": sum(pnl_values) / len(pnl_values) if pnl_values else 0.0,
+            "win_rate": (
+                len([p for p in pnl_values if p > 0]) / len(pnl_values)
+                if pnl_values
+                else 0.0
+            ),
+        },
+    }
+
+
+@router.post("/rl/retrain")
+async def trigger_retrain(episodes: int = 100) -> dict[str, Any]:
+    """Trigger an RL retraining run (background).
+
+    Args:
+        episodes: Number of training episodes
+
+    Returns:
+        Status indicating retraining was initiated
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).parent.parent.parent.parent
+    cmd = [
+        sys.executable, "-m", "signal_system.rl.retrain",
+        "--episodes", str(episodes),
+        "--push",
+    ]
+    subprocess.Popen(
+        cmd,
+        cwd=str(project_root),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {
+        "status": "retraining_initiated",
+        "episodes": episodes,
+        "message": "Training started in background. Check /rl/status for updates.",
+    }
+

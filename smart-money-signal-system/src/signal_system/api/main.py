@@ -79,6 +79,8 @@ async def lifespan(app: FastAPI):
         whale_detector=_whale_detector,
         event_subscriber=_event_subscriber,
         signal_store=_signal_store,
+        outcome_store=_outcome_store,
+        rl_param_server=_rl_param_server,
     )
 
     # Register handlers using EventProcessor
