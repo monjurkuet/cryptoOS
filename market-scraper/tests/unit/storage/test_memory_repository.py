@@ -44,6 +44,27 @@ class TestMemoryRepository:
             timestamp=event_timestamp,
         )
 
+    @staticmethod
+    def create_live_position(
+        size: float,
+        entry_price: float = 50000.0,
+        mark_price: float = 50500.0,
+        unrealized_pnl: float = 0.0,
+    ) -> list[dict]:
+        """Build a live BTC position payload."""
+        return [
+            {
+                "position": {
+                    "coin": "BTC",
+                    "szi": size,
+                    "entryPx": entry_price,
+                    "markPx": mark_price,
+                    "unrealizedPnl": unrealized_pnl,
+                    "leverage": {"value": 2},
+                }
+            }
+        ]
+
     @pytest.mark.asyncio
     async def test_connect_disconnect(self):
         """Test connection lifecycle."""
@@ -499,6 +520,7 @@ class TestMemoryRepository:
             address=address,
             symbol="BTC",
             positions=[{"position": {"coin": "BTC", "szi": 1.25}}],
+            open_orders=[],
             margin_summary={"accountValue": 1000},
             event_timestamp=event_time,
             source="hyperliquid_ws",
@@ -530,6 +552,97 @@ class TestMemoryRepository:
         assert history[0]["coin"] == "BTC"
 
     @pytest.mark.asyncio
+    async def test_get_trader_current_states_bulk_lookup(self, repository: MemoryRepository) -> None:
+        """Bulk current-state lookup returns keyed states for matching addresses."""
+        event_time = datetime(2024, 1, 1, 12, 0, 0)
+        address_one = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0011"
+        address_two = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0022"
+
+        await repository.upsert_trader_current_state(
+            address=address_one,
+            symbol="BTC",
+            positions=[{"position": {"coin": "BTC", "szi": 1.0}}],
+            open_orders=[{"coin": "BTC", "sz": "0.5", "oid": 1}],
+            margin_summary={"accountValue": 1_000},
+            event_timestamp=event_time,
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address_two,
+            symbol="BTC",
+            positions=[{"position": {"coin": "BTC", "szi": 2.0}}],
+            open_orders=[],
+            margin_summary={"accountValue": 2_000},
+            event_timestamp=event_time,
+            source="hyperliquid_ws",
+        )
+
+        states = await repository.get_trader_current_states(
+            [address_one.upper(), address_two.lower(), address_two.lower()],
+            symbol="BTC",
+        )
+
+        assert set(states.keys()) == {address_one.lower(), address_two.lower()}
+        assert states[address_one.lower()]["positions"][0]["position"]["szi"] == 1.0
+        assert states[address_one.lower()]["open_orders"][0]["oid"] == 1
+        assert states[address_two.lower()]["positions"][0]["position"]["szi"] == 2.0
+
+    @pytest.mark.asyncio
+    async def test_get_trader_current_states_respects_symbol_filter(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Bulk lookup can filter states by symbol."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0033"
+        event_time = datetime(2024, 1, 1, 12, 0, 0)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="ETH",
+            positions=[{"position": {"coin": "ETH", "szi": 3.0}}],
+            open_orders=[],
+            margin_summary={"accountValue": 3_000},
+            event_timestamp=event_time,
+            source="hyperliquid_ws",
+        )
+
+        btc_states = await repository.get_trader_current_states([address], symbol="BTC")
+        eth_states = await repository.get_trader_current_states([address], symbol="ETH")
+
+        assert btc_states == {}
+        assert eth_states[address.lower()]["symbol"] == "ETH"
+
+    @pytest.mark.asyncio
+    async def test_get_trader_current_states_prefers_latest_state_per_address(
+        self, repository: MemoryRepository
+    ) -> None:
+        """When symbol is not filtered, bulk lookup keeps the latest state by updated_at."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0044"
+        older_time = datetime(2024, 1, 1, 12, 0, 0)
+        newer_time = datetime(2024, 1, 1, 12, 5, 0)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[{"position": {"coin": "BTC", "szi": 1.0}}],
+            open_orders=[],
+            margin_summary={"accountValue": 4_000},
+            event_timestamp=older_time,
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="ETH",
+            positions=[{"position": {"coin": "ETH", "szi": 2.0}}],
+            open_orders=[],
+            margin_summary={"accountValue": 5_000},
+            event_timestamp=newer_time,
+            source="hyperliquid_ws",
+        )
+
+        states = await repository.get_trader_current_states([address], symbol=None)
+        assert states[address.lower()]["symbol"] == "ETH"
+
+    @pytest.mark.asyncio
     async def test_trader_current_state_skips_unchanged_updates(
         self, repository: MemoryRepository
     ) -> None:
@@ -541,6 +654,7 @@ class TestMemoryRepository:
             address=address,
             symbol="BTC",
             positions=[{"position": {"coin": "BTC", "szi": 1.25}}],
+            open_orders=[],
             margin_summary={"accountValue": 1000},
             event_timestamp=event_time,
             source="hyperliquid_ws",
@@ -552,12 +666,388 @@ class TestMemoryRepository:
             address=address,
             symbol="BTC",
             positions=[{"position": {"coin": "BTC", "szi": 1.25}}],
+            open_orders=[],
             margin_summary={"accountValue": 1000},
             event_timestamp=event_time,
             source="hyperliquid_ws",
         )
 
         assert repository._trader_current_state[state_key]["updated_at"] == first_updated_at
+
+    @pytest.mark.asyncio
+    async def test_trader_current_state_updates_when_open_orders_change(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Current state should refresh when open orders change."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0099"
+        event_time = datetime(2024, 1, 1, 12, 0, 0)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[],
+            open_orders=[{"coin": "BTC", "sz": "0.5", "oid": 10}],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=event_time,
+            source="hyperliquid_ws",
+        )
+        state_key = (address.lower(), "BTC")
+        first_updated_at = repository._trader_current_state[state_key]["updated_at"]
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[],
+            open_orders=[{"coin": "BTC", "sz": "0.75", "oid": 10}],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=event_time,
+            source="hyperliquid_ws",
+        )
+
+        assert repository._trader_current_state[state_key]["updated_at"] > first_updated_at
+
+    @pytest.mark.asyncio
+    async def test_trader_current_state_starts_trade_meta_without_closed_trade(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Flat to long should start trade metadata and keep closed-trade ledger empty."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0100"
+        opened_at = datetime(2024, 1, 1, 12, 0, 0)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(1.0, mark_price=50600, unrealized_pnl=600),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=opened_at,
+            source="hyperliquid_ws",
+        )
+
+        state = await repository.get_trader_current_state(address)
+        closed_trades = await repository.get_trader_closed_trades(
+            address=address,
+            start_time=opened_at - timedelta(hours=1),
+        )
+
+        assert state is not None
+        assert state["btc_trade_meta"]["direction"] == "long"
+        assert state["btc_trade_meta"]["opened_at"] == opened_at
+        assert state["btc_trade_meta"]["max_abs_size"] == 1.0
+        assert closed_trades == []
+
+    @pytest.mark.asyncio
+    async def test_trader_current_state_updates_trade_meta_on_same_side_changes(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Same-side size changes should update trade metadata without closing the trade."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0101"
+        opened_at = datetime(2024, 1, 1, 12, 0, 0)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(1.0, mark_price=50500, unrealized_pnl=500),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=opened_at,
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(2.5, mark_price=51000, unrealized_pnl=2500),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=opened_at + timedelta(minutes=5),
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(1.5, mark_price=50900, unrealized_pnl=1350),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=opened_at + timedelta(minutes=10),
+            source="hyperliquid_ws",
+        )
+
+        state = await repository.get_trader_current_state(address)
+        closed_trades = await repository.get_trader_closed_trades(
+            address=address,
+            start_time=opened_at - timedelta(hours=1),
+        )
+
+        assert state is not None
+        assert state["btc_trade_meta"]["opened_at"] == opened_at
+        assert state["btc_trade_meta"]["direction"] == "long"
+        assert state["btc_trade_meta"]["max_abs_size"] == 2.5
+        assert closed_trades == []
+
+    @pytest.mark.asyncio
+    async def test_trader_current_state_writes_closed_trade_on_flat(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Long to flat should append a closed trade and clear live trade metadata."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0102"
+        opened_at = datetime(2024, 1, 1, 12, 0, 0)
+        reduced_at = opened_at + timedelta(minutes=5)
+        closed_at = opened_at + timedelta(minutes=10)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(1.0, mark_price=50500, unrealized_pnl=500),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=opened_at,
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(2.0, mark_price=52000, unrealized_pnl=4000),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=reduced_at,
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(1.25, mark_price=51500, unrealized_pnl=1875),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=closed_at - timedelta(minutes=1),
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[],
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=closed_at,
+            source="hyperliquid_ws",
+        )
+
+        state = await repository.get_trader_current_state(address)
+        closed_trades = await repository.get_trader_closed_trades(
+            address=address,
+            start_time=opened_at - timedelta(hours=1),
+        )
+
+        assert state is not None
+        assert state["positions"] == []
+        assert state["btc_trade_meta"] == {}
+        assert len(closed_trades) == 1
+        assert closed_trades[0]["dir"] == "long"
+        assert closed_trades[0]["opened_at"] == opened_at.replace(tzinfo=UTC)
+        assert closed_trades[0]["closed_at"] == closed_at.replace(tzinfo=UTC)
+        assert closed_trades[0]["max_abs_size"] == 2.0
+        assert closed_trades[0]["final_abs_size"] == 1.25
+        assert closed_trades[0]["close_reference_price"] == 51500.0
+        assert closed_trades[0]["last_unrealized_pnl"] == 1875.0
+        assert closed_trades[0]["close_reason"] == "flat"
+
+    @pytest.mark.asyncio
+    async def test_trader_current_state_writes_closed_trade_on_flip_and_starts_new_trade(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Short to long should close the short trade and open a new long trade."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0103"
+        opened_at = datetime(2024, 1, 1, 12, 0, 0)
+        flipped_at = opened_at + timedelta(minutes=5)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(-1.5, mark_price=49800, unrealized_pnl=300),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=opened_at,
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(0.75, entry_price=49750, mark_price=50100, unrealized_pnl=262.5),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=flipped_at,
+            source="hyperliquid_ws",
+        )
+
+        state = await repository.get_trader_current_state(address)
+        closed_trades = await repository.get_trader_closed_trades(
+            address=address,
+            start_time=opened_at - timedelta(hours=1),
+        )
+
+        assert state is not None
+        assert state["btc_trade_meta"]["direction"] == "long"
+        assert state["btc_trade_meta"]["opened_at"] == flipped_at
+        assert state["btc_trade_meta"]["max_abs_size"] == 0.75
+        assert len(closed_trades) == 1
+        assert closed_trades[0]["dir"] == "short"
+        assert closed_trades[0]["close_reason"] == "flip"
+
+    @pytest.mark.asyncio
+    async def test_trader_current_state_duplicate_close_event_is_idempotent(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Duplicate flat snapshots should not create duplicate closed trades."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0104"
+        opened_at = datetime(2024, 1, 1, 12, 0, 0)
+        closed_at = opened_at + timedelta(minutes=5)
+
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=self.create_live_position(1.0, mark_price=50500, unrealized_pnl=500),
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=opened_at,
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[],
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=closed_at,
+            source="hyperliquid_ws",
+        )
+        await repository.upsert_trader_current_state(
+            address=address,
+            symbol="BTC",
+            positions=[],
+            open_orders=[],
+            margin_summary={"accountValue": 1000},
+            event_timestamp=closed_at + timedelta(minutes=1),
+            source="hyperliquid_ws",
+        )
+
+        closed_trades = await repository.get_trader_closed_trades(
+            address=address,
+            start_time=opened_at - timedelta(hours=1),
+        )
+
+        assert len(closed_trades) == 1
+
+    @pytest.mark.asyncio
+    async def test_derive_closed_trades_from_position_history_round_trip(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Backfill should derive one round-trip close from same-direction snapshots plus flat current state."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0105"
+        opened_at = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        history = [
+            {
+                "eth": address.lower(),
+                "t": opened_at,
+                "coin": "BTC",
+                "sz": 1.0,
+                "ep": 50000,
+                "mp": 50500,
+                "upnl": 500,
+                "lev": 2,
+            },
+            {
+                "eth": address.lower(),
+                "t": opened_at + timedelta(minutes=5),
+                "coin": "BTC",
+                "sz": 2.0,
+                "ep": 50000,
+                "mp": 51500,
+                "upnl": 3000,
+                "lev": 2,
+            },
+            {
+                "eth": address.lower(),
+                "t": opened_at + timedelta(minutes=10),
+                "coin": "BTC",
+                "sz": 1.0,
+                "ep": 50000,
+                "mp": 51200,
+                "upnl": 1200,
+                "lev": 2,
+            },
+        ]
+        current_state = {
+            "positions": [],
+            "last_event_time": opened_at + timedelta(minutes=15),
+        }
+
+        trades = repository.derive_closed_trades_from_position_history(
+            address=address,
+            symbol="BTC",
+            positions=history,
+            current_state=current_state,
+        )
+
+        assert len(trades) == 1
+        assert trades[0]["opened_at"] == opened_at
+        assert trades[0]["closed_at"] == opened_at + timedelta(minutes=15)
+        assert trades[0]["max_abs_size"] == 2.0
+        assert trades[0]["final_abs_size"] == 1.0
+        assert trades[0]["close_reason"] == "flat"
+
+    @pytest.mark.asyncio
+    async def test_derive_closed_trades_from_position_history_handles_flip(
+        self, repository: MemoryRepository
+    ) -> None:
+        """Backfill should emit a close on direction flips and keep the new side open."""
+        address = "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0106"
+        opened_at = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+        history = [
+            {
+                "eth": address.lower(),
+                "t": opened_at,
+                "coin": "BTC",
+                "sz": -1.0,
+                "ep": 50000,
+                "mp": 49800,
+                "upnl": 200,
+                "lev": 2,
+            },
+            {
+                "eth": address.lower(),
+                "t": opened_at + timedelta(minutes=5),
+                "coin": "BTC",
+                "sz": -1.5,
+                "ep": 50000,
+                "mp": 49500,
+                "upnl": 750,
+                "lev": 2,
+            },
+            {
+                "eth": address.lower(),
+                "t": opened_at + timedelta(minutes=10),
+                "coin": "BTC",
+                "sz": 0.75,
+                "ep": 49750,
+                "mp": 50100,
+                "upnl": 262.5,
+                "lev": 2,
+            },
+        ]
+
+        trades = repository.derive_closed_trades_from_position_history(
+            address=address,
+            symbol="BTC",
+            positions=history,
+            current_state={
+                "positions": self.create_live_position(0.75, entry_price=49750, mark_price=50100),
+                "last_event_time": opened_at + timedelta(minutes=10),
+            },
+        )
+
+        assert len(trades) == 1
+        assert trades[0]["dir"] == "short"
+        assert trades[0]["close_reason"] == "flip"
+        assert trades[0]["closed_at"] == opened_at + timedelta(minutes=10)
 
     @pytest.mark.asyncio
     async def test_store_trader_position_skips_duplicate_snapshot(

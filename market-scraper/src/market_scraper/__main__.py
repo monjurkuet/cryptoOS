@@ -4,6 +4,7 @@
 
 import argparse
 import asyncio
+from datetime import UTC, datetime, timedelta
 import sys
 from typing import Any
 
@@ -113,6 +114,35 @@ def create_parser() -> argparse.ArgumentParser:
 
     # Traders list
     traders_subparsers.add_parser("list", help="List tracked traders")
+
+    # Traders backfill closed trades
+    backfill_parser = traders_subparsers.add_parser(
+        "backfill-closed-trades",
+        help="Backfill closed BTC trades from position history",
+    )
+    backfill_parser.add_argument(
+        "--hours",
+        type=int,
+        default=720,
+        help="Hours of trader position history to scan (default: 720)",
+    )
+    backfill_parser.add_argument(
+        "--history-limit",
+        type=int,
+        default=10000,
+        help="Maximum position snapshots to read per trader (default: 10000)",
+    )
+    backfill_parser.add_argument(
+        "--address-limit",
+        type=int,
+        default=5000,
+        help="Maximum active trader addresses to scan (default: 5000)",
+    )
+    backfill_parser.add_argument(
+        "--address",
+        default=None,
+        help="Optional single trader address to backfill",
+    )
 
     # Health command
     subparsers.add_parser("health", help="Check system health")
@@ -376,6 +406,61 @@ async def run_traders_list(args: argparse.Namespace) -> int:
     return 0
 
 
+async def run_traders_backfill_closed_trades(args: argparse.Namespace) -> int:
+    """Backfill closed trades from stored BTC position history."""
+    lifecycle = LifecycleManager()
+    await lifecycle.startup()
+
+    repository = lifecycle.repository
+    if not repository:
+        print("Error: Repository not available")
+        await lifecycle.shutdown()
+        return 1
+
+    try:
+        symbol = lifecycle._settings.hyperliquid.symbol
+        start_time = datetime.now(UTC) - timedelta(hours=max(args.hours, 1))
+
+        if args.address:
+            addresses = [str(args.address).lower()]
+        else:
+            addresses = await repository.get_active_trader_addresses(limit=max(args.address_limit, 1))
+
+        processed = 0
+        generated = 0
+
+        for address in addresses:
+            history = await repository.get_trader_positions_history(
+                address=address,
+                start_time=start_time,
+                limit=max(args.history_limit, 1),
+            )
+            current_state = await repository.get_trader_current_state(address)
+            trades = repository.derive_closed_trades_from_position_history(
+                address=address,
+                symbol=symbol,
+                positions=history,
+                current_state=current_state if isinstance(current_state, dict) else None,
+            )
+
+            for trade in trades:
+                await repository.store_trader_closed_trade(trade)
+
+            processed += 1
+            generated += len(trades)
+
+        print(
+            f"Backfill complete: processed {processed} trader(s), generated {generated} closed trade row(s)"
+        )
+    except Exception as e:
+        print(f"Error backfilling closed trades: {e}")
+        await lifecycle.shutdown()
+        return 1
+
+    await lifecycle.shutdown()
+    return 0
+
+
 async def run_health(args: argparse.Namespace) -> int:
     """Check system health.
 
@@ -463,6 +548,7 @@ def main() -> int:
             "track": run_traders_track,
             "untrack": run_traders_untrack,
             "list": run_traders_list,
+            "backfill-closed-trades": run_traders_backfill_closed_trades,
         },
         "health": run_health,
         "config": run_config,

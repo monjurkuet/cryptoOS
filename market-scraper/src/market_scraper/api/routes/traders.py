@@ -53,6 +53,8 @@ class TraderResponse(BaseModel):
     account_value: float = 0
     active: bool = True
     has_positions: bool = False
+    has_open_orders: bool = False
+    open_order_count: int = 0
     position_status: str = "unknown"  # "flat", "long", "short", "unknown"
     last_position_update: datetime | None = None
 
@@ -97,6 +99,31 @@ class TraderDetailResponse(BaseModel):
     position_status: str = "unknown"  # "flat", "long", "short", "mixed", "unknown"
     has_positions: bool = False
     btc_position: dict[str, Any] | None = None  # BTC-specific position if available
+    btc_open_orders: list[dict[str, Any]] = []
+
+
+class TraderClosedTradeResponse(BaseModel):
+    """Closed-trade response row."""
+
+    trade_id: str
+    direction: str
+    opened_at: datetime
+    closed_at: datetime
+    entry_price: float
+    close_reference_price: float
+    max_abs_size: float
+    final_abs_size: float
+    last_unrealized_pnl: float
+    close_reason: str
+
+
+class TraderClosedTradesListResponse(BaseModel):
+    """Closed-trade list response."""
+
+    address: str
+    symbol: str
+    closed_trades: list[TraderClosedTradeResponse] = []
+    count: int = 0
 
 
 # ============== Routes ==============
@@ -109,6 +136,7 @@ async def list_traders(
     min_score: float = Query(default=0, ge=0),
     tag: str | None = Query(default=None),
     has_positions: bool | None = Query(default=None, description="Filter by position status"),
+    has_open_orders: bool | None = Query(default=None, description="Filter by open-order availability"),
     position_status: str | None = Query(default=None, description="Filter by: flat, long, short, unknown"),
     updated_within_hours: int | None = Query(default=None, description="Only traders updated within N hours"),
 ) -> dict[str, Any]:
@@ -120,6 +148,7 @@ async def list_traders(
         min_score: Minimum score filter
         tag: Filter by tag (e.g., "whale", "consistent")
         has_positions: Filter by whether trader has positions
+        has_open_orders: Filter by whether trader has open orders
         position_status: Filter by position status (flat, long, short, unknown)
         updated_within_hours: Only include traders updated within N hours
 
@@ -150,6 +179,12 @@ async def list_traders(
             active_only=True,
         )
 
+        addresses = [str(t.get("eth", t.get("address", ""))).lower() for t in traders]
+        states_by_address = await repository.get_trader_current_states(
+            addresses=addresses,
+            symbol=lifecycle._settings.hyperliquid.symbol,
+        )
+
         # Get position state for each trader
         trader_responses = []
         total_with_positions = 0
@@ -157,19 +192,28 @@ async def list_traders(
         total_unknown = 0
 
         for t in traders:
-            address = t.get("eth", t.get("address", "")).lower()
-
-            # Get current position state
-            state = await repository.get_trader_current_state(address)
+            address = str(t.get("eth", t.get("address", ""))).lower()
+            state = states_by_address.get(address)
+            if not isinstance(state, dict):
+                state = None
 
             has_pos = False
+            has_orders = False
+            order_count = 0
             pos_status = "unknown"
             last_update = None
 
             if state:
                 positions = state.get("positions", [])
+                open_orders = state.get("open_orders", [])
+                if not isinstance(positions, list):
+                    positions = []
+                if not isinstance(open_orders, list):
+                    open_orders = []
                 last_update = state.get("updated_at")
                 has_pos = len(positions) > 0
+                has_orders = len(open_orders) > 0
+                order_count = len(open_orders)
 
                 if has_pos:
                     total_with_positions += 1
@@ -201,6 +245,8 @@ async def list_traders(
             # Apply filters
             if has_positions is not None and has_pos != has_positions:
                 continue
+            if has_open_orders is not None and has_orders != has_open_orders:
+                continue
             if position_status is not None and pos_status != position_status:
                 continue
             if updated_within_hours is not None and last_update:
@@ -218,14 +264,22 @@ async def list_traders(
                     account_value=t.get("acct_val", t.get("accountValue", 0)),
                     active=t.get("active", True),
                     has_positions=has_pos,
+                    has_open_orders=has_orders,
+                    open_order_count=order_count,
                     position_status=pos_status,
                     last_position_update=last_update,
                 )
             )
 
+        filtered_query_applied = any(
+            value is not None
+            for value in (has_positions, has_open_orders, position_status, updated_within_hours)
+        )
+        response_total = len(trader_responses) if filtered_query_applied else total
+
         return {
             "traders": trader_responses,
-            "total": total,
+            "total": response_total,
             "symbol": lifecycle._settings.hyperliquid.symbol,
             "total_with_positions": total_with_positions,
             "total_flat": total_flat,
@@ -272,16 +326,22 @@ async def get_trader(
 
         # Get current positions
         state = await repository.get_trader_current_state(validated_address)
+        if not isinstance(state, dict):
+            state = None
 
         positions = []
         has_positions = False
         position_status = "unknown"
         btc_position = None
+        btc_open_orders: list[dict[str, Any]] = []
         last_updated = trader.get("updated_at", trader.get("updatedAt"))
 
         if state:
             last_updated = state.get("updated_at") or last_updated
-            for pos in state.get("positions", []):
+            state_positions = state.get("positions", [])
+            if not isinstance(state_positions, list):
+                state_positions = []
+            for pos in state_positions:
                 p = pos.get("position", pos)
                 pos_data = {
                     "coin": p.get("coin"),
@@ -302,6 +362,10 @@ async def get_trader(
                     btc_position = pos_data
 
             has_positions = len(positions) > 0
+            state_open_orders = state.get("open_orders", [])
+            if not isinstance(state_open_orders, list):
+                state_open_orders = []
+            btc_open_orders = [order for order in state_open_orders if isinstance(order, dict)]
 
             # Determine position status
             if has_positions:
@@ -333,6 +397,7 @@ async def get_trader(
             position_status=position_status,
             has_positions=has_positions,
             btc_position=btc_position,
+            btc_open_orders=btc_open_orders,
         )
 
     except HTTPException:
@@ -394,6 +459,94 @@ async def get_trader_positions(
             "count": len(positions),
         }
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/{address}/orders")
+async def get_trader_orders(
+    address: str,
+    lifecycle: LifecycleManager = Depends(get_lifecycle),
+) -> dict[str, Any]:
+    """Get trader current active open orders for configured symbol."""
+    validated_address = validate_eth_address(address)
+
+    repository = lifecycle.repository
+    if not repository:
+        raise HTTPException(status_code=503, detail="Repository not available")
+
+    try:
+        state = await repository.get_trader_current_state(validated_address)
+        if not isinstance(state, dict):
+            state = None
+
+        open_orders = []
+        last_updated = None
+        if state:
+            state_open_orders = state.get("open_orders", [])
+            if isinstance(state_open_orders, list):
+                open_orders = [order for order in state_open_orders if isinstance(order, dict)]
+            last_updated = state.get("updated_at")
+
+        return {
+            "address": validated_address,
+            "symbol": lifecycle._settings.hyperliquid.symbol,
+            "open_orders": open_orders,
+            "count": len(open_orders),
+            "last_updated": last_updated,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/{address}/closed-trades", response_model=TraderClosedTradesListResponse)
+async def get_trader_closed_trades(
+    address: str,
+    lifecycle: LifecycleManager = Depends(get_lifecycle),
+    hours: int = Query(default=168, ge=1, le=2160),
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Get closed BTC trades for a tracked trader."""
+    validated_address = validate_eth_address(address)
+
+    repository = lifecycle.repository
+    if not repository:
+        raise HTTPException(status_code=503, detail="Repository not available")
+
+    try:
+        trader = await repository.get_trader_by_address(validated_address)
+        if not trader:
+            raise HTTPException(status_code=404, detail="Trader not found")
+
+        start_time = datetime.now(UTC) - timedelta(hours=hours)
+        trades = await repository.get_trader_closed_trades(
+            address=validated_address,
+            start_time=start_time,
+            limit=limit,
+        )
+
+        return {
+            "address": validated_address,
+            "symbol": lifecycle._settings.hyperliquid.symbol,
+            "closed_trades": [
+                TraderClosedTradeResponse(
+                    trade_id=str(trade.get("trade_id", "")),
+                    direction=str(trade.get("dir", "")),
+                    opened_at=trade.get("opened_at"),
+                    closed_at=trade.get("closed_at"),
+                    entry_price=float(trade.get("entry_price", 0) or 0),
+                    close_reference_price=float(trade.get("close_reference_price", 0) or 0),
+                    max_abs_size=float(trade.get("max_abs_size", 0) or 0),
+                    final_abs_size=float(trade.get("final_abs_size", 0) or 0),
+                    last_unrealized_pnl=float(trade.get("last_unrealized_pnl", 0) or 0),
+                    close_reason=str(trade.get("close_reason", "")),
+                )
+                for trade in trades
+            ],
+            "count": len(trades),
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 

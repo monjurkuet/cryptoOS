@@ -194,10 +194,25 @@ class RedisEventBus(EventBus):
                     # For message, data is in message["data"]
                     data = json.loads(message["data"])
                     event = StandardEvent.model_validate(data)
+                    event_type_str = str(event.event_type)
+
+                    # Avoid duplicate dispatch when we're subscribed both to a
+                    # concrete channel (subscribe) and wildcard pattern
+                    # (psubscribe). In that case Redis emits both "message"
+                    # and "pmessage" for the same payload.
+                    if msg_type == "pmessage":
+                        channel = str(message.get("channel", ""))
+                        if channel.startswith("events:"):
+                            channel_event_type = channel.split("events:", 1)[1]
+                            if channel_event_type in self._handlers:
+                                logger.debug(
+                                    "redis_listener_pattern_duplicate_skipped",
+                                    event_type=event_type_str,
+                                )
+                                continue
 
                     # Get handlers for this event type and wildcard
                     handlers: list[tuple[EventPriority, EventHandler]] = []
-                    event_type_str = str(event.event_type)
                     if event_type_str in self._handlers:
                         handlers.extend(self._handlers[event_type_str])
                     if "*" in self._handlers:

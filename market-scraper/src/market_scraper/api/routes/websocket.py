@@ -19,6 +19,12 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
+CHANNEL_SUBSCRIPTIONS: dict[str, tuple[str, ...]] = {
+    # Friendly aliases used by the frontend/docs
+    "traders": ("trader_positions", "scored_traders"),
+    "signals": ("trading_signal",),
+}
+
 
 class ConnectionManager:
     """WebSocket connection manager for tracking active connections."""
@@ -128,6 +134,8 @@ async def websocket_endpoint(
             event_bus = lifecycle.event_bus
             receive_task = asyncio.create_task(websocket.receive_text())
 
+            subscriptions = CHANNEL_SUBSCRIPTIONS.get(channel, (channel,))
+
             async def event_handler(event: StandardEvent) -> None:
                 """Handle events from the event bus and send to WebSocket."""
                 try:
@@ -135,8 +143,9 @@ async def websocket_endpoint(
                 except Exception as e:
                     logger.debug("websocket_send_error", error=str(e))
 
-            # Subscribe to the channel
-            await event_bus.subscribe(channel, event_handler)
+            # Subscribe to one-or-many event types (supports aliases like `traders`).
+            for event_type in subscriptions:
+                await event_bus.subscribe(event_type, event_handler)
 
             try:
                 # Keep connection alive and handle incoming messages
@@ -166,7 +175,8 @@ async def websocket_endpoint(
 
             finally:
                 # Unsubscribe from event bus
-                await event_bus.unsubscribe(channel, event_handler)
+                for event_type in subscriptions:
+                    await event_bus.unsubscribe(event_type, event_handler)
 
         else:
             # Fallback: Simple echo mode when event bus is not available

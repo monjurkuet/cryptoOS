@@ -80,6 +80,27 @@ class TraderScore(BaseModel):
     week_roi: float = Field(default=0, description="Week ROI")
 
 
+class TraderClosedTrade(BaseModel):
+    """Closed BTC trade ledger row.
+
+    Collection: trader_closed_trades (time-series)
+    """
+
+    trade_id: str = Field(..., description="Deterministic trade ID for dedupe")
+    eth: str = Field(..., description="Trader Ethereum address")
+    symbol: str = Field(..., description="Coin/symbol")
+    dir: str = Field(..., description="Direction: long or short")
+    opened_at: datetime = Field(..., description="Trade open timestamp")
+    closed_at: datetime = Field(..., description="Trade close timestamp")
+    entry_price: float = Field(..., description="Entry reference price")
+    close_reference_price: float = Field(..., description="Last observed mark price before close")
+    max_abs_size: float = Field(..., description="Largest absolute size observed while open")
+    final_abs_size: float = Field(..., description="Absolute size immediately before close")
+    last_unrealized_pnl: float = Field(..., description="Last tracked unrealized PnL before close")
+    close_reason: str = Field(..., description="Why the trade closed: flat or flip")
+    t: datetime = Field(..., description="Closed timestamp for TTL/indexing")
+
+
 class TrackedTrader(BaseModel):
     """Currently tracked trader.
 
@@ -168,6 +189,7 @@ class CollectionName:
     TRADER_SCORES = "trader_scores"
     TRACKED_TRADERS = "tracked_traders"
     TRADER_CURRENT_STATE = "trader_current_state"
+    TRADER_CLOSED_TRADES = "trader_closed_trades"
 
     # Signals
     SIGNALS = "signals"

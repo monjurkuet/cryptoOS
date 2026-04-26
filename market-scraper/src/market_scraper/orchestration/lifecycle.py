@@ -465,7 +465,7 @@ class LifecycleManager:
 
     async def _store_trader_positions_state(self, event: StandardEvent) -> None:
         """Persist trader position event into current-state and history collections."""
-        logger.info(
+        logger.debug(
             "trader_positions_handler_called",
             event_id=event.event_id,
             event_type=event.event_type,
@@ -485,13 +485,14 @@ class LifecycleManager:
         address = str(payload.get("address", "")).lower()
         symbol = str(payload.get("symbol", self._settings.hyperliquid.symbol))
         positions = payload.get("positions", [])
+        open_orders = payload.get("openOrders", [])
         margin_summary = payload.get("marginSummary", {})
 
-        if not address or not isinstance(positions, list):
+        if not address or not isinstance(positions, list) or not isinstance(open_orders, list):
             logger.warning("trader_positions_invalid_payload", event_id=event.event_id)
             return
 
-        logger.info(
+        logger.debug(
             "trader_positions_handler_processing",
             address=address[:16],
             symbol=symbol,
@@ -513,6 +514,7 @@ class LifecycleManager:
                 address,
                 symbol,
                 positions,
+                open_orders,
                 margin_summary if isinstance(margin_summary, dict) else {},
                 event_timestamp,
                 event.source,
@@ -773,24 +775,58 @@ class LifecycleManager:
         self._trader_ws_collector = TraderWebSocketCollector(
             event_bus=self._event_bus,
             config=self._settings.hyperliquid,
+            on_bootstrap_event=self._store_trader_positions_state,
             buffer_config=market_config.buffer,
         )
+
+        async def sync_trader_ws_from_repository(reason: str) -> None:
+            """Sync tracked-trader subscriptions for the Trader WS collector."""
+            if not self._repository or not self._trader_ws_collector:
+                return
+
+            try:
+                addresses = await self._repository.get_active_trader_addresses()
+            except Exception as e:
+                logger.error(
+                    "trader_ws_sync_repository_error",
+                    reason=reason,
+                    error=str(e),
+                    exc_info=True,
+                )
+                return
+
+            if not addresses:
+                logger.warning("trader_ws_sync_no_active_addresses", reason=reason)
+                return
+
+            try:
+                if not self._trader_ws_collector.get_stats().get("running", False):
+                    logger.info("trader_ws_starting_from_sync", reason=reason, count=len(addresses))
+                    await self._trader_ws_collector.start(addresses)
+                    return
+
+                result = await self._trader_ws_collector.sync_traders(addresses)
+                logger.info("trader_ws_synced", reason=reason, **result)
+            except Exception as e:
+                logger.error(
+                    "trader_ws_sync_failed",
+                    reason=reason,
+                    error=str(e),
+                    exc_info=True,
+                )
+
+        # Keep Trader WS subscriptions aligned with the latest leaderboard selection.
+        async def leaderboard_sync_handler(event: StandardEvent) -> None:
+            if event.event_type == "leaderboard":
+                await sync_trader_ws_from_repository(reason="leaderboard_event")
+
+        await self._event_bus.subscribe("leaderboard", leaderboard_sync_handler)
 
         # Wait a moment for leaderboard to process and store tracked traders
         # Then get tracked addresses from leaderboard collector
         await asyncio.sleep(2.0)
 
-        if self._leaderboard_collector:
-            tracked_addresses = await self._leaderboard_collector.get_tracked_addresses()
-
-            if tracked_addresses:
-                logger.info("starting_trader_ws_with_tracked", count=len(tracked_addresses))
-                await self._trader_ws_collector.start(tracked_addresses)
-            else:
-                logger.warning("no_tracked_addresses_trader_ws_not_started")
-                # Start without traders - will add them later when leaderboard refreshes
-        else:
-            logger.warning("leaderboard_not_available_trader_ws_delayed")
+        await sync_trader_ws_from_repository(reason="startup")
 
     async def _init_scheduler(self) -> None:
         """Initialize the scheduler with configured tasks."""

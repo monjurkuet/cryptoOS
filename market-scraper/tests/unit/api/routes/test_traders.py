@@ -2,7 +2,7 @@
 
 """Tests for trader API routes."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,6 +26,7 @@ def mock_lifecycle():
 def mock_repository():
     """Create a mock repository."""
     repo = AsyncMock()
+    repo.get_trader_current_states = AsyncMock(return_value={})
     return repo
 
 
@@ -69,6 +70,13 @@ class TestListTraders:
         assert len(data["traders"]) == 1
         assert data["traders"][0]["address"] == "0x1234567890123456789012345678901234567890"
         assert data["traders"][0]["score"] == 75.5
+        assert data["traders"][0]["has_open_orders"] is False
+        assert data["traders"][0]["open_order_count"] == 0
+        mock_repository.get_trader_current_states.assert_called_once_with(
+            addresses=["0x1234567890123456789012345678901234567890"],
+            symbol="BTC",
+        )
+        mock_repository.get_trader_current_state.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_list_traders_with_filters(self, app, mock_repository) -> None:
@@ -86,6 +94,97 @@ class TestListTraders:
             active_only=True,
             limit=50,
         )
+        mock_repository.get_trader_current_states.assert_called_once_with(
+            addresses=[],
+            symbol="BTC",
+        )
+        mock_repository.get_trader_current_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_traders_filtered_total_matches_filtered_rows(
+        self, app, mock_repository
+    ) -> None:
+        """Filtered queries should report total equal to filtered returned rows."""
+        mock_repository.get_tracked_traders.return_value = [
+            {
+                "eth": "0x1111111111111111111111111111111111111111",
+                "name": "Trader A",
+                "score": 80,
+                "tags": [],
+                "acct_val": 100000,
+                "active": True,
+            },
+            {
+                "eth": "0x2222222222222222222222222222222222222222",
+                "name": "Trader B",
+                "score": 79,
+                "tags": [],
+                "acct_val": 90000,
+                "active": True,
+            },
+        ]
+        mock_repository.count_tracked_traders.return_value = 999
+        mock_repository.get_trader_current_states.return_value = {
+            "0x1111111111111111111111111111111111111111": {
+                "positions": [{"position": {"coin": "BTC", "szi": 1.0}}],
+                "updated_at": datetime.now(UTC),
+            },
+            "0x2222222222222222222222222222222222222222": {
+                "positions": [],
+                "updated_at": datetime.now(UTC),
+            },
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/v1/traders", params={"has_positions": True})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["traders"]) == 1
+        assert data["total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_list_traders_filters_by_has_open_orders(self, app, mock_repository) -> None:
+        """Open-order filter should return only matching traders."""
+        mock_repository.get_tracked_traders.return_value = [
+            {
+                "eth": "0x1111111111111111111111111111111111111111",
+                "name": "Trader A",
+                "score": 80,
+                "tags": [],
+                "acct_val": 100000,
+                "active": True,
+            },
+            {
+                "eth": "0x2222222222222222222222222222222222222222",
+                "name": "Trader B",
+                "score": 70,
+                "tags": [],
+                "acct_val": 90000,
+                "active": True,
+            },
+        ]
+        mock_repository.count_tracked_traders.return_value = 2
+        mock_repository.get_trader_current_states.return_value = {
+            "0x1111111111111111111111111111111111111111": {
+                "positions": [],
+                "open_orders": [{"coin": "BTC", "sz": "1", "oid": 1}],
+            },
+            "0x2222222222222222222222222222222222222222": {
+                "positions": [],
+                "open_orders": [],
+            },
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/v1/traders", params={"has_open_orders": True})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert len(data["traders"]) == 1
+        assert data["traders"][0]["has_open_orders"] is True
+        assert data["traders"][0]["open_order_count"] == 1
 
     @pytest.mark.asyncio
     async def test_list_traders_no_repository(self, app, mock_lifecycle) -> None:
@@ -124,6 +223,7 @@ class TestGetTrader:
         data = response.json()
         assert data["address"] == "0x1234567890123456789012345678901234567890"
         assert data["score"] == 75.5
+        assert data["btc_open_orders"] == []
 
     @pytest.mark.asyncio
     async def test_get_trader_not_found(self, app, mock_repository) -> None:
@@ -161,7 +261,8 @@ class TestGetTrader:
                         "leverage": {"value": 2},
                     }
                 }
-            ]
+            ],
+            "open_orders": [{"coin": "BTC", "sz": "0.1", "oid": 123}],
         }
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -173,6 +274,88 @@ class TestGetTrader:
         data = response.json()
         assert len(data["positions"]) == 1
         assert data["positions"][0]["coin"] == "BTC"
+        assert len(data["btc_open_orders"]) == 1
+
+
+class TestGetTraderOrders:
+    """Tests for get_trader_orders endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_get_orders_success(self, app, mock_repository) -> None:
+        """Current open orders should be returned."""
+        mock_repository.get_trader_current_state.return_value = {
+            "open_orders": [{"coin": "BTC", "sz": "0.5", "oid": 111}],
+            "updated_at": datetime.now(UTC),
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/traders/0x1234567890123456789012345678901234567890/orders"
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["open_orders"][0]["coin"] == "BTC"
+
+
+class TestGetTraderClosedTrades:
+    """Tests for get_trader_closed_trades endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_get_closed_trades_success(self, app, mock_repository) -> None:
+        """Closed-trades endpoint should return repository rows and count."""
+        closed_at = datetime.now(UTC)
+        opened_at = closed_at - timedelta(hours=1)
+        mock_repository.get_trader_by_address.return_value = {
+            "eth": "0x1234567890123456789012345678901234567890",
+            "name": "Test Trader",
+            "score": 75.5,
+            "tags": [],
+            "acct_val": 5000000,
+            "active": True,
+        }
+        mock_repository.get_trader_closed_trades.return_value = [
+            {
+                "trade_id": "trade-1",
+                "dir": "long",
+                "opened_at": opened_at,
+                "closed_at": closed_at,
+                "entry_price": 50000,
+                "close_reference_price": 51000,
+                "max_abs_size": 2.0,
+                "final_abs_size": 1.0,
+                "last_unrealized_pnl": 1000,
+                "close_reason": "flat",
+            }
+        ]
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/traders/0x1234567890123456789012345678901234567890/closed-trades",
+                params={"hours": 24, "limit": 25},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["closed_trades"][0]["trade_id"] == "trade-1"
+        assert data["closed_trades"][0]["direction"] == "long"
+        mock_repository.get_trader_closed_trades.assert_called_once()
+        assert mock_repository.get_trader_closed_trades.call_args.kwargs["limit"] == 25
+
+    @pytest.mark.asyncio
+    async def test_get_closed_trades_not_found(self, app, mock_repository) -> None:
+        """Unknown tracked traders should return 404 like other trader detail endpoints."""
+        mock_repository.get_trader_by_address.return_value = None
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/traders/0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef/closed-trades"
+            )
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Trader not found"
 
 
 class TestGetTraderPositions:

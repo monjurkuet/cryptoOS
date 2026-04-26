@@ -15,6 +15,7 @@ from market_scraper.storage.models import (
     Candle,
     CollectionName,
     TrackedTrader,
+    TraderClosedTrade,
     TraderPosition,
     TraderScore,
     TraderSignal,
@@ -137,6 +138,7 @@ class MongoRepository(DataRepository):
             ("events", "timestamp", retention.events),
             (CollectionName.LEADERBOARD_HISTORY, "t", retention.leaderboard_history),
             (CollectionName.TRADER_POSITIONS, "t", retention.trader_positions),
+            (CollectionName.TRADER_CLOSED_TRADES, "t", retention.trader_closed_trades),
             (CollectionName.TRADER_SCORES, "t", retention.trader_scores),
             (CollectionName.SIGNALS, "t", retention.signals),
             (CollectionName.TRADER_SIGNALS, "t", retention.trader_signals),
@@ -188,6 +190,14 @@ class MongoRepository(DataRepository):
                 unique=True,
             )
             await self._db[CollectionName.TRADER_CURRENT_STATE].create_index([("updated_at", -1)])
+
+            await self._db[CollectionName.TRADER_CLOSED_TRADES].create_index(
+                [("eth", 1), ("symbol", 1), ("t", -1)]
+            )
+            await self._db[CollectionName.TRADER_CLOSED_TRADES].create_index(
+                [("trade_id", 1)],
+                unique=True,
+            )
 
             # Signals - symbol and time
             await self._db[CollectionName.SIGNALS].create_index([("symbol", 1), ("t", -1)])
@@ -256,24 +266,29 @@ class MongoRepository(DataRepository):
             "week_roi": float(data.get("week_roi", 0) or 0),
         }
 
-    @staticmethod
+    @classmethod
     def _current_state_payload(
+        cls,
         address: str,
         symbol: str,
         positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
         margin_summary: dict[str, Any] | None,
         event_timestamp: datetime,
         source: str,
-    ) -> dict[str, Any]:
+        existing_state: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Build comparable payload for materialized trader current state."""
-        return {
-            "eth": address.lower(),
-            "symbol": symbol,
-            "positions": positions,
-            "margin_summary": dict(margin_summary or {}),
-            "last_event_time": event_timestamp,
-            "source": source,
-        }
+        return cls.build_trader_current_state_payload(
+            address=address,
+            symbol=symbol,
+            positions=positions,
+            open_orders=open_orders,
+            margin_summary=margin_summary,
+            event_timestamp=event_timestamp,
+            source=source,
+            existing_state=existing_state,
+        )
 
     async def store(self, event: StandardEvent) -> bool:
         """Store a single event.
@@ -781,6 +796,32 @@ class MongoRepository(DataRepository):
         except Exception as e:
             raise StorageError(f"Failed to store position: {e}") from e
 
+    async def store_trader_closed_trade(self, trade: TraderClosedTrade | dict[str, Any]) -> bool:
+        """Store a closed-trade ledger row idempotently."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            collection = self._db[CollectionName.TRADER_CLOSED_TRADES]
+            normalized = (
+                trade.model_dump()
+                if hasattr(trade, "model_dump")
+                else TraderClosedTrade.model_validate(trade).model_dump()
+            )
+            normalized["eth"] = str(normalized.get("eth", "")).lower()
+            normalized["symbol"] = str(normalized.get("symbol", "")).upper()
+
+            await collection.update_one(
+                {"trade_id": normalized["trade_id"]},
+                {"$setOnInsert": normalized},
+                upsert=True,
+            )
+            return True
+        except DuplicateKeyError:
+            return True
+        except Exception as e:
+            raise StorageError(f"Failed to store closed trade: {e}") from e
+
     async def get_trader_positions(
         self,
         address: str,
@@ -1194,6 +1235,50 @@ class MongoRepository(DataRepository):
         except Exception as e:
             raise StorageError(f"Failed to get trader current state: {e}") from e
 
+    async def get_trader_current_states(
+        self,
+        addresses: list[str],
+        symbol: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Get current state snapshots for multiple traders."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        normalized_addresses = sorted({str(address).lower() for address in addresses if address})
+        if not normalized_addresses:
+            return {}
+
+        try:
+            collection = self._db[CollectionName.TRADER_CURRENT_STATE]
+            query: dict[str, Any] = {
+                "$or": [
+                    {"eth": {"$in": normalized_addresses}},
+                    {"ethAddress": {"$in": normalized_addresses}},
+                ]
+            }
+            if symbol is not None:
+                query["symbol"] = symbol
+
+            cursor = collection.find(query).sort(
+                [
+                    ("updated_at", -1),
+                    ("last_event_time", -1),
+                ]
+            )
+            docs = await cursor.to_list(length=None)
+
+            states_by_address: dict[str, dict[str, Any]] = {}
+            for doc in docs:
+                key = str(doc.get("eth") or doc.get("ethAddress") or "").lower()
+                if not key or key not in normalized_addresses or key in states_by_address:
+                    continue
+                doc.pop("_id", None)
+                states_by_address[key] = doc
+
+            return states_by_address
+        except Exception as e:
+            raise StorageError(f"Failed to get trader current states: {e}") from e
+
     async def store_leaderboard_snapshot(
         self,
         symbol: str,
@@ -1317,6 +1402,7 @@ class MongoRepository(DataRepository):
         address: str,
         symbol: str,
         positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
         margin_summary: dict[str, Any] | None,
         event_timestamp: datetime,
         source: str,
@@ -1328,33 +1414,53 @@ class MongoRepository(DataRepository):
         try:
             now = datetime.now(UTC)
             collection = self._db[CollectionName.TRADER_CURRENT_STATE]
-            doc = self._current_state_payload(
-                address=address,
-                symbol=symbol,
-                positions=positions,
-                margin_summary=margin_summary,
-                event_timestamp=event_timestamp,
-                source=source,
-            )
-
             existing = await collection.find_one(
-                {"eth": doc["eth"], "symbol": symbol},
                 {
-                    "_id": 0,
+                    "symbol": str(symbol or "").upper(),
+                    "$or": [
+                        {"eth": address.lower()},
+                        {"ethAddress": address.lower()},
+                    ],
+                },
+                {
                     "eth": 1,
+                    "ethAddress": 1,
                     "symbol": 1,
                     "positions": 1,
+                    "open_orders": 1,
                     "margin_summary": 1,
                     "last_event_time": 1,
                     "source": 1,
+                    "btc_trade_meta": 1,
                 },
             )
-            if existing and existing == doc:
+
+            doc, closed_trade = self._current_state_payload(
+                address=address,
+                symbol=symbol,
+                positions=positions,
+                open_orders=open_orders,
+                margin_summary=margin_summary,
+                event_timestamp=event_timestamp,
+                source=source,
+                existing_state=existing,
+            )
+
+            if closed_trade:
+                await self.store_trader_closed_trade(closed_trade)
+
+            existing_compare = dict(existing) if existing else None
+            if existing_compare:
+                existing_compare.pop("_id", None)
+            if existing_compare and existing_compare == doc:
                 return True
 
             doc["updated_at"] = now
+            update_filter: dict[str, Any] = {"eth": doc["eth"], "symbol": doc["symbol"]}
+            if existing and existing.get("_id") is not None:
+                update_filter = {"_id": existing["_id"]}
             await collection.update_one(
-                {"eth": doc["eth"], "symbol": symbol},
+                update_filter,
                 {"$set": doc},
                 upsert=True,
             )
@@ -1427,6 +1533,34 @@ class MongoRepository(DataRepository):
             return positions
         except Exception as e:
             raise StorageError(f"Failed to get trader positions history: {e}") from e
+
+    async def get_trader_closed_trades(
+        self,
+        address: str,
+        start_time: datetime,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Get closed trades for a trader."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            collection = self._db[CollectionName.TRADER_CLOSED_TRADES]
+            query = {
+                "eth": address.lower(),
+                "t": {"$gte": start_time},
+            }
+
+            cursor = collection.find(query).sort("t", -1).limit(limit)
+            docs = await cursor.to_list(length=limit)
+
+            trades = []
+            for doc in docs:
+                doc.pop("_id", None)
+                trades.append(doc)
+            return trades
+        except Exception as e:
+            raise StorageError(f"Failed to get trader closed trades: {e}") from e
 
     async def get_current_signal(self, symbol: str) -> dict[str, Any] | None:
         """Get the current/latest signal for a symbol.

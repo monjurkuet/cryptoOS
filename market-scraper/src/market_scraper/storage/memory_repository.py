@@ -1,6 +1,6 @@
 """In-memory repository implementation for testing."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from market_scraper.core.events import StandardEvent
@@ -31,6 +31,7 @@ class MemoryRepository(DataRepository):
         self._leaderboard_history: list[dict[str, Any]] = []
         self._tracked_traders: dict[str, dict[str, Any]] = {}
         self._trader_current_state: dict[tuple[str, str], dict[str, Any]] = {}
+        self._trader_closed_trades: list[dict[str, Any]] = []
         self._trader_positions_history: list[dict[str, Any]] = []
         self._trader_scores_history: list[dict[str, Any]] = []
         self._candles: dict[tuple[str, str], dict[datetime, dict[str, Any]]] = {}
@@ -78,6 +79,7 @@ class MemoryRepository(DataRepository):
         self._leaderboard_history = []
         self._tracked_traders = {}
         self._trader_current_state = {}
+        self._trader_closed_trades = []
         self._trader_positions_history = []
         self._trader_scores_history = []
         self._candles = {}
@@ -426,6 +428,7 @@ class MemoryRepository(DataRepository):
         self._leaderboard_history = []
         self._tracked_traders = {}
         self._trader_current_state = {}
+        self._trader_closed_trades = []
         self._trader_positions_history = []
         self._trader_scores_history = []
         self._candles = {}
@@ -517,6 +520,39 @@ class MemoryRepository(DataRepository):
                 return state
         return None
 
+    async def get_trader_current_states(
+        self,
+        addresses: list[str],
+        symbol: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Get current state snapshots for multiple traders from in-memory state."""
+        normalized_addresses = {str(address).lower() for address in addresses if address}
+        if not normalized_addresses:
+            return {}
+
+        states_by_address: dict[str, dict[str, Any]] = {}
+
+        for (eth, state_symbol), state in self._trader_current_state.items():
+            if eth not in normalized_addresses:
+                continue
+            if symbol is not None and state_symbol != symbol:
+                continue
+
+            existing = states_by_address.get(eth)
+            if not existing:
+                states_by_address[eth] = state
+                continue
+
+            existing_updated = existing.get("updated_at")
+            candidate_updated = state.get("updated_at")
+            if isinstance(existing_updated, datetime) and isinstance(candidate_updated, datetime):
+                if candidate_updated > existing_updated:
+                    states_by_address[eth] = state
+            elif isinstance(candidate_updated, datetime):
+                states_by_address[eth] = state
+
+        return states_by_address
+
     async def get_trader_positions_history(
         self,
         address: str,
@@ -542,6 +578,31 @@ class MemoryRepository(DataRepository):
             and p["t"] >= start_time
         ]
         rows.sort(key=lambda p: p.get("t", datetime.min), reverse=True)
+        return rows[:limit]
+
+    async def get_trader_closed_trades(
+        self,
+        address: str,
+        start_time: datetime,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Get closed trades for a trader from in-memory state."""
+        normalized = address.lower()
+        rows = [
+            trade
+            for trade in self._trader_closed_trades
+            if trade.get("eth") == normalized
+            and (
+                self._normalize_datetime(trade.get("closed_at") or trade.get("t"))
+                or datetime.min.replace(tzinfo=UTC)
+            )
+            >= (self._normalize_datetime(start_time) or datetime.min.replace(tzinfo=UTC))
+        ]
+        rows.sort(
+            key=lambda trade: self._normalize_datetime(trade.get("closed_at") or trade.get("t"))
+            or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
         return rows[:limit]
 
     async def get_trader_signals(
@@ -644,6 +705,7 @@ class MemoryRepository(DataRepository):
         address: str,
         symbol: str,
         positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
         margin_summary: dict[str, Any] | None,
         event_timestamp: datetime,
         source: str,
@@ -651,16 +713,21 @@ class MemoryRepository(DataRepository):
         """Upsert trader current state (in-memory)."""
         normalized = address.lower()
         state_key = (normalized, symbol)
-        payload = {
-            "eth": normalized,
-            "symbol": symbol,
-            "positions": positions,
-            "margin_summary": margin_summary or {},
-            "last_event_time": event_timestamp,
-            "source": source,
-        }
-
         existing = self._trader_current_state.get(state_key)
+        payload, closed_trade = self.build_trader_current_state_payload(
+            address=address,
+            symbol=symbol,
+            positions=positions,
+            open_orders=open_orders,
+            margin_summary=margin_summary,
+            event_timestamp=event_timestamp,
+            source=source,
+            existing_state=existing,
+        )
+
+        if closed_trade:
+            await self.store_trader_closed_trade(closed_trade)
+
         if existing and all(existing.get(key) == value for key, value in payload.items()):
             return True
 
@@ -683,6 +750,18 @@ class MemoryRepository(DataRepository):
                     return True
                 break
         self._trader_positions_history.append(data)
+        return True
+
+    async def store_trader_closed_trade(self, trade: Any) -> bool:
+        """Store an immutable closed-trade row (in-memory)."""
+        data = trade.model_dump() if hasattr(trade, "model_dump") else dict(trade)
+        data["eth"] = str(data.get("eth", "")).lower()
+
+        trade_id = str(data.get("trade_id", ""))
+        if trade_id and any(existing.get("trade_id") == trade_id for existing in self._trader_closed_trades):
+            return True
+
+        self._trader_closed_trades.append(data)
         return True
 
     async def store_trader_score(self, score: Any) -> bool:

@@ -292,6 +292,84 @@ async def test_trader_positions_are_materialized_but_not_kept_in_raw_events(test
 
 
 @pytest.mark.asyncio
+async def test_trader_closed_trades_are_materialized_from_live_position_transitions(test_settings):
+    """Open-to-flat BTC transitions should append a closed-trade ledger row."""
+    manager = LifecycleManager(settings=test_settings)
+    await manager.startup()
+
+    try:
+        repository = manager.repository
+        event_bus = manager.event_bus
+        assert repository is not None
+        assert event_bus is not None
+
+        address = "0x1234567890123456789012345678901234567890"
+        await repository.upsert_tracked_trader_data(
+            {
+                "eth": address,
+                "name": "tracked trader",
+                "score": 88.0,
+                "tags": ["whale"],
+                "acct_val": 1_000_000,
+                "active": True,
+            }
+        )
+
+        open_event = StandardEvent.create(
+            event_type="trader_positions",
+            source="hyperliquid_ws",
+            payload={
+                "address": address,
+                "symbol": "BTC",
+                "positions": [
+                    {
+                        "position": {
+                            "coin": "BTC",
+                            "szi": 1.0,
+                            "entryPx": 50000,
+                            "markPx": 50500,
+                            "unrealizedPnl": 500,
+                            "leverage": {"value": 2},
+                        }
+                    }
+                ],
+                "openOrders": [],
+                "marginSummary": {"accountValue": 1_000_000},
+            },
+        )
+        close_event = StandardEvent.create(
+            event_type="trader_positions",
+            source="hyperliquid_ws",
+            payload={
+                "address": address,
+                "symbol": "BTC",
+                "positions": [],
+                "openOrders": [],
+                "marginSummary": {"accountValue": 1_000_000},
+            },
+        )
+
+        await event_bus.publish(open_event)
+        await event_bus.publish(close_event)
+        await asyncio.sleep(0.05)
+
+        app = FastAPI()
+        app.include_router(traders_router, prefix="/api/v1/traders")
+        app.state.lifecycle = manager
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(f"/api/v1/traders/{address}/closed-trades")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["closed_trades"][0]["direction"] == "long"
+        assert data["closed_trades"][0]["close_reason"] == "flat"
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_trading_signal_remains_in_raw_events_and_signals_collection(test_settings):
     """Trading signals should still be kept in both audit and canonical signal storage."""
     manager = LifecycleManager(settings=test_settings)

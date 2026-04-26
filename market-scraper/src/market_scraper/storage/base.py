@@ -1,7 +1,8 @@
 """Base storage module for the Market Scraper Framework."""
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
+import hashlib
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -304,6 +305,381 @@ class DataRepository(ABC):
         """
         await self.disconnect()
 
+    # ============== Shared Trader State Helpers ==============
+
+    @staticmethod
+    def _normalize_address(address: str) -> str:
+        """Normalize an Ethereum address for storage and lookups."""
+        return str(address or "").lower()
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        """Convert arbitrary values to float safely."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _normalize_datetime(value: Any) -> datetime | None:
+        """Normalize datetime-like values to UTC-aware datetimes."""
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=UTC)
+            return value.astimezone(UTC)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+        return None
+
+    @classmethod
+    def _extract_live_position_snapshot(
+        cls,
+        positions: Any,
+        symbol: str,
+    ) -> dict[str, Any] | None:
+        """Extract a normalized configured-symbol position from current-state payloads."""
+        if not isinstance(positions, list):
+            return None
+
+        normalized_symbol = str(symbol or "").upper()
+        for row in positions:
+            if not isinstance(row, dict):
+                continue
+            position = row.get("position", row)
+            if not isinstance(position, dict):
+                continue
+            if str(position.get("coin", "")).upper() != normalized_symbol:
+                continue
+
+            size = cls._safe_float(position.get("szi", 0) or 0)
+            direction = "long" if size > 0 else "short" if size < 0 else None
+            return {
+                "coin": normalized_symbol,
+                "size": size,
+                "abs_size": abs(size),
+                "direction": direction,
+                "entry_price": cls._safe_float(position.get("entryPx", 0) or 0),
+                "mark_price": cls._safe_float(position.get("markPx", 0) or 0),
+                "unrealized_pnl": cls._safe_float(position.get("unrealizedPnl", 0) or 0),
+            }
+
+        return None
+
+    @classmethod
+    def _extract_history_position_snapshot(
+        cls,
+        position: Any,
+        symbol: str,
+    ) -> dict[str, Any] | None:
+        """Extract a normalized configured-symbol position from history rows."""
+        if not isinstance(position, dict):
+            return None
+        if str(position.get("coin", "")).upper() != str(symbol or "").upper():
+            return None
+
+        size = cls._safe_float(position.get("sz", 0) or 0)
+        direction = "long" if size > 0 else "short" if size < 0 else None
+        return {
+            "coin": str(symbol or "").upper(),
+            "size": size,
+            "abs_size": abs(size),
+            "direction": direction,
+            "entry_price": cls._safe_float(position.get("ep", 0) or 0),
+            "mark_price": cls._safe_float(position.get("mp", 0) or 0),
+            "unrealized_pnl": cls._safe_float(position.get("upnl", 0) or 0),
+        }
+
+    @classmethod
+    def _build_trade_id(
+        cls,
+        address: str,
+        symbol: str,
+        direction: str,
+        opened_at: datetime,
+        closed_at: datetime,
+        close_reason: str,
+    ) -> str:
+        """Build deterministic closed-trade IDs for idempotent writes."""
+        payload = "|".join(
+            [
+                cls._normalize_address(address),
+                str(symbol or "").upper(),
+                direction,
+                cls._normalize_datetime(opened_at).isoformat(),
+                cls._normalize_datetime(closed_at).isoformat(),
+                close_reason,
+            ]
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _build_closed_trade(
+        cls,
+        address: str,
+        symbol: str,
+        previous_position: dict[str, Any],
+        previous_meta: dict[str, Any] | None,
+        previous_last_event_time: datetime | None,
+        closed_at: datetime,
+        close_reason: str,
+    ) -> dict[str, Any] | None:
+        """Build a normalized immutable closed-trade row from two live snapshots."""
+        direction = str((previous_meta or {}).get("direction") or previous_position.get("direction") or "")
+        if direction not in {"long", "short"}:
+            return None
+
+        opened_at = (
+            cls._normalize_datetime((previous_meta or {}).get("opened_at"))
+            or cls._normalize_datetime(previous_last_event_time)
+            or cls._normalize_datetime(closed_at)
+        )
+        closed_at_utc = cls._normalize_datetime(closed_at) or opened_at
+        entry_price = cls._safe_float(
+            (previous_meta or {}).get("entry_price"),
+            cls._safe_float(previous_position.get("entry_price"), 0.0),
+        )
+        previous_abs_size = cls._safe_float(previous_position.get("abs_size"), 0.0)
+        max_abs_size = max(
+            cls._safe_float((previous_meta or {}).get("max_abs_size"), previous_abs_size),
+            previous_abs_size,
+        )
+
+        trade_id = cls._build_trade_id(
+            address=address,
+            symbol=symbol,
+            direction=direction,
+            opened_at=opened_at,
+            closed_at=closed_at_utc,
+            close_reason=close_reason,
+        )
+
+        return {
+            "trade_id": trade_id,
+            "eth": cls._normalize_address(address),
+            "symbol": str(symbol or "").upper(),
+            "dir": direction,
+            "opened_at": opened_at,
+            "closed_at": closed_at_utc,
+            "entry_price": entry_price,
+            "close_reference_price": cls._safe_float(previous_position.get("mark_price"), 0.0),
+            "max_abs_size": max_abs_size,
+            "final_abs_size": previous_abs_size,
+            "last_unrealized_pnl": cls._safe_float(previous_position.get("unrealized_pnl"), 0.0),
+            "close_reason": close_reason,
+            "t": closed_at_utc,
+        }
+
+    @classmethod
+    def build_trader_current_state_payload(
+        cls,
+        address: str,
+        symbol: str,
+        positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+        margin_summary: dict[str, Any] | None,
+        event_timestamp: datetime,
+        source: str,
+        existing_state: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Build live current-state payload and optional closed-trade row."""
+        previous_position = cls._extract_live_position_snapshot(
+            (existing_state or {}).get("positions", []),
+            symbol,
+        )
+        previous_meta = dict((existing_state or {}).get("btc_trade_meta") or {})
+        previous_last_event_time_raw = (existing_state or {}).get("last_event_time")
+        previous_last_event_time = cls._normalize_datetime(previous_last_event_time_raw)
+        current_position = cls._extract_live_position_snapshot(positions, symbol)
+
+        closed_trade: dict[str, Any] | None = None
+        if previous_position and previous_position.get("direction") in {"long", "short"}:
+            current_direction = (current_position or {}).get("direction")
+            previous_direction = previous_position.get("direction")
+            if current_direction is None:
+                closed_trade = cls._build_closed_trade(
+                    address=address,
+                    symbol=symbol,
+                    previous_position=previous_position,
+                    previous_meta=previous_meta,
+                    previous_last_event_time=previous_last_event_time,
+                    closed_at=event_timestamp,
+                    close_reason="flat",
+                )
+            elif current_direction != previous_direction:
+                closed_trade = cls._build_closed_trade(
+                    address=address,
+                    symbol=symbol,
+                    previous_position=previous_position,
+                    previous_meta=previous_meta,
+                    previous_last_event_time=previous_last_event_time,
+                    closed_at=event_timestamp,
+                    close_reason="flip",
+                )
+
+        next_trade_meta: dict[str, Any] = {}
+        if current_position and current_position.get("direction") in {"long", "short"}:
+            current_direction = str(current_position["direction"])
+            previous_direction = str(previous_position.get("direction")) if previous_position else None
+            if previous_direction != current_direction:
+                next_trade_meta = {
+                    "opened_at": event_timestamp,
+                    "entry_price": cls._safe_float(current_position.get("entry_price"), 0.0),
+                    "direction": current_direction,
+                    "max_abs_size": cls._safe_float(current_position.get("abs_size"), 0.0),
+                }
+            else:
+                next_trade_meta = {
+                    "opened_at": previous_meta.get("opened_at")
+                    or previous_last_event_time_raw
+                    or event_timestamp,
+                    "entry_price": cls._safe_float(
+                        previous_meta.get("entry_price"),
+                        cls._safe_float(current_position.get("entry_price"), 0.0),
+                    ),
+                    "direction": current_direction,
+                    "max_abs_size": max(
+                        cls._safe_float(
+                            previous_meta.get("max_abs_size"),
+                            cls._safe_float(previous_position.get("abs_size"), 0.0)
+                            if previous_position
+                            else 0.0,
+                        ),
+                        cls._safe_float(current_position.get("abs_size"), 0.0),
+                    ),
+                }
+
+        payload = {
+            "eth": cls._normalize_address(address),
+            "symbol": str(symbol or "").upper(),
+            "positions": positions,
+            "open_orders": open_orders,
+            "margin_summary": dict(margin_summary or {}),
+            "last_event_time": event_timestamp,
+            "source": source,
+            "btc_trade_meta": next_trade_meta,
+        }
+        return payload, closed_trade
+
+    @classmethod
+    def derive_closed_trades_from_position_history(
+        cls,
+        address: str,
+        symbol: str,
+        positions: list[dict[str, Any]],
+        current_state: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Best-effort backfill of closed trades from stored BTC position snapshots."""
+        symbol_key = str(symbol or "").upper()
+        deduped_rows: list[dict[str, Any]] = []
+        last_signature: tuple[Any, ...] | None = None
+
+        for row in sorted(
+            (position for position in positions if isinstance(position, dict)),
+            key=lambda position: cls._normalize_datetime(position.get("t")) or datetime.min.replace(tzinfo=UTC),
+        ):
+            snapshot = cls._extract_history_position_snapshot(row, symbol_key)
+            if not snapshot or snapshot.get("direction") not in {"long", "short"}:
+                continue
+
+            signature = (
+                snapshot.get("direction"),
+                snapshot.get("size"),
+                snapshot.get("entry_price"),
+                snapshot.get("mark_price"),
+                snapshot.get("unrealized_pnl"),
+            )
+            if signature == last_signature:
+                continue
+            deduped_rows.append(row)
+            last_signature = signature
+
+        closed_trades: list[dict[str, Any]] = []
+        open_position: dict[str, Any] | None = None
+        open_meta: dict[str, Any] | None = None
+        last_event_time: datetime | None = None
+
+        for row in deduped_rows:
+            snapshot = cls._extract_history_position_snapshot(row, symbol_key)
+            row_time = cls._normalize_datetime(row.get("t"))
+            if not snapshot or not row_time:
+                continue
+
+            if open_position is None:
+                open_position = snapshot
+                open_meta = {
+                    "opened_at": row_time,
+                    "entry_price": cls._safe_float(snapshot.get("entry_price"), 0.0),
+                    "direction": snapshot.get("direction"),
+                    "max_abs_size": cls._safe_float(snapshot.get("abs_size"), 0.0),
+                }
+                last_event_time = row_time
+                continue
+
+            if open_position.get("direction") == snapshot.get("direction"):
+                open_meta = {
+                    "opened_at": (open_meta or {}).get("opened_at", row_time),
+                    "entry_price": cls._safe_float(
+                        (open_meta or {}).get("entry_price"),
+                        cls._safe_float(snapshot.get("entry_price"), 0.0),
+                    ),
+                    "direction": snapshot.get("direction"),
+                    "max_abs_size": max(
+                        cls._safe_float(
+                            (open_meta or {}).get("max_abs_size"),
+                            cls._safe_float(open_position.get("abs_size"), 0.0),
+                        ),
+                        cls._safe_float(snapshot.get("abs_size"), 0.0),
+                    ),
+                }
+                open_position = snapshot
+                last_event_time = row_time
+                continue
+
+            closed_trade = cls._build_closed_trade(
+                address=address,
+                symbol=symbol_key,
+                previous_position=open_position,
+                previous_meta=open_meta,
+                previous_last_event_time=last_event_time,
+                closed_at=row_time,
+                close_reason="flip",
+            )
+            if closed_trade:
+                closed_trades.append(closed_trade)
+
+            open_position = snapshot
+            open_meta = {
+                "opened_at": row_time,
+                "entry_price": cls._safe_float(snapshot.get("entry_price"), 0.0),
+                "direction": snapshot.get("direction"),
+                "max_abs_size": cls._safe_float(snapshot.get("abs_size"), 0.0),
+            }
+            last_event_time = row_time
+
+        if open_position and current_state:
+            current_position = cls._extract_live_position_snapshot(current_state.get("positions", []), symbol_key)
+            current_direction = (current_position or {}).get("direction")
+            if current_direction is None:
+                closed_trade = cls._build_closed_trade(
+                    address=address,
+                    symbol=symbol_key,
+                    previous_position=open_position,
+                    previous_meta=open_meta,
+                    previous_last_event_time=last_event_time,
+                    closed_at=current_state.get("last_event_time") or current_state.get("updated_at") or last_event_time,
+                    close_reason="flat",
+                )
+                if closed_trade:
+                    closed_trades.append(closed_trade)
+
+        return closed_trades
+
     # ============== Trader Query Methods ==============
 
     @abstractmethod
@@ -383,6 +759,26 @@ class DataRepository(ABC):
         pass
 
     @abstractmethod
+    async def get_trader_current_states(
+        self,
+        addresses: list[str],
+        symbol: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Get current state snapshots for multiple traders.
+
+        Args:
+            addresses: Trader Ethereum addresses.
+            symbol: Optional symbol filter.
+
+        Returns:
+            Mapping of normalized address -> current-state dictionary.
+
+        Raises:
+            StorageError: If query fails.
+        """
+        pass
+
+    @abstractmethod
     async def get_trader_positions_history(
         self,
         address: str,
@@ -398,6 +794,28 @@ class DataRepository(ABC):
 
         Returns:
             List of position dictionaries.
+
+        Raises:
+            StorageError: If query fails.
+        """
+        pass
+
+    @abstractmethod
+    async def get_trader_closed_trades(
+        self,
+        address: str,
+        start_time: datetime,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Get closed trades for a trader.
+
+        Args:
+            address: Trader Ethereum address.
+            start_time: Start time for history.
+            limit: Maximum results.
+
+        Returns:
+            List of closed-trade dictionaries ordered by close time descending.
 
         Raises:
             StorageError: If query fails.
@@ -511,6 +929,7 @@ class DataRepository(ABC):
         address: str,
         symbol: str,
         positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
         margin_summary: dict[str, Any] | None,
         event_timestamp: datetime,
         source: str,
@@ -521,6 +940,7 @@ class DataRepository(ABC):
             address: Trader Ethereum address.
             symbol: Trading symbol.
             positions: Latest position payload list.
+            open_orders: Latest open orders payload list.
             margin_summary: Latest margin summary payload.
             event_timestamp: Event time.
             source: Event source identifier.
@@ -539,6 +959,21 @@ class DataRepository(ABC):
 
         Args:
             position: Position snapshot to store.
+
+        Returns:
+            True if successful.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
+    async def store_trader_closed_trade(self, trade: Any) -> bool:
+        """Store an immutable closed-trade row.
+
+        Args:
+            trade: Closed-trade payload or model.
 
         Returns:
             True if successful.

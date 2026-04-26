@@ -64,6 +64,7 @@ class Archiver:
         if collection_name in {
             "leaderboard_history",
             "trader_positions",
+            "trader_closed_trades",
             "trader_scores",
             "signals",
             "trader_signals",

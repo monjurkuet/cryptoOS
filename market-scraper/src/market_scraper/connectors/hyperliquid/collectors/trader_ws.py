@@ -50,6 +50,7 @@ class TraderWebSocketCollector:
         event_bus: EventBus,
         config: HyperliquidSettings,
         on_trader_data: Callable[[dict[str, Any]], None] | None = None,
+        on_bootstrap_event: Callable[[StandardEvent], Any] | None = None,
         buffer_config: BufferConfig | None = None,
     ) -> None:
         """Initialize the trader WebSocket collector.
@@ -58,11 +59,14 @@ class TraderWebSocketCollector:
             event_bus: Event bus for publishing events
             config: Hyperliquid settings
             on_trader_data: Optional callback for trader data
+            on_bootstrap_event: Optional callback to handle bootstrap events
+                directly (e.g., deterministic repository upserts)
             buffer_config: Buffer and flush configuration
         """
         self.event_bus = event_bus
         self.config = config
         self._on_trader_data = on_trader_data
+        self._on_bootstrap_event = on_bootstrap_event
 
         # Connection management
         self._clients: list[TraderWSClient] = []
@@ -85,6 +89,9 @@ class TraderWebSocketCollector:
         self._message_buffer: list[dict] = []
         self._buffer_lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
+        self._bootstrap_task: asyncio.Task | None = None
+        self._bootstrap_lock = asyncio.Lock()
+        self._bootstrap_pending: set[str] = set()
 
         # Stats
         self._messages_received = 0
@@ -101,7 +108,7 @@ class TraderWebSocketCollector:
             logger.warning("trader_ws_already_running")
             return
 
-        self._tracked_traders = traders or []
+        self._tracked_traders = [str(t).lower() for t in (traders or []) if t]
         self._running = True
 
         logger.info(
@@ -112,6 +119,11 @@ class TraderWebSocketCollector:
             flush_interval=self._flush_interval,
             buffer_max_size=self._buffer_max_size,
         )
+
+        # Start flush loop even if there are no traders yet. This ensures
+        # later `add_trader()` calls still get periodic flush behavior.
+        if self._flush_task is None:
+            self._flush_task = asyncio.create_task(self._flush_loop())
 
         if not self._tracked_traders:
             logger.warning("no_traders_to_track")
@@ -147,9 +159,7 @@ class TraderWebSocketCollector:
 
         successful = sum(1 for r in results if r is True)
         logger.info("trader_ws_clients_started", successful=successful, total=len(self._clients))
-
-        # Start flush loop
-        self._flush_task = asyncio.create_task(self._flush_loop())
+        self._schedule_bootstrap(self._tracked_traders)
 
     async def stop(self) -> None:
         """Stop all WebSocket connections."""
@@ -163,6 +173,13 @@ class TraderWebSocketCollector:
                 await self._flush_task
             except asyncio.CancelledError:
                 logger.debug("trader_ws_flush_task_cancelled")
+
+        if self._bootstrap_task:
+            self._bootstrap_task.cancel()
+            try:
+                await self._bootstrap_task
+            except asyncio.CancelledError:
+                logger.debug("trader_ws_bootstrap_task_cancelled")
 
         # Flush remaining messages
         await self._flush_messages()
@@ -180,8 +197,16 @@ class TraderWebSocketCollector:
         Args:
             address: Trader's Ethereum address
         """
+        address = str(address).lower()
         if address in self._tracked_traders:
             return
+
+        if not self._running:
+            await self.start([address])
+            return
+
+        if self._flush_task is None:
+            self._flush_task = asyncio.create_task(self._flush_loop())
 
         self._tracked_traders.append(address)
 
@@ -203,12 +228,15 @@ class TraderWebSocketCollector:
             self._clients.append(client)
             await client.start()
 
+        self._schedule_bootstrap([address])
+
     async def remove_trader(self, address: str) -> None:
         """Remove a trader from tracking.
 
         Args:
             address: Trader's Ethereum address
         """
+        address = str(address).lower()
         if address in self._tracked_traders:
             self._tracked_traders.remove(address)
 
@@ -216,6 +244,161 @@ class TraderWebSocketCollector:
         for client in self._clients:
             if address in client.traders:
                 await client.unsubscribe_trader(address)
+
+    async def sync_traders(self, addresses: list[str]) -> dict[str, int]:
+        """Reconcile tracked subscriptions against a desired address set.
+
+        Args:
+            addresses: Desired tracked addresses (will be normalized to lowercase)
+
+        Returns:
+            Summary with keys: added, removed, total
+        """
+        desired = {str(a).lower() for a in (addresses or []) if a}
+
+        # Ensure collector is running so we can apply the reconciliation.
+        if not self._running:
+            await self.start(sorted(desired))
+            return {"added": len(desired), "removed": 0, "total": len(desired)}
+
+        current = {str(a).lower() for a in self._tracked_traders if a}
+
+        to_remove = sorted(current - desired)
+        to_add = sorted(desired - current)
+
+        for addr in to_remove:
+            await self.remove_trader(addr)
+        for addr in to_add:
+            await self.add_trader(addr)
+
+        return {"added": len(to_add), "removed": len(to_remove), "total": len(desired)}
+
+    def _schedule_bootstrap(self, addresses: list[str]) -> None:
+        """Schedule reconciliation bootstrap for tracked trader addresses."""
+        for address in addresses:
+            normalized = str(address).lower()
+            if normalized:
+                self._bootstrap_pending.add(normalized)
+
+        if self._bootstrap_task and not self._bootstrap_task.done():
+            return
+        self._bootstrap_task = asyncio.create_task(self._run_bootstrap_queue())
+
+    async def _run_bootstrap_queue(self) -> None:
+        """Drain bootstrap pending queue with coalescing."""
+        while self._running:
+            async with self._bootstrap_lock:
+                if not self._bootstrap_pending:
+                    return
+                batch = sorted(self._bootstrap_pending)
+                self._bootstrap_pending.clear()
+            await self._bootstrap_reconcile(batch)
+
+    async def _bootstrap_reconcile(self, addresses: list[str]) -> None:
+        """Fetch current trader state from Hyperliquid HTTP API and emit snapshots.
+
+        This seeds/corrects current-state rows so unknown/stale states converge
+        even when WebSocket updates were missed.
+        """
+        normalized = sorted({str(address).lower() for address in addresses if address})
+        if not normalized:
+            return
+
+        logger.info("trader_ws_bootstrap_start", addresses=len(normalized))
+
+        sem = asyncio.Semaphore(20)
+        timeout = aiohttp.ClientTimeout(total=25)
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            tasks = [self._fetch_bootstrap_event(session, sem, address) for address in normalized]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        events: list[StandardEvent] = []
+        errors = 0
+        for result in results:
+            if isinstance(result, Exception):
+                errors += 1
+                continue
+            if result is not None:
+                events.append(result)
+
+        if events:
+            if self._on_bootstrap_event:
+                sem_direct = asyncio.Semaphore(25)
+
+                async def handle_direct(event: StandardEvent) -> None:
+                    async with sem_direct:
+                        try:
+                            result = self._on_bootstrap_event(event)
+                            if asyncio.iscoroutine(result):
+                                await result
+                        except Exception as exc:
+                            logger.warning(
+                                "trader_ws_bootstrap_direct_handler_failed",
+                                event_id=event.event_id,
+                                error=str(exc),
+                            )
+
+                await asyncio.gather(*(handle_direct(event) for event in events))
+            await self.event_bus.publish_bulk(events)
+            logger.info("trader_ws_bootstrap_published", events=len(events), errors=errors)
+        else:
+            logger.info("trader_ws_bootstrap_no_events", errors=errors)
+
+    async def _fetch_bootstrap_event(
+        self,
+        session: aiohttp.ClientSession,
+        sem: asyncio.Semaphore,
+        address: str,
+    ) -> StandardEvent | None:
+        """Fetch one trader state snapshot from Hyperliquid info API."""
+        payload = {"type": "clearinghouseState", "user": address}
+
+        async with sem:
+            for attempt in range(3):
+                try:
+                    async with session.post("https://api.hyperliquid.xyz/info", json=payload) as response:
+                        if response.status != 200:
+                            raise RuntimeError(f"status={response.status}")
+                        clearinghouse_state = await response.json()
+
+                    async with session.post(
+                        "https://api.hyperliquid.xyz/info",
+                        json={"type": "openOrders", "user": address},
+                    ) as response:
+                        if response.status != 200:
+                            raise RuntimeError(f"open_orders_status={response.status}")
+                        open_orders_data = await response.json()
+
+                    positions = clearinghouse_state.get("assetPositions", [])
+                    if not isinstance(positions, list):
+                        positions = []
+                    active_positions = [
+                        p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0
+                    ]
+                    symbol_positions = [
+                        p
+                        for p in active_positions
+                        if p.get("position", {}).get("coin") == self.config.symbol
+                    ]
+                    symbol_open_orders = self._filter_symbol_open_orders(open_orders_data)
+                    margin_summary = clearinghouse_state.get("marginSummary", {})
+                    return self._create_trader_positions_event(
+                        address=address,
+                        symbol_positions=symbol_positions,
+                        open_orders=symbol_open_orders,
+                        margin_summary=margin_summary if isinstance(margin_summary, dict) else {},
+                        allow_empty=True,
+                    )
+                except Exception as exc:
+                    if attempt == 2:
+                        logger.warning(
+                            "trader_ws_bootstrap_fetch_failed",
+                            address=address[:10],
+                            error=str(exc),
+                        )
+                        return None
+                    await asyncio.sleep(0.2 * (attempt + 1))
 
     async def _handle_message(self, data: dict) -> None:
         """Handle incoming WebSocket message.
@@ -340,10 +523,32 @@ class TraderWebSocketCollector:
             separators=(",", ":"),
         )
 
+    def _normalize_open_orders(self, open_orders: list[dict] | None) -> str:
+        """Normalize open orders payload for deterministic comparisons."""
+        if not open_orders:
+            return ""
+
+        sorted_orders = sorted(
+            open_orders,
+            key=lambda order: (
+                str((order or {}).get("coin", "")),
+                str((order or {}).get("oid", "")),
+                str((order or {}).get("side", "")),
+                str((order or {}).get("timestamp", "")),
+            ),
+        )
+
+        return json.dumps(
+            self._serialize_for_comparison(sorted_orders),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def _has_significant_change(
         self,
         address: str,
         positions: list[dict],
+        open_orders: list[dict] | None = None,
         margin_summary: dict[str, Any] | None = None,
     ) -> bool:
         """Check if positions have changed significantly.
@@ -369,6 +574,11 @@ class TraderWebSocketCollector:
         last_normalized = last_saved.get("normalized", "")
         current_normalized = self._normalize_positions(positions)
         if last_normalized != current_normalized:
+            return True
+
+        last_open_orders = last_saved.get("open_orders", "")
+        current_open_orders = self._normalize_open_orders(open_orders)
+        if last_open_orders != current_open_orders:
             return True
 
         last_margin_summary = last_saved.get("margin_summary", "")
@@ -450,52 +660,87 @@ class TraderWebSocketCollector:
             StandardEvent or None if filtered
         """
         data = msg.get("data", {})
-        address = data.get("user", "")
+        address = str(data.get("user", "")).lower()
         clearinghouse = data.get("clearinghouseState", {})
         positions = clearinghouse.get("assetPositions", [])
+        open_orders = data.get("openOrders", [])
         margin_summary = clearinghouse.get("marginSummary", {})
 
-        if not address or not positions:
+        if not address:
             return None
+        if not isinstance(positions, list):
+            positions = []
 
         # Filter for active positions
         active_positions = [p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0]
-
-        if not active_positions:
-            return None
 
         # BTC-ONLY FILTER: Only process positions for configured symbol
         symbol_positions = [
             p for p in active_positions if p.get("position", {}).get("coin") == self.config.symbol
         ]
+        symbol_open_orders = self._filter_symbol_open_orders(open_orders)
+        return self._create_trader_positions_event(
+            address=address,
+            symbol_positions=symbol_positions,
+            open_orders=symbol_open_orders,
+            margin_summary=margin_summary if isinstance(margin_summary, dict) else {},
+            allow_empty=False,
+        )
 
-        if not symbol_positions:
+    def _filter_symbol_open_orders(self, open_orders: Any) -> list[dict]:
+        """Filter open orders to active configured-symbol orders."""
+        if not isinstance(open_orders, list):
+            return []
+
+        symbol = str(self.config.symbol).upper()
+        symbol_orders: list[dict] = []
+        for order in open_orders:
+            if not isinstance(order, dict):
+                continue
+            if str(order.get("coin", "")).upper() != symbol:
+                continue
+            try:
+                size = float(order.get("sz", 0) or 0)
+            except (TypeError, ValueError):
+                size = 0.0
+            if size <= 0:
+                continue
+            symbol_orders.append(order)
+        return symbol_orders
+
+    def _create_trader_positions_event(
+        self,
+        address: str,
+        symbol_positions: list[dict],
+        open_orders: list[dict],
+        margin_summary: dict[str, Any],
+        allow_empty: bool,
+    ) -> StandardEvent | None:
+        """Create trader position event with change detection and state tracking."""
+        if not symbol_positions and not open_orders and not allow_empty and address not in self._last_positions:
             self._positions_skipped += 1
             return None
 
-        # EVENT-DRIVEN: Check if position actually changed
-        if not self._has_significant_change(address, symbol_positions, margin_summary):
+        if not self._has_significant_change(address, symbol_positions, open_orders, margin_summary):
             self._positions_skipped += 1
-            # Silent skip - no logging to avoid debug spam
             return None
 
         self._positions_saved += 1
-        logger.info(
+        logger.debug(
             "trader_ws_position_saved",
             address=address[:10],
             symbol=self.config.symbol,
             position_count=len(symbol_positions),
         )
 
-        # Update last saved state
         self._last_positions[address] = {
             "positions": symbol_positions,
             "normalized": self._normalize_positions(symbol_positions),
+            "open_orders": self._normalize_open_orders(open_orders),
             "margin_summary": self._normalize_margin_summary(margin_summary),
             "timestamp": time.time(),
         }
 
-        # Create event
         return StandardEvent.create(
             event_type="trader_positions",
             source="hyperliquid_trader_ws",
@@ -503,6 +748,7 @@ class TraderWebSocketCollector:
                 "address": address,
                 "symbol": self.config.symbol,
                 "positions": symbol_positions,
+                "openOrders": open_orders,
                 "marginSummary": margin_summary,
                 "timestamp": datetime.now(UTC).isoformat(),
             },

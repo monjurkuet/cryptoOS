@@ -102,6 +102,7 @@ class RetentionConfig(BaseModel):
     events: int = Field(default=2, description="Days to keep raw audit events only")
     leaderboard_history: int = Field(default=90, description="Days to keep leaderboard history")
     trader_positions: int = Field(default=30, description="Days to keep position snapshots")
+    trader_closed_trades: int = Field(default=90, description="Days to keep closed-trade ledger")
     trader_scores: int = Field(default=90, description="Days to keep score history")
     signals: int = Field(default=30, description="Days to keep trading signals")
     trader_signals: int = Field(default=30, description="Days to keep trader signals")

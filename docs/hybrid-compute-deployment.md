@@ -1,48 +1,35 @@
 # Hybrid Compute Deployment Report
 
 **Date:** April 13, 2026
-**Status:** ✅ Operational
+**Status:** ✅ Operational (VPS-only)
 
 ## Architecture
 
 ```
 Internet → VPS (Caddy Reverse Proxy)
-              ├── blockchain.datasolved.org → Desktop:3845 (market-scraper)
+              ├── blockchain.datasolved.org → localhost:3845 (market-scraper on VPS)
               ├── search.datasolved.org → localhost:8345 (DDGS API)
               ├── llm.datasolved.org → localhost:8317
               ├── api.datasolved.org → localhost:18080
               └── trading.datasolved.org → localhost:3000
 
-VPS (100.92.181.21)          Desktop (100.90.22.11)
-├── hybrid-monitor.service   ├── Docker Desktop 4.67.0
-├── Caddy (reverse proxy)    ├── market-scraper container
-├── DDGS API (port 8345)     ├── hybrid-redis container
-└── (failover capable)       └── heartbeat server (port 8080)
+VPS (100.92.181.21)
+├── Caddy (reverse proxy)
+├── market-scraper.service (port 3845)
+└── DDGS API (port 8345)
 ```
 
 ## Components Deployed
 
-### Desktop Docker Containers
-- **market-scraper** - Running on port 3845, healthy
-- **hybrid-redis** - Redis for event bus coordination
-- **hybrid-network** - Docker network for inter-container communication
-
 ### VPS Services
-- **hybrid-monitor.service** - Monitors Desktop heartbeat, handles failover
 - **Caddy** - Reverse proxy with auto-HTTPS
 - **DDGS API** - Running on port 8345
+- **market-scraper.service** - Running on port 3845
 
-## Automatic Failover
+## Routing Notes
 
-1. **Desktop Online Detection**: 5-10 seconds
-2. **Failover Threshold**: 30 seconds
-3. **Switch Time**: ~30-40 seconds total
-
-### Failover Flow
-```
-Desktop OFFLINE → VPS starts market-scraper.service
-Desktop ONLINE → VPS stops market-scraper.service, Desktop Docker runs it
-```
+- This deployment is configured as **single-server (VPS-only)**.
+- `blockchain.datasolved.org` reverse-proxies only to `localhost:3845` (no Desktop/Tailscale upstream).
 
 ## Configuration Files
 
@@ -52,31 +39,14 @@ Desktop ONLINE → VPS stops market-scraper.service, Desktop Docker runs it
 - `.dockerignore` - Build optimization
 
 ### Caddy Routes
-- `blockchain.datasolved.org` → `100.90.22.11:3845`
+- `blockchain.datasolved.org` → `localhost:3845`
 - `search.datasolved.org` → `localhost:8345`
-
-## SSH Access
-```bash
-ssh muham@100.90.22.11  # Desktop via Tailscale
-```
-
-## Docker API Access
-```bash
-export DOCKER_HOST="tcp://100.90.22.11:2375"
-docker ps  # List containers on Desktop
-```
 
 ## Verification Commands
 
 ```bash
-# Check Desktop heartbeat
-curl http://100.90.22.11:8080/
-
-# Check hybrid monitor status
-sudo journalctl -u hybrid-monitor.service -f
-
-# Check market-scraper on Desktop
-curl http://100.90.22.11:3845/health/live
+# Check market-scraper on VPS
+curl http://localhost:3845/health/live
 
 # Check via domain
 curl https://blockchain.datasolved.org/health/live

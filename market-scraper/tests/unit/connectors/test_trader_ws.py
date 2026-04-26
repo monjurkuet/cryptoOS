@@ -1,5 +1,6 @@
 """Tests for TraderWebSocketCollector."""
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -192,6 +193,7 @@ class TestTraderWebSocketCollector:
         assert collector._has_significant_change(
             address,
             updated_positions,
+            [],
             {"accountValue": 100000},
         ) is True
 
@@ -219,6 +221,7 @@ class TestTraderWebSocketCollector:
         assert collector._has_significant_change(
             address,
             positions,
+            [],
             {"accountValue": 125000},
         ) is True
 
@@ -364,6 +367,216 @@ class TestTraderWebSocketCollector:
 
         assert collector._process_webdata2(first_msg) is not None
         assert collector._process_webdata2(second_msg) is not None
+
+    @pytest.mark.asyncio
+    async def test_process_webdata2_position_close_emits_flat_transition(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """A previously active BTC position should emit an empty snapshot on close."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        open_msg = {
+            "channel": "webData2",
+            "data": {
+                "user": "test_address",
+                "clearinghouseState": {
+                    "assetPositions": [
+                        {
+                            "position": {
+                                "coin": "BTC",
+                                "szi": 1.0,
+                            }
+                        }
+                    ],
+                    "marginSummary": {"accountValue": 100000},
+                },
+            },
+        }
+        close_msg = {
+            "channel": "webData2",
+            "data": {
+                "user": "test_address",
+                "clearinghouseState": {
+                    "assetPositions": [],
+                    "marginSummary": {"accountValue": 100000},
+                },
+            },
+        }
+
+        assert collector._process_webdata2(open_msg) is not None
+        close_event = collector._process_webdata2(close_msg)
+        assert close_event is not None
+        assert close_event.event_type == "trader_positions"
+        assert close_event.payload["positions"] == []
+
+    def test_create_trader_positions_event_allows_empty_when_requested(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """Bootstrap-style reconciliation should emit empty snapshots for new traders."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        event = collector._create_trader_positions_event(
+            address="test_address",
+            symbol_positions=[],
+            open_orders=[],
+            margin_summary={},
+            allow_empty=True,
+        )
+        assert event is not None
+        assert event.event_type == "trader_positions"
+        assert event.payload["positions"] == []
+        assert event.payload["openOrders"] == []
+
+    def test_filter_symbol_open_orders(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """Only active BTC open orders should be included."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        orders = [
+            {"coin": "BTC", "sz": "1.0", "oid": 1},
+            {"coin": "BTC", "sz": "0", "oid": 2},
+            {"coin": "ETH", "sz": "5.0", "oid": 3},
+            {"coin": "BTC", "sz": "-1", "oid": 4},
+        ]
+
+        filtered = collector._filter_symbol_open_orders(orders)
+        assert filtered == [{"coin": "BTC", "sz": "1.0", "oid": 1}]
+
+    @pytest.mark.asyncio
+    async def test_process_webdata2_includes_open_orders(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """webData2 should emit BTC open orders in event payload."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        msg = {
+            "channel": "webData2",
+            "data": {
+                "user": "test_address",
+                "openOrders": [
+                    {"coin": "BTC", "sz": "0.5", "oid": 100},
+                    {"coin": "ETH", "sz": "2.0", "oid": 200},
+                ],
+                "clearinghouseState": {
+                    "assetPositions": [],
+                    "marginSummary": {"accountValue": 100000},
+                },
+            },
+        }
+
+        event = collector._process_webdata2(msg)
+        assert event is not None
+        assert event.payload["openOrders"] == [{"coin": "BTC", "sz": "0.5", "oid": 100}]
+
+    @pytest.mark.asyncio
+    async def test_process_webdata2_order_only_change_emits_event(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """Order-only updates should emit a new event."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        first_msg = {
+            "channel": "webData2",
+            "data": {
+                "user": "test_address",
+                "openOrders": [{"coin": "BTC", "sz": "0.5", "oid": 100}],
+                "clearinghouseState": {"assetPositions": [], "marginSummary": {}},
+            },
+        }
+        second_msg = {
+            "channel": "webData2",
+            "data": {
+                "user": "test_address",
+                "openOrders": [{"coin": "BTC", "sz": "0.7", "oid": 100}],
+                "clearinghouseState": {"assetPositions": [], "marginSummary": {}},
+            },
+        }
+
+        assert collector._process_webdata2(first_msg) is not None
+        assert collector._process_webdata2(second_msg) is not None
+
+    @pytest.mark.asyncio
+    async def test_fetch_bootstrap_event_includes_open_orders(
+        self,
+        mock_event_bus: MagicMock,
+        mock_config: HyperliquidSettings,
+    ) -> None:
+        """Bootstrap fetch should include BTC open orders in emitted payload."""
+        collector = TraderWebSocketCollector(
+            event_bus=mock_event_bus,
+            config=mock_config,
+        )
+
+        class _MockResponse:
+            def __init__(self, payload):
+                self.status = 200
+                self._payload = payload
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return self._payload
+
+        class _MockSession:
+            def __init__(self):
+                self._calls = 0
+
+            def post(self, *_args, **_kwargs):
+                self._calls += 1
+                if self._calls == 1:
+                    return _MockResponse(
+                        {
+                            "assetPositions": [
+                                {"position": {"coin": "BTC", "szi": "1.0"}},
+                            ],
+                            "marginSummary": {"accountValue": "100000"},
+                        }
+                    )
+                return _MockResponse(
+                    [
+                        {"coin": "BTC", "sz": "0.5", "oid": 10},
+                        {"coin": "ETH", "sz": "2.0", "oid": 20},
+                    ]
+                )
+
+        event = await collector._fetch_bootstrap_event(
+            session=_MockSession(),
+            sem=asyncio.Semaphore(1),
+            address="0xabc",
+        )
+
+        assert event is not None
+        assert event.payload["openOrders"] == [{"coin": "BTC", "sz": "0.5", "oid": 10}]
 
     @pytest.mark.asyncio
     async def test_process_webdata2_no_positions(

@@ -438,33 +438,33 @@ class LeaderboardCollector:
                     continue
                 selected_addresses.append(address)
 
-            if self._market_config.storage.keep_score_history:
-                performances = trader.get("performances") or {}
-                await self._repository.store_trader_score(
-                    TraderScore(
-                        eth=address,
-                        t=now,
-                        score=float(trader.get("score", 0) or 0),
-                        tags=list(trader.get("tags") or []),
-                        acct_val=float(trader.get("acct_val", 0) or 0),
-                        all_roi=float((performances.get("allTime") or {}).get("roi", 0) or 0),
-                        month_roi=float((performances.get("month") or {}).get("roi", 0) or 0),
-                        week_roi=float((performances.get("week") or {}).get("roi", 0) or 0),
+                if self._market_config.storage.keep_score_history:
+                    performances = trader.get("performances") or {}
+                    await self._repository.store_trader_score(
+                        TraderScore(
+                            eth=address,
+                            t=now,
+                            score=float(trader.get("score", 0) or 0),
+                            tags=list(trader.get("tags") or []),
+                            acct_val=float(trader.get("acct_val", 0) or 0),
+                            all_roi=float((performances.get("allTime") or {}).get("roi", 0) or 0),
+                            month_roi=float((performances.get("month") or {}).get("roi", 0) or 0),
+                            week_roi=float((performances.get("week") or {}).get("roi", 0) or 0),
+                        )
                     )
-                )
 
-            await self._repository.upsert_tracked_trader_data(
-                {
-                    "eth": address,
-                    "name": trader.get("name"),
-                    "score": trader.get("score", 0),
-                    "acct_val": trader.get("acct_val", 0),
-                    "tags": trader.get("tags", []),
-                    "performances": trader.get("performances", {}),
-                    "active": True,
-                },
-                updated_at=now,
-            )
+                await self._repository.upsert_tracked_trader_data(
+                    {
+                        "eth": address,
+                        "name": trader.get("name"),
+                        "score": trader.get("score", 0),
+                        "acct_val": trader.get("acct_val", 0),
+                        "tags": trader.get("tags", []),
+                        "performances": trader.get("performances", {}),
+                        "active": True,
+                    },
+                    updated_at=now,
+                )
 
             # 3. Deactivate traders not in selection
             if selected_addresses:
