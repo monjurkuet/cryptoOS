@@ -14,6 +14,7 @@ from signal_system.utils.safe_convert import safe_float
 
 if TYPE_CHECKING:
     from signal_system.rl.outcome_tracker import SignalOutcomeTracker
+    from signal_system.rl.outcome_store import OutcomeStore
 
 logger = structlog.get_logger(__name__)
 
@@ -33,6 +34,7 @@ class EventProcessor:
         signal_store: SignalStore | None,
         settings: SignalSystemSettings,
         outcome_tracker: SignalOutcomeTracker | None = None,
+        outcome_store: OutcomeStore | None = None,
     ) -> None:
         """Initialize the event processor.
 
@@ -42,12 +44,14 @@ class EventProcessor:
             signal_store: Optional signal store for persisting signals
             settings: Application settings
             outcome_tracker: Optional outcome tracker for RL reward computation
+            outcome_store: Optional outcome store for MongoDB persistence
         """
         self._signal_processor = signal_processor
         self._whale_detector = whale_detector
         self._signal_store = signal_store
         self._settings = settings
         self._outcome_tracker = outcome_tracker
+        self._outcome_store = outcome_store
 
     async def handle_position_event(self, event: dict) -> None:
         """Process trader position event.
@@ -153,7 +157,14 @@ class EventProcessor:
         """
         if self._outcome_tracker is None:
             return []
-        return self._outcome_tracker.update_price(price)
+
+        resolved = self._outcome_tracker.update_price(price)
+
+        # Persist resolved outcomes to MongoDB
+        if resolved and self._outcome_store is not None:
+            self._outcome_store.store_batch(resolved)
+
+        return resolved
 
     def get_outcome_stats(self) -> dict[str, Any]:
         """Get outcome tracker statistics.

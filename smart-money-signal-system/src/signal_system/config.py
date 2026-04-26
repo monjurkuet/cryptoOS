@@ -1,5 +1,6 @@
 """Signal System Configuration."""
 
+import os
 from pathlib import Path
 
 from pydantic import Field
@@ -21,10 +22,20 @@ class RedisSettings(BaseSettings):
     model_config = {"env_prefix": "REDIS_"}
 
 
+class MongoSettings(BaseSettings):
+    """MongoDB configuration for RL outcome storage."""
+
+    url: str = Field(default="mongodb://localhost:27017")
+    database: str = Field(default="signal_system")
+
+    model_config = {"env_prefix": "SIGNAL_MONGO_"}
+
+
 class SignalSystemSettings(BaseSettings):
     """Main application settings."""
 
     redis: RedisSettings = Field(default_factory=RedisSettings)
+    mongo: MongoSettings = Field(default_factory=MongoSettings)
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=4341)
     symbol: str = Field(default="BTC")
