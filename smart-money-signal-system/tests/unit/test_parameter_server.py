@@ -94,3 +94,30 @@ class TestRLParameterServer:
         server.update_params(bias_threshold=0.25)
         t2 = server.get_status()["last_updated"]
         assert t2 >= t1
+
+    def test_auto_find_latest_checkpoint(self, tmp_path):
+        """load_from_checkpoint auto-finds latest .pt in checkpoint_dir."""
+        import time
+        from signal_system.rl.policy import PPOAgent
+
+        # Create two checkpoint files with different params
+        agent1 = PPOAgent(obs_dim=12, action_dim=7)
+        agent1._bias_threshold = 0.3
+        agent1.save(str(tmp_path / "model_v1.pt"))
+        time.sleep(0.1)
+
+        agent2 = PPOAgent(obs_dim=12, action_dim=7)
+        agent2._bias_threshold = 0.5
+        agent2.save(str(tmp_path / "model_v2.pt"))
+
+        # Auto-discover should pick the newest
+        server = RLParameterServer(checkpoint_dir=tmp_path)
+        server.load_from_checkpoint()
+        params = server.get_params()
+        assert params["bias_threshold"] == 0.5
+
+    def test_auto_find_no_checkpoint_dir(self):
+        """load_from_checkpoint with no dir returns False gracefully."""
+        server = RLParameterServer()
+        result = server.load_from_checkpoint()
+        assert result is False

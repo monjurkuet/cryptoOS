@@ -1,8 +1,9 @@
 """Main entry point for Smart Money Signal System."""
 
 import asyncio
-import signal
+import signal as signal_mod
 import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -19,9 +20,14 @@ from signal_system.ml.regime_detection import MarketRegimeDetector
 from signal_system.ml.feature_importance import FeatureImportanceAnalyzer
 from signal_system.services.event_processor import EventProcessor
 from signal_system.rl.outcome_tracker import SignalOutcomeTracker
+from signal_system.rl.outcome_store import OutcomeStore
+from signal_system.rl.parameter_server import RLParameterServer
 from signal_system.api.main import app
 
 logger = structlog.get_logger(__name__)
+
+# Default checkpoint directory
+_CHECKPOINT_DIR = Path(__file__).parent.parent.parent / "checkpoints"
 
 
 class SignalSystem:
@@ -37,7 +43,17 @@ class SignalSystem:
         self.signal_store = SignalStore()
         self.weighting_engine = TraderWeightingEngine()
         self.whale_detector = WhaleAlertDetector()
+
+        # RL components
         self.outcome_tracker = SignalOutcomeTracker()
+        self.outcome_store = OutcomeStore()  # MongoDB persistence (graceful no-op if no DB)
+        self.rl_param_server = RLParameterServer(checkpoint_dir=_CHECKPOINT_DIR)
+
+        # Load latest RL checkpoint on startup
+        self.rl_param_server.load_from_checkpoint()
+        rl_params = self.rl_param_server.get_params()
+        self.signal_processor.set_rl_params(**rl_params)
+        logger.info("rl_params_loaded", **rl_params)
 
         # Shared event processor
         self.event_processor = EventProcessor(
@@ -46,6 +62,7 @@ class SignalSystem:
             signal_store=self.signal_store,
             settings=self.settings,
             outcome_tracker=self.outcome_tracker,
+            outcome_store=self.outcome_store,
         )
 
         # ML components (optional, lazy-loaded)
@@ -229,6 +246,7 @@ class SignalSystem:
             "signal_processor": self.signal_processor.get_stats(),
             "weighting_engine": self.weighting_engine.get_stats(),
             "whale_detector": self.whale_detector.get_stats(),
+            "rl_param_server": self.rl_param_server.get_status(),
         }
 
 
@@ -256,8 +274,8 @@ def main() -> None:
             logger.info("shutdown_signal_received")
             asyncio.create_task(system.stop())
 
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+        signal_mod.signal(signal_mod.SIGINT, signal_handler)
+        signal_mod.signal(signal_mod.SIGTERM, signal_handler)
 
         async def run():
             await system.start()

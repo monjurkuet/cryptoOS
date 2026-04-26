@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -44,6 +45,7 @@ class RLParameterServer:
         bias_threshold: float = DEFAULT_BIAS_THRESHOLD,
         conf_scale: float = DEFAULT_CONF_SCALE,
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+        checkpoint_dir: Path | str | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._params: dict[str, float] = {
@@ -53,6 +55,7 @@ class RLParameterServer:
         }
         self._last_updated: float = time.time()
         self._checkpoint_path: str | None = None
+        self._checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else None
 
     def get_params(self) -> dict[str, float]:
         """Get current signal parameters (thread-safe copy).
@@ -86,23 +89,32 @@ class RLParameterServer:
 
         logger.debug("param_server_updated", params=self._params)
 
-    def load_from_checkpoint(self, path: str) -> bool:
+    def load_from_checkpoint(self, path: str | None = None) -> bool:
         """Load parameters from a PPO checkpoint file.
 
+        If path is None, auto-discovers the latest .pt file in
+        self._checkpoint_dir.
+
         Args:
-            path: Path to .pt checkpoint file
+            path: Path to .pt checkpoint file, or None to auto-find
 
         Returns:
             True if loaded successfully, False otherwise
         """
         import torch
 
+        if path is None:
+            path = self._find_latest_checkpoint()
+            if path is None:
+                logger.debug("param_server_no_checkpoint_found")
+                return False
+
         try:
             checkpoint = torch.load(path, map_location="cpu", weights_only=True)
             params = checkpoint.get("params", {})
             if params:
                 self.update_params(**params)
-                self._checkpoint_path = path
+                self._checkpoint_path = str(path)
                 logger.info("param_server_loaded_checkpoint", path=path, params=params)
                 return True
             else:
@@ -111,6 +123,23 @@ class RLParameterServer:
         except Exception as e:
             logger.warning("param_server_load_failed", path=path, error=str(e))
             return False
+
+    def _find_latest_checkpoint(self) -> str | None:
+        """Find the latest .pt checkpoint in checkpoint_dir.
+
+        Returns:
+            Path string to latest checkpoint, or None
+        """
+        if self._checkpoint_dir is None or not self._checkpoint_dir.exists():
+            return None
+
+        checkpoints = list(self._checkpoint_dir.glob("*.pt"))
+        if not checkpoints:
+            return None
+
+        # Sort by modification time, newest first
+        latest = max(checkpoints, key=lambda p: p.stat().st_mtime)
+        return str(latest)
 
     def get_status(self) -> dict[str, Any]:
         """Get server status including current params and metadata.

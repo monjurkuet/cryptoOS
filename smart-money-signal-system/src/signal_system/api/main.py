@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
@@ -17,8 +18,12 @@ from signal_system.signal_store import SignalStore
 from signal_system.whale_alerts.detector import WhaleAlertDetector
 from signal_system.services.event_processor import EventProcessor
 from signal_system.rl.outcome_tracker import SignalOutcomeTracker
+from signal_system.rl.outcome_store import OutcomeStore
+from signal_system.rl.parameter_server import RLParameterServer
 
 logger = structlog.get_logger(__name__)
+
+_CHECKPOINT_DIR = Path(__file__).parent.parent.parent.parent / "checkpoints"
 
 # Component instances for this module
 _event_subscriber: EventSubscriber | None = None
@@ -26,6 +31,8 @@ _signal_processor: SignalGenerationProcessor | None = None
 _whale_detector: WhaleAlertDetector | None = None
 _signal_store: SignalStore | None = None
 _outcome_tracker: SignalOutcomeTracker | None = None
+_outcome_store: OutcomeStore | None = None
+_rl_param_server: RLParameterServer | None = None
 _event_processor: EventProcessor | None = None
 _subscriber_task: asyncio.Task | None = None
 
@@ -33,7 +40,7 @@ _subscriber_task: asyncio.Task | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan."""
-    global _event_subscriber, _signal_processor, _whale_detector, _signal_store, _outcome_tracker, _event_processor, _subscriber_task
+    global _event_subscriber, _signal_processor, _whale_detector, _signal_store, _outcome_tracker, _outcome_store, _rl_param_server, _event_processor, _subscriber_task
 
     settings = get_settings()
 
@@ -41,7 +48,17 @@ async def lifespan(app: FastAPI):
     _signal_processor = SignalGenerationProcessor(symbol=settings.symbol)
     _whale_detector = WhaleAlertDetector()
     _signal_store = SignalStore()
+
+    # RL components
     _outcome_tracker = SignalOutcomeTracker()
+    _outcome_store = OutcomeStore()
+    _rl_param_server = RLParameterServer(checkpoint_dir=_CHECKPOINT_DIR)
+
+    # Load latest checkpoint and apply to signal processor
+    _rl_param_server.load_from_checkpoint()
+    rl_params = _rl_param_server.get_params()
+    _signal_processor.set_rl_params(**rl_params)
+    logger.info("rl_params_loaded", **rl_params)
 
     # Setup event subscriber
     _event_subscriber = EventSubscriber(settings.redis)
@@ -53,6 +70,7 @@ async def lifespan(app: FastAPI):
         signal_store=_signal_store,
         settings=settings,
         outcome_tracker=_outcome_tracker,
+        outcome_store=_outcome_store,
     )
 
     # Set components for dependency injection
@@ -134,5 +152,6 @@ async def health_check() -> dict[str, Any]:
             "signal_processor": _signal_processor.get_stats() if _signal_processor else None,
             "whale_detector": _whale_detector.get_stats() if _whale_detector else None,
             "signal_store": _signal_store.get_signal_stats() if _signal_store else None,
+            "rl_param_server": _rl_param_server.get_status() if _rl_param_server else None,
         },
     }
