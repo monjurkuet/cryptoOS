@@ -1,8 +1,10 @@
 """API Routes for signals and alerts."""
 
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from signal_system.api.dependencies import (
@@ -11,7 +13,12 @@ from signal_system.api.dependencies import (
     get_signal_store,
     get_outcome_store,
     get_rl_param_server,
+    get_trace_store,
+    get_param_event_store,
+    get_mongo_client,
+    get_settings_ref,
 )
+from signal_system.dashboard.store import normalize_market_scraper_signal
 
 router = APIRouter()
 
@@ -64,6 +71,12 @@ async def get_latest_signal() -> SignalResponse | None:
     return SignalResponse(**signal)
 
 
+@router.get("/signal-system/signals/latest", response_model=SignalResponse | None)
+async def get_latest_signal_namespaced() -> SignalResponse | None:
+    """Compatibility-safe alias for latest signal endpoint."""
+    return await get_latest_signal()
+
+
 @router.get("/signals/history")
 async def get_signal_history(limit: int = 100) -> list[dict[str, Any]]:
     """Get signal history.
@@ -94,6 +107,12 @@ async def get_signal_history(limit: int = 100) -> list[dict[str, Any]]:
     ]
 
 
+@router.get("/signal-system/signals/history")
+async def get_signal_history_namespaced(limit: int = 100) -> list[dict[str, Any]]:
+    """Compatibility-safe alias for signal history endpoint."""
+    return await get_signal_history(limit=limit)
+
+
 @router.get("/signals/stats")
 async def get_signal_stats() -> dict[str, Any]:
     """Get signal generation statistics.
@@ -103,6 +122,12 @@ async def get_signal_stats() -> dict[str, Any]:
     """
     processor = get_signal_processor()
     return processor.get_stats()
+
+
+@router.get("/signal-system/signals/stats")
+async def get_signal_stats_namespaced() -> dict[str, Any]:
+    """Compatibility-safe alias for signal stats endpoint."""
+    return await get_signal_stats()
 
 
 @router.get("/alerts/latest", response_model=AlertResponse | None)
@@ -223,6 +248,12 @@ async def get_signal_store_stats() -> dict[str, Any]:
     }
 
 
+@router.get("/signal-system/signals/store-stats")
+async def get_signal_store_stats_namespaced() -> dict[str, Any]:
+    """Compatibility-safe alias for signal store stats endpoint."""
+    return await get_signal_store_stats()
+
+
 # ── RL Endpoints ──────────────────────────────────────────────
 
 
@@ -232,10 +263,96 @@ class RLParamsUpdate(BaseModel):
     bias_threshold: float | None = None
     conf_scale: float | None = None
     min_confidence: float | None = None
-    trend_weight: float | None = None
-    volume_weight: float | None = None
-    momentum_weight: float | None = None
-    volatility_weight: float | None = None
+
+
+class DashboardSignalPoint(BaseModel):
+    source: Literal["signal_system", "market_scraper"]
+    timestamp: str
+    timestamp_ts: float
+    action: str
+    confidence: float
+    long_bias: float
+    short_bias: float
+    net_bias: float
+    traders_long: int
+    traders_short: int
+
+
+class DashboardOverviewResponse(BaseModel):
+    window: str
+    window_hours: int
+    live: dict[str, Any]
+    totals: dict[str, Any]
+    outcomes_summary: dict[str, Any]
+
+
+class DashboardTimelineResponse(BaseModel):
+    source: Literal["all", "signal_system", "market_scraper"]
+    count: int
+    items: list[DashboardSignalPoint]
+
+
+class DashboardParamsCurrentResponse(BaseModel):
+    params: dict[str, float]
+    last_updated: float
+    checkpoint_path: str | None
+
+
+class DashboardParamsHistoryEvent(BaseModel):
+    source: str
+    timestamp: str
+    timestamp_ts: float
+    params: dict[str, float]
+
+
+class DashboardParamsHistoryResponse(BaseModel):
+    count: int
+    events: list[DashboardParamsHistoryEvent]
+
+
+class DashboardDecisionTrace(BaseModel):
+    timestamp: str
+    timestamp_ts: float
+    symbol: str
+    tracked_traders: int
+    scored_traders: int
+    weighted_long_score: float
+    weighted_short_score: float
+    total_weight: float
+    bias_threshold: float
+    conf_scale: float
+    min_confidence: float
+    net_bias: float
+    raw_confidence: float
+    scaled_confidence: float
+    action: str
+    result: Literal["emitted", "suppressed"]
+    reason_code: str
+
+
+class DashboardDecisionResponse(BaseModel):
+    count: int
+    items: list[DashboardDecisionTrace]
+
+
+def _parse_window_hours(window: str) -> int:
+    normalized = (window or "24h").strip().lower()
+    try:
+        if normalized.endswith("h"):
+            return max(1, int(normalized[:-1]))
+        if normalized.endswith("d"):
+            return max(1, int(normalized[:-1]) * 24)
+    except ValueError:
+        return 24
+    return 24
+
+
+def _to_ts(value: datetime | None) -> float | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.timestamp()
 
 
 @router.get("/rl/status")
@@ -274,10 +391,12 @@ async def update_rl_params(update: RLParamsUpdate) -> dict[str, Any]:
     # Build dict of only provided fields
     new_params = {k: v for k, v in update.model_dump().items() if v is not None}
     if new_params:
-        server.update_params(new_params)
+        server.update_params(**new_params)
         # Also push to signal processor
         processor = get_signal_processor()
-        processor.set_rl_params(server.get_params())
+        processor.set_rl_params(**server.get_params())
+        param_store = get_param_event_store()
+        param_store.store_event(server.get_params(), source="api_update")
     return {"params": server.get_params()}
 
 
@@ -294,20 +413,20 @@ async def get_rl_outcomes(limit: int = 100) -> dict[str, Any]:
     store = get_outcome_store()
     outcomes = store.get_recent_outcomes(limit=limit)
 
-    resolved = [o for o in outcomes if o.resolved_at is not None]
-    pnl_values = [o.pnl_pct for o in resolved if o.pnl_pct is not None]
+    resolved = [o for o in outcomes if o.get("resolved_at") is not None]
+    pnl_values = [o.get("pnl_pct", 0.0) for o in resolved if o.get("pnl_pct") is not None]
 
     return {
         "count": len(outcomes),
         "resolved_count": len(resolved),
         "outcomes": [
             {
-                "signal_id": o.signal_id,
-                "action": o.action,
-                "confidence": o.confidence,
-                "pnl_pct": o.pnl_pct,
-                "timestamp": o.timestamp,
-                "resolved_at": o.resolved_at,
+                "signal_id": o.get("signal_id"),
+                "action": o.get("action"),
+                "confidence": o.get("confidence"),
+                "pnl_pct": o.get("pnl_pct"),
+                "timestamp": o.get("timestamp"),
+                "resolved_at": o.get("resolved_at"),
             }
             for o in outcomes
         ],
@@ -322,6 +441,165 @@ async def get_rl_outcomes(limit: int = 100) -> dict[str, Any]:
             ),
         },
     }
+
+
+@router.get(
+    "/dashboard/signal-generator/overview",
+    response_model=DashboardOverviewResponse,
+)
+async def get_dashboard_overview(window: str = "24h") -> DashboardOverviewResponse:
+    """Get high-level dashboard data for signal generator internals."""
+    window_hours = _parse_window_hours(window)
+    cutoff_ts = (datetime.now(UTC) - timedelta(hours=window_hours)).timestamp()
+
+    signal_store = get_signal_store()
+    signal_rows = signal_store.get_signals_in_window(from_ts=cutoff_ts, limit=5000)
+    signal_actions: dict[str, int] = {}
+    for row in signal_rows:
+        signal_actions[row["action"]] = signal_actions.get(row["action"], 0) + 1
+
+    market_rows: list[dict[str, Any]] = []
+    mongo_client = get_mongo_client()
+    settings = get_settings_ref()
+    if mongo_client is not None:
+        market_coll = mongo_client[settings.mongo.market_database]["signals"]
+        market_docs = list(
+            market_coll.find({"t": {"$gte": datetime.fromtimestamp(cutoff_ts, tz=UTC)}})
+            .sort("t", -1)
+            .limit(5000)
+        )
+        market_rows = [normalize_market_scraper_signal(doc) for doc in market_docs]
+
+    market_actions: dict[str, int] = {}
+    for row in market_rows:
+        market_actions[row["action"]] = market_actions.get(row["action"], 0) + 1
+
+    outcome_store = get_outcome_store()
+    outcomes = outcome_store.get_recent_outcomes(limit=1000)
+    pnl_values = [o.get("pnl_pct", 0.0) for o in outcomes if o.get("pnl_pct") is not None]
+    win_rate = (
+        len([value for value in pnl_values if value > 0]) / len(pnl_values)
+        if pnl_values
+        else 0.0
+    )
+
+    processor = get_signal_processor()
+    rl_server = get_rl_param_server()
+    trace_store = get_trace_store()
+    return DashboardOverviewResponse(
+        window=window,
+        window_hours=window_hours,
+        live={
+            "signal_processor": processor.get_stats(),
+            "rl_status": rl_server.get_status(),
+            "trace_store": trace_store.get_stats(),
+        },
+        totals={
+            "signal_system_count": len(signal_rows),
+            "signal_system_actions": signal_actions,
+            "market_scraper_count": len(market_rows),
+            "market_scraper_actions": market_actions,
+        },
+        outcomes_summary={
+            "count": len(outcomes),
+            "avg_pnl": sum(pnl_values) / len(pnl_values) if pnl_values else 0.0,
+            "win_rate": win_rate,
+        },
+    )
+
+
+@router.get(
+    "/dashboard/signal-generator/timeline",
+    response_model=DashboardTimelineResponse,
+)
+async def get_dashboard_timeline(
+    source: Literal["all", "signal_system", "market_scraper"] = "all",
+    from_time: datetime | None = Query(default=None, alias="from"),
+    to_time: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> DashboardTimelineResponse:
+    """Get normalized timeline from signal-system and market-scraper sources."""
+    from_ts = _to_ts(from_time)
+    to_ts = _to_ts(to_time)
+
+    items: list[dict[str, Any]] = []
+    if source in ("all", "signal_system"):
+        signal_store = get_signal_store()
+        items.extend(signal_store.get_signals_in_window(from_ts=from_ts, to_ts=to_ts, limit=limit))
+
+    if source in ("all", "market_scraper"):
+        mongo_client = get_mongo_client()
+        settings = get_settings_ref()
+        if mongo_client is not None:
+            query: dict[str, Any] = {}
+            if from_ts is not None or to_ts is not None:
+                query["t"] = {}
+                if from_ts is not None:
+                    query["t"]["$gte"] = datetime.fromtimestamp(from_ts, tz=UTC)
+                if to_ts is not None:
+                    query["t"]["$lte"] = datetime.fromtimestamp(to_ts, tz=UTC)
+            coll = mongo_client[settings.mongo.market_database]["signals"]
+            docs = list(coll.find(query).sort("t", -1).limit(limit))
+            items.extend([normalize_market_scraper_signal(doc) for doc in docs])
+
+    items.sort(key=lambda row: row.get("timestamp_ts", 0.0), reverse=True)
+    items = items[:limit]
+    points = [DashboardSignalPoint(**item) for item in items]
+    return DashboardTimelineResponse(source=source, count=len(points), items=points)
+
+
+@router.get(
+    "/dashboard/signal-generator/params/current",
+    response_model=DashboardParamsCurrentResponse,
+)
+async def get_dashboard_params_current() -> DashboardParamsCurrentResponse:
+    """Get current RL runtime parameters and metadata."""
+    status = get_rl_param_server().get_status()
+    return DashboardParamsCurrentResponse(
+        params=status.get("params", {}),
+        last_updated=float(status.get("last_updated", 0.0)),
+        checkpoint_path=status.get("checkpoint_path"),
+    )
+
+
+@router.get(
+    "/dashboard/signal-generator/params/history",
+    response_model=DashboardParamsHistoryResponse,
+)
+async def get_dashboard_params_history(
+    from_time: datetime | None = Query(default=None, alias="from"),
+    to_time: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> DashboardParamsHistoryResponse:
+    """Get runtime parameter update history."""
+    rows = get_param_event_store().get_events(
+        from_ts=_to_ts(from_time),
+        to_ts=_to_ts(to_time),
+        limit=limit,
+    )
+    events = [DashboardParamsHistoryEvent(**row) for row in rows]
+    return DashboardParamsHistoryResponse(count=len(events), events=events)
+
+
+@router.get(
+    "/dashboard/signal-generator/decisions",
+    response_model=DashboardDecisionResponse,
+)
+async def get_dashboard_decisions(
+    result: Literal["emitted", "suppressed"] | None = None,
+    from_time: datetime | None = Query(default=None, alias="from"),
+    to_time: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> DashboardDecisionResponse:
+    """Get persisted signal decision traces for explainability panels."""
+    rows = get_trace_store().get_traces(
+        from_ts=_to_ts(from_time),
+        to_ts=_to_ts(to_time),
+        limit=limit,
+        result=result,
+    )
+    items = [DashboardDecisionTrace(**row) for row in rows]
+    return DashboardDecisionResponse(count=len(items), items=items)
 
 
 @router.post("/rl/retrain")
@@ -355,4 +633,3 @@ async def trigger_retrain(episodes: int = 100) -> dict[str, Any]:
         "episodes": episodes,
         "message": "Training started in background. Check /rl/status for updates.",
     }
-

@@ -1,6 +1,6 @@
-# CryptoData
+# cryptoOS
 
-Cryptocurrency market data collection and trading signal generation platform.
+Cryptocurrency market data collection, whale-tracking, and trading signal platform with a new reinforcement-learning loop for live signal tuning.
 
 ## Projects
 
@@ -20,6 +20,7 @@ Real-time trading signal generation from whale position tracking.
 - Whale alert detection with priority levels
 - Multi-dimensional trader weighting engine
 - ML-based market regime detection
+- RL outcome tracking, checkpoint loading, and offline retraining
 - REST API (port 4341)
 
 ### [data-sources](data-sources/)
@@ -35,29 +36,29 @@ API documentation and scripts for cryptocurrency data providers.
 ## Architecture
 
 ```
-┌─────────────────┐     Redis Pub/Sub     ┌─────────────────────┐
-│ market-scraper  │ ────────────────────► │ signal-system       │
-│                 │                       │                     │
-│ - Collectors    │  events:positions     │ - Whale Detector    │
-│ - Processors    │  events:scored        │ - Weighting Engine  │
-│ - On-chain      │  events:candles       │ - Signal Generator  │
-│                 │                       │ - ML Regime Detect  │
-│  :3845 API      │                       │  :4341 API          │
-│  :3845 WS       │                       │                     │
-└─────────────────┘                       └─────────────────────┘
-        │                                         │
-        ▼                                         ▼
-   MongoDB                                   SignalStore
-   (signals collection)                     (in-memory cache)
+┌─────────────────┐     Redis Pub/Sub     ┌──────────────────────────┐
+│ market-scraper  │ ────────────────────► │ smart-money-signal-system│
+│                 │                       │                          │
+│ - Collectors    │ trader_positions      │ - Whale Detector         │
+│ - Processors    │ scored_traders        │ - Signal Generator       │
+│ - On-chain      │ candles               │ - Regime Detection       │
+│                 │ mark_price            │ - Outcome Tracker        │
+│  :3845 API      │                       │ - RL Param Server        │
+│  :3845 WS       │                       │ - Retraining API         │
+└─────────────────┘                       └──────────────────────────┘
+        │                                             │
+        ▼                                             ▼
+   MongoDB                                      MongoDB + checkpoints
+   market_scraper                               signal_system / `checkpoints/`
 ```
 
 ### Data Flow
 
-1. **market-scraper** collects trader positions → publishes to Redis
-2. **signal-system** subscribes to Redis events
-3. **signal-system** generates signals → stores in SignalStore + publishes back to Redis
-4. **market-scraper** receives signals → saves to MongoDB `signals` collection
-5. Both APIs serve data from their respective storage
+1. **market-scraper** collects trader positions, candles, and mark prices → publishes to Redis
+2. **smart-money-signal-system** subscribes to those events
+3. Signal generation produces BUY/SELL/NEUTRAL outputs using trader bias plus RL-tuned thresholds
+4. Mark-price events resolve historical outcomes and persist them for RL training
+5. Offline retraining writes checkpoints that are loaded on startup or pushed via API
 
 ## Quick Start
 
@@ -122,14 +123,14 @@ See [systemd/README.md](systemd/README.md) for detailed instructions.
 
 | Category | Technology |
 |----------|------------|
-| Language | Python 3.10+ |
+| Language | Python 3.11+ |
 | Package Manager | uv |
 | Web Framework | FastAPI |
-| Database | MongoDB (Motor) |
+| Database | MongoDB |
 | Cache/PubSub | Redis |
 | HTTP Client | aiohttp, httpx |
 | Data Processing | pandas, numpy |
-| Machine Learning | scikit-learn |
+| Machine Learning | scikit-learn, Gymnasium, PyTorch |
 | Validation | pydantic |
 | Logging | structlog |
 | Testing | pytest |
@@ -137,15 +138,17 @@ See [systemd/README.md](systemd/README.md) for detailed instructions.
 ## Project Structure
 
 ```
-cryptodata/
+cryptoOS/
 ├── market-scraper/              # Market data collection
 │   ├── src/market_scraper/      # Main source code
 │   ├── scripts/                 # Utility scripts
 │   ├── tests/                   # Test suite
 │   └── docs/                    # Documentation
-├── smart-money-signal-system/   # Signal generation
+├── smart-money-signal-system/   # Signal generation + RL tuning
 │   ├── src/signal_system/       # Main source code
+│   ├── checkpoints/             # RL checkpoints (generated)
 │   └── tests/                   # Test suite
+├── docs/                        # Plans and reports
 ├── data-sources/                # API documentation
 ├── scripts/                     # Deployment scripts
 │   ├── start-all.sh             # Start all servers
@@ -161,8 +164,9 @@ cryptodata/
 | Document | Description |
 |----------|-------------|
 | [market-scraper/README.md](market-scraper/README.md) | Market scraper features and API |
-| [smart-money-signal-system/README.md](smart-money-signal-system/README.md) | Signal system features and API |
+| [smart-money-signal-system/README.md](smart-money-signal-system/README.md) | Signal system, RL flow, and API |
 | [systemd/README.md](systemd/README.md) | Production deployment with systemd |
+| [docs/reports/2026-04-26-recent-changes-report.md](docs/reports/2026-04-26-recent-changes-report.md) | Detailed report on the recent RL changes |
 | [market-scraper/docs/guides/deployment.md](market-scraper/docs/guides/deployment.md) | Detailed deployment guide |
 
 ## License

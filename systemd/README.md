@@ -23,14 +23,21 @@ This directory contains systemd service files for running the CryptoData platfor
 ### 1. Copy service files
 
 ```bash
-sudo cp /home/muham/development/cryptodata/systemd/market-scraper.service /etc/systemd/system/
-sudo cp /home/muham/development/cryptodata/systemd/signal-system.service /etc/systemd/system/
+sudo cp /home/administrator/githubrepo/cryptoOS/systemd/market-scraper.service /etc/systemd/system/
+sudo cp /home/administrator/githubrepo/cryptoOS/systemd/signal-system.service /etc/systemd/system/
 ```
 
 ### 2. Reload systemd daemon
 
 ```bash
 sudo systemctl daemon-reload
+```
+
+### 2.5 Run bootstrap checks
+
+```bash
+cd /home/administrator/githubrepo/cryptoOS
+./scripts/bootstrap-services.sh
 ```
 
 ### 3. Enable services (start on boot)
@@ -55,7 +62,7 @@ sudo systemctl status market-scraper.service
 sudo systemctl status signal-system.service
 
 # Test API endpoints
-curl http://localhost:3845/health
+curl http://localhost:3845/health/status
 curl http://localhost:4341/health
 ```
 
@@ -74,8 +81,8 @@ sudo journalctl -u market-scraper.service -f
 sudo journalctl -u signal-system.service -f
 
 # Or view log files directly
-tail -f /home/muham/development/cryptodata/logs/market-scraper.log
-tail -f /home/muham/development/cryptodata/logs/signal-system.log
+tail -f /home/administrator/githubrepo/cryptoOS/logs/market-scraper.log
+tail -f /home/administrator/githubrepo/cryptoOS/logs/signal-system.log
 ```
 
 ### Restart services
@@ -171,7 +178,7 @@ sudo journalctl -u market-scraper.service -p err -n 20
 ### Permission issues
 ```bash
 # Ensure user has access
-ls -la /home/muham/development/cryptodata/
+ls -la /home/administrator/githubrepo/cryptoOS/
 
 # Check uv path
 which uv

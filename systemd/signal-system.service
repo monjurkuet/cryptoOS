@@ -7,16 +7,19 @@ Requires=market-scraper.service
 
 [Service]
 Type=simple
-User=muham
-Group=muham
-WorkingDirectory=/home/muham/development/cryptodata/smart-money-signal-system
-Environment="PATH=/home/muham/.local/bin:/usr/local/bin:/usr/bin:/bin"
+User=administrator
+Group=administrator
+WorkingDirectory=/home/administrator/githubrepo/cryptoOS/smart-money-signal-system
+Environment="PATH=/home/administrator/githubrepo/cryptoOS/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
-ExecStart=/home/muham/.local/bin/uv run python -m signal_system server
+Environment="LOG_LEVEL=INFO"
+Environment="API_HOST=127.0.0.1"
+Environment="API_PORT=4341"
+ExecStart=/home/administrator/githubrepo/cryptoOS/.venv/bin/python -m signal_system server
 Restart=always
 RestartSec=5
-StandardOutput=append:/home/muham/development/cryptodata/logs/signal-system.log
-StandardError=append:/home/muham/development/cryptodata/logs/signal-system.error.log
+StandardOutput=append:/home/administrator/githubrepo/cryptoOS/logs/signal-system.log
+StandardError=append:/home/administrator/githubrepo/cryptoOS/logs/signal-system.error.log
 
 # Resource limits
 MemoryMax=512M
@@ -26,8 +29,7 @@ CPUQuota=40%
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/muham/development/cryptodata/smart-money-signal-system/logs
-                 /home/muham/development/cryptodata/logs
+ReadWritePaths=/home/administrator/githubrepo/cryptoOS/logs
 
 # Graceful shutdown
 TimeoutStopSec=30

@@ -6,6 +6,8 @@ from signal_system.signal_store import SignalStore
 from signal_system.whale_alerts.detector import WhaleAlertDetector
 from signal_system.rl.outcome_store import OutcomeStore
 from signal_system.rl.parameter_server import RLParameterServer
+from signal_system.dashboard.store import DecisionTraceStore, ParamEventStore
+from signal_system.config import SignalSystemSettings
 
 # Global component references (set by main.py during startup)
 _signal_processor: SignalGenerationProcessor | None = None
@@ -14,6 +16,10 @@ _event_subscriber: EventSubscriber | None = None
 _signal_store: SignalStore | None = None
 _outcome_store: OutcomeStore | None = None
 _rl_param_server: RLParameterServer | None = None
+_trace_store: DecisionTraceStore | None = None
+_param_event_store: ParamEventStore | None = None
+_mongo_client = None
+_settings: SignalSystemSettings | None = None
 
 
 def set_components(
@@ -23,15 +29,23 @@ def set_components(
     signal_store: SignalStore | None = None,
     outcome_store: OutcomeStore | None = None,
     rl_param_server: RLParameterServer | None = None,
+    trace_store: DecisionTraceStore | None = None,
+    param_event_store: ParamEventStore | None = None,
+    mongo_client=None,
+    settings: SignalSystemSettings | None = None,
 ) -> None:
     """Set global component references."""
-    global _signal_processor, _whale_detector, _event_subscriber, _signal_store, _outcome_store, _rl_param_server
+    global _signal_processor, _whale_detector, _event_subscriber, _signal_store, _outcome_store, _rl_param_server, _trace_store, _param_event_store, _mongo_client, _settings
     _signal_processor = signal_processor
     _whale_detector = whale_detector
     _event_subscriber = event_subscriber
     _signal_store = signal_store
     _outcome_store = outcome_store
     _rl_param_server = rl_param_server
+    _trace_store = trace_store
+    _param_event_store = param_event_store
+    _mongo_client = mongo_client
+    _settings = settings
 
 
 def get_signal_processor() -> SignalGenerationProcessor:
@@ -72,3 +86,29 @@ def get_rl_param_server() -> RLParameterServer:
     if _rl_param_server is None:
         raise RuntimeError("RL parameter server not initialized")
     return _rl_param_server
+
+
+def get_trace_store() -> DecisionTraceStore:
+    """Get decision trace store."""
+    if _trace_store is None:
+        raise RuntimeError("Decision trace store not initialized")
+    return _trace_store
+
+
+def get_param_event_store() -> ParamEventStore:
+    """Get parameter event store."""
+    if _param_event_store is None:
+        raise RuntimeError("Param event store not initialized")
+    return _param_event_store
+
+
+def get_mongo_client():
+    """Get shared Mongo client if configured."""
+    return _mongo_client
+
+
+def get_settings_ref() -> SignalSystemSettings:
+    """Get settings snapshot used at startup."""
+    if _settings is None:
+        raise RuntimeError("Settings not initialized")
+    return _settings

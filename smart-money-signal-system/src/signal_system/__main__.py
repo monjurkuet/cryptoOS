@@ -1,12 +1,14 @@
 """Main entry point for Smart Money Signal System."""
 
 import asyncio
+from collections import deque
 import signal as signal_mod
 import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from pymongo import MongoClient
 import structlog
 import uvicorn
 
@@ -22,6 +24,7 @@ from signal_system.services.event_processor import EventProcessor
 from signal_system.rl.outcome_tracker import SignalOutcomeTracker
 from signal_system.rl.outcome_store import OutcomeStore
 from signal_system.rl.parameter_server import RLParameterServer
+from signal_system.dashboard.store import DecisionTraceStore, ParamEventStore
 from signal_system.api.main import app
 
 logger = structlog.get_logger(__name__)
@@ -36,23 +39,42 @@ class SignalSystem:
     def __init__(self) -> None:
         """Initialize the signal system."""
         self.settings = get_settings()
+        self.mongo_client: MongoClient | None = self._create_mongo_client()
 
         # Core components
         self.event_subscriber = EventSubscriber(self.settings.redis)
         self.signal_processor = SignalGenerationProcessor(symbol=self.settings.symbol)
-        self.signal_store = SignalStore()
+        self.signal_store = SignalStore(
+            mongo_client=self.mongo_client,
+            database_name=self.settings.mongo.database,
+            retention_days=self.settings.dashboard_retention_days,
+        )
         self.weighting_engine = TraderWeightingEngine()
         self.whale_detector = WhaleAlertDetector()
 
         # RL components
         self.outcome_tracker = SignalOutcomeTracker()
-        self.outcome_store = OutcomeStore()  # MongoDB persistence (graceful no-op if no DB)
+        self.outcome_store = OutcomeStore(
+            mongo_client=self.mongo_client,
+            database_name=self.settings.mongo.database,
+        )
+        self.trace_store = DecisionTraceStore(
+            mongo_client=self.mongo_client,
+            database_name=self.settings.mongo.database,
+            retention_days=self.settings.dashboard_retention_days,
+        )
+        self.param_event_store = ParamEventStore(
+            mongo_client=self.mongo_client,
+            database_name=self.settings.mongo.database,
+            retention_days=self.settings.dashboard_retention_days,
+        )
         self.rl_param_server = RLParameterServer(checkpoint_dir=_CHECKPOINT_DIR)
 
         # Load latest RL checkpoint on startup
         self.rl_param_server.load_from_checkpoint()
         rl_params = self.rl_param_server.get_params()
         self.signal_processor.set_rl_params(**rl_params)
+        self.param_event_store.store_event(rl_params, source="startup")
         logger.info("rl_params_loaded", **rl_params)
 
         # Shared event processor
@@ -63,13 +85,26 @@ class SignalSystem:
             settings=self.settings,
             outcome_tracker=self.outcome_tracker,
             outcome_store=self.outcome_store,
+            trace_store=self.trace_store,
         )
 
         # ML components (optional, lazy-loaded)
         self._regime_detector: MarketRegimeDetector | None = None
         self._feature_analyzer: FeatureImportanceAnalyzer | None = None
+        self._recent_ohlcv: deque[dict[str, float]] = deque(maxlen=240)
 
         self._running = False
+
+    def _create_mongo_client(self) -> MongoClient | None:
+        """Create shared MongoDB client for persistence-backed stores."""
+        try:
+            client = MongoClient(self.settings.mongo.url, serverSelectionTimeoutMS=5000)
+            client.admin.command("ping")
+            logger.info("signal_system_mongo_connected")
+            return client
+        except Exception as error:
+            logger.warning("signal_system_mongo_connection_failed", error=str(error))
+            return None
 
     async def start(self) -> None:
         """Start the signal system."""
@@ -99,6 +134,8 @@ class SignalSystem:
         logger.info("signal_system_stopping")
         self._running = False
         await self.event_subscriber.disconnect()
+        if self.mongo_client is not None:
+            self.mongo_client.close()
         logger.info("signal_system_stopped")
 
     def _register_handlers(self) -> None:
@@ -111,9 +148,9 @@ class SignalSystem:
         async def handle_scored_traders(event: dict) -> None:
             await self.event_processor.handle_scored_traders(event)
 
-        # Handle candles for regime detection
-        async def handle_candles(event: dict) -> None:
-            await self._process_candles(event)
+        # Handle OHLCV events for regime detection and derived mark prices
+        async def handle_ohlcv(event: dict) -> None:
+            await self._process_ohlcv(event)
 
         # Handle mark price for outcome tracking
         async def handle_mark_price(event: dict) -> None:
@@ -121,25 +158,43 @@ class SignalSystem:
 
         self.event_subscriber.subscribe("trader_positions", handle_trader_positions)
         self.event_subscriber.subscribe("scored_traders", handle_scored_traders)
-        self.event_subscriber.subscribe("candles", handle_candles)
+        self.event_subscriber.subscribe("ohlcv", handle_ohlcv)
         self.event_subscriber.subscribe("mark_price", handle_mark_price)
 
-    async def _process_candles(self, event: dict) -> None:
-        """Process candle data for regime detection.
+    async def _process_ohlcv(self, event: dict) -> None:
+        """Process OHLCV events for regime detection and RL outcome resolution.
 
         Args:
-            event: Candle event from market-scraper
+            event: OHLCV event from market-scraper
         """
         try:
             payload = event.get("payload", {})
-            candles = payload.get("candles", [])
             symbol = payload.get("symbol", self.settings.symbol)
 
-            # Only process candles for our target symbol
+            # Only process OHLCV for our target symbol.
             if symbol != self.settings.symbol:
                 return
 
-            if not candles:
+            close_price = float(payload.get("close", 0) or 0)
+            if close_price > 0:
+                resolved = await self.event_processor.handle_price_update(close_price)
+                if resolved:
+                    logger.debug(
+                        "outcomes_resolved_from_ohlcv_close",
+                        count=len(resolved),
+                    )
+
+            candle = {
+                "close": float(payload.get("close", 0) or 0),
+                "high": float(payload.get("high", 0) or 0),
+                "low": float(payload.get("low", 0) or 0),
+                "volume": float(payload.get("volume", 0) or 0),
+            }
+            if candle["close"] <= 0:
+                return
+            self._recent_ohlcv.append(candle)
+
+            if len(self._recent_ohlcv) < 20:
                 return
 
             # Lazy-load regime detector
@@ -151,7 +206,7 @@ class SignalSystem:
                     return
 
             # Prepare features from recent candles
-            features = self._prepare_regime_features(candles)
+            features = self._prepare_regime_features(list(self._recent_ohlcv))
             if features is not None:
                 regime = self._regime_detector.detect(features)
                 self.weighting_engine.set_regime(regime.name)
@@ -163,7 +218,7 @@ class SignalSystem:
                 )
 
         except Exception as e:
-            logger.error("candles_processing_error", error=str(e), exc_info=True)
+            logger.error("ohlcv_processing_error", error=str(e), exc_info=True)
 
     async def _process_mark_price(self, event: dict) -> None:
         """Process mark price event for outcome tracking.

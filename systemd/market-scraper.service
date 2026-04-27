@@ -9,11 +9,10 @@ Type=simple
 User=administrator
 Group=administrator
 WorkingDirectory=/home/administrator/githubrepo/cryptoOS/market-scraper
-Environment="PATH=/home/administrator/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=/home/administrator/githubrepo/cryptoOS/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONUNBUFFERED=1"
-Environment="UV_CACHE_DIR=/home/administrator/githubrepo/cryptoOS/logs/.uv-cache"
 Environment="LOG_LEVEL=INFO"
-ExecStart=/home/administrator/.local/bin/uv run python -m market_scraper server --host 127.0.0.1 --port 3845
+ExecStart=/home/administrator/githubrepo/cryptoOS/.venv/bin/python -m market_scraper server --host 127.0.0.1 --port 3845
 Restart=always
 RestartSec=5
 StandardOutput=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper.log

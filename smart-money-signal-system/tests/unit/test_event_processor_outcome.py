@@ -82,6 +82,29 @@ class TestEventProcessorOutcomeTrackerIntegration:
         assert len(tracker.get_pending_outcomes()) == 0
 
     @pytest.mark.asyncio
+    async def test_decision_trace_persisted_when_available(self):
+        """EventProcessor persists explainability traces when trace_store is configured."""
+        tracker = SignalOutcomeTracker()
+        trace_store = MagicMock()
+        ep = _make_event_processor(outcome_tracker=tracker, trace_store=trace_store)
+        ep._signal_processor.process_position = AsyncMock(
+            return_value={"action": "BUY", "confidence": 0.8, "net_bias": 0.6}
+        )
+        ep._signal_processor.get_latest_decision_trace = MagicMock(
+            return_value={
+                "timestamp": "2026-04-26T00:00:00+00:00",
+                "timestamp_ts": 1.0,
+                "result": "emitted",
+                "reason_code": "emit",
+            }
+        )
+
+        event = {"payload": {"address": "0xabc"}}
+        await ep.handle_position_event(event)
+
+        trace_store.store_trace.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_handle_price_update(self):
         """handle_price_update feeds price to tracker and returns outcomes."""
         tracker = SignalOutcomeTracker(evaluation_horizons=[1])

@@ -1,6 +1,16 @@
 # Smart Money Signal System
 
-Real-time trading signal generation from whale position tracking on Hyperliquid.
+Real-time trading signal generation from whale position tracking on Hyperliquid, now with reinforcement-learning based parameter tuning.
+
+## What Changed Recently
+
+The latest development cycle adds a full RL feedback loop around signal generation:
+
+- **Outcome tracking** records how BUY/SELL signals perform after 1m, 5m, 15m, and 1h.
+- **Mongo-backed outcome storage** persists those resolved outcomes in the `rl_outcomes` collection.
+- **RL parameter server** loads the newest checkpoint at startup and serves live parameters thread-safely.
+- **Offline retraining pipeline** can rebuild training data from historical signals + candles when outcome storage is empty.
+- **New API endpoints** expose RL status, current params, recent outcomes, and background retraining.
 
 ## Architecture
 
@@ -10,7 +20,8 @@ market-scraper                    signal-system
      │  Redis Pub/Sub                  │
      │  "events:trader_positions"  ──►│
      │  "events:scored_traders"    ──►│
-     │  "events:candles"           ──►│
+     │  "events:ohlcv"           ──►│
+     │  "events:mark_price"        ──►│
      │                                 │
      │                           ┌─────┴─────┐
      │                           │           │
@@ -19,8 +30,9 @@ market-scraper                    signal-system
      │                           │           │
      │                           └─────┬─────┘
      │                                 │
-     │                           Weighting
-     │                            Engine
+     │                      Outcome Tracker
+     │                      Outcome Store
+     │                      RL Param Server
      │                                 │
      └─────────────────────────────────┘
                       │
@@ -29,6 +41,7 @@ market-scraper                    signal-system
               /api/v1/signals/*
               /api/v1/alerts/*
               /api/v1/whales/*
+              /api/v1/rl/*
 ```
 
 ## Components
@@ -46,7 +59,9 @@ Aggregates trader positions to generate trading signals:
 Shared event processing logic for standalone and API modes:
 - Handles trader position events
 - Handles scored traders events
+- Handles mark price events for reward resolution
 - Stores signals and alerts via SignalStore
+- Persists resolved outcomes via OutcomeStore
 
 ### Safe Conversions
 
@@ -81,6 +96,14 @@ Multi-dimensional trader scoring:
   - **Memory Management**: Bounded history (max 1000 entries)
 - **Feature Importance Analyzer**: RandomForest-based feature ranking
 
+### RL Components
+
+- **SignalOutcomeTracker**: Registers emitted signals and resolves outcome PnL at `60`, `300`, `900`, and `3600` seconds.
+- **OutcomeStore**: Writes outcomes to MongoDB collection `rl_outcomes` under the `signal_system` database by default.
+- **RLParameterServer**: Loads the latest checkpoint from `smart-money-signal-system/checkpoints/` and exposes current runtime params.
+- **OfflineTrainer**: Replays stored outcomes through a Gymnasium environment and trains a PPO policy with PyTorch.
+- **Retrain CLI**: Saves new `.pt` checkpoints and can push them straight back into the live API.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -90,17 +113,32 @@ Multi-dimensional trader scoring:
 | `/api/v1/signals/history` | GET | Signal history (up to 100) |
 | `/api/v1/signals/stats` | GET | Signal processor statistics |
 | `/api/v1/signals/store/stats` | GET | Signal store statistics |
+| `/api/v1/signal-system/signals/latest` | GET | Namespaced latest signal alias for shared-domain deployments |
+| `/api/v1/signal-system/signals/history` | GET | Namespaced signal history alias |
+| `/api/v1/signal-system/signals/stats` | GET | Namespaced signal stats alias |
+| `/api/v1/signal-system/signals/store-stats` | GET | Namespaced signal-store stats alias |
 | `/api/v1/alerts/latest` | GET | Latest whale alert |
 | `/api/v1/alerts/history` | GET | Alert history |
 | `/api/v1/alerts/active` | GET | Active (non-expired) alerts |
 | `/api/v1/whales/stats` | GET | Whale detector statistics |
+| `/api/v1/rl/status` | GET | RL parameter status + checkpoint metadata |
+| `/api/v1/rl/params` | GET | Current runtime RL-tuned parameters |
+| `/api/v1/rl/params` | PUT | Update runtime RL parameters |
+| `/api/v1/rl/outcomes` | GET | Recent resolved signal outcomes |
+| `/api/v1/rl/retrain` | POST | Trigger background retraining |
+| `/api/v1/dashboard/signal-generator/overview` | GET | Combined dashboard overview |
+| `/api/v1/dashboard/signal-generator/timeline` | GET | Normalized combined timeline |
+| `/api/v1/dashboard/signal-generator/params/current` | GET | Current runtime params + checkpoint metadata |
+| `/api/v1/dashboard/signal-generator/params/history` | GET | Runtime parameter event history |
+| `/api/v1/dashboard/signal-generator/decisions` | GET | Explainability traces (emitted/suppressed) |
 
 ## Setup
 
 ### Requirements
 
-- Python 3.10+
+- Python 3.11+
 - Redis server
+- MongoDB (recommended for RL outcome persistence)
 - uv package manager
 
 ### Installation
@@ -116,16 +154,23 @@ Create a `.env` file:
 
 ```env
 # Redis
-REDIS_URL=redis://localhost:6379/0
-REDIS_CHANNEL_PREFIX=events
+REDIS__URL=redis://localhost:6379/0
+REDIS__CHANNEL_PREFIX=events
+
+# MongoDB for RL outcomes
+SIGNAL_MONGO__URL=mongodb://localhost:27017
+SIGNAL_MONGO__DATABASE=signal_system
 
 # API
 API_HOST=0.0.0.0
 API_PORT=4341
+API_ROOT_PATH=/signal-system
 
 # Signal
 SYMBOL=BTC
 ```
+
+For local direct access without a reverse-proxy prefix, set `API_ROOT_PATH=` (empty).
 
 ### Running
 
@@ -133,7 +178,7 @@ SYMBOL=BTC
 
 ```bash
 # Start both servers together
-cd /home/muham/development/cryptodata
+cd /home/administrator/githubrepo/cryptoOS
 ./scripts/start-all.sh --background
 
 # Check status
@@ -143,11 +188,17 @@ cd /home/muham/development/cryptodata
 #### Manual Start
 
 ```bash
-# Run API server with event processing
+# Run standalone event processor + Redis subscriber
 uv run python -m signal_system
 
-# Or run in server-only mode
+# Run API server mode
 uv run python -m signal_system server
+
+# Trigger offline retraining
+uv run python -m signal_system.rl.retrain --episodes 100
+
+# Retrain and push fresh params to the running API
+uv run python -m signal_system.rl.retrain --episodes 100 --push
 ```
 
 #### Production (systemd)
@@ -180,6 +231,70 @@ uv run mypy src/
 # Linting
 uv run ruff check src/
 ```
+
+## How To Use The RL Features
+
+### 1. Start the system normally
+
+The RL components are passive until data starts flowing:
+
+- the API or standalone process loads the newest checkpoint from `smart-money-signal-system/checkpoints/`
+- trader position events keep generating signals
+- mark price events resolve signal outcomes over time
+- resolved outcomes are written to MongoDB if configured
+
+### 2. Inspect live RL state
+
+```bash
+curl http://localhost:4341/api/v1/rl/status
+curl http://localhost:4341/api/v1/rl/params
+curl "http://localhost:4341/api/v1/rl/outcomes?limit=20"
+```
+
+Typical uses:
+
+- confirm whether a checkpoint was loaded
+- inspect active `bias_threshold`, `conf_scale`, and `min_confidence`
+- review recent realized PnL and win rate
+
+### 3. Adjust runtime params manually
+
+```bash
+curl -X PUT http://localhost:4341/api/v1/rl/params \
+  -H "Content-Type: application/json" \
+  -d '{"bias_threshold": 0.25, "conf_scale": 1.2, "min_confidence": 0.35}'
+```
+
+Parameter meanings:
+
+- `bias_threshold`: net-bias threshold before the system emits `BUY` or `SELL`
+- `conf_scale`: multiplies confidence before clamping to `1.0`
+- `min_confidence`: suppresses low-conviction signals
+
+### 4. Run retraining
+
+```bash
+# CLI
+uv run python -m signal_system.rl.retrain --episodes 200 --push
+
+# Or via API
+curl -X POST "http://localhost:4341/api/v1/rl/retrain?episodes=200"
+```
+
+Retraining behavior:
+
+- first tries recent documents from `rl_outcomes`
+- if none exist, backfills synthetic outcomes from `market_scraper.signals` plus candle collections
+- saves a timestamped checkpoint into `smart-money-signal-system/checkpoints/`
+- optionally pushes the trained params back into the running API
+
+### 5. Watch for cold-start behavior
+
+On a fresh system:
+
+- `/api/v1/rl/status` may show no checkpoint path yet
+- `/api/v1/rl/outcomes` may be empty
+- the first meaningful retrain may synthesize outcomes from historical market-scraper data
 
 ## Signal Format
 
@@ -226,7 +341,8 @@ The signal-system subscribes to Redis events from the market-scraper:
 |---------|------------|-------------|
 | `events:trader_positions` | Position Update | Individual trader positions |
 | `events:scored_traders` | Scores | Trader performance scores |
-| `events:candles` | OHLCV | Candle data for regime detection |
+| `events:ohlcv` | OHLCV | Candle data for regime detection |
+| `events:mark_price` | Mark Price | Resolves signal outcomes for RL training |
 
 ## License
 

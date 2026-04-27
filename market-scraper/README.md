@@ -138,7 +138,7 @@ cp .env.example .env 2>/dev/null || touch .env
 
 ```bash
 # Start both servers (market-scraper + signal-system)
-cd /home/muham/development/cryptodata
+cd /home/administrator/githubrepo/cryptoOS
 ./scripts/start-all.sh --background
 
 # Check status

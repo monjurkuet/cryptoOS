@@ -1,6 +1,7 @@
 """Signal Generation Processor."""
 
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -60,6 +61,8 @@ class SignalGenerationProcessor:
         self._trader_positions: dict[str, tuple[dict, float]] = {}
         self._trader_scores: dict[str, float] = {}
         self._last_signal: dict | None = None
+        self._last_decision_trace: dict[str, Any] | None = None
+        self._decision_traces: deque[dict[str, Any]] = deque(maxlen=1000)
         self._signals_generated = 0
 
     async def process_position(self, event: dict) -> dict | None:
@@ -194,12 +197,13 @@ class SignalGenerationProcessor:
             action = "NEUTRAL"
 
         # Compute confidence with RL-adjustable scale
-        confidence = min(abs(net_bias) * 2 * self._conf_scale, 1.0)
+        raw_confidence = abs(net_bias) * 2
+        scaled_confidence = min(raw_confidence * self._conf_scale, 1.0)
 
         signal = {
             "symbol": self.symbol,
             "action": action,
-            "confidence": confidence,
+            "confidence": scaled_confidence,
             "long_bias": round(long_bias, 4),
             "short_bias": round(short_bias, 4),
             "net_bias": round(net_bias, 4),
@@ -208,17 +212,93 @@ class SignalGenerationProcessor:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
+        reason_code = "emit"
+        result = "emitted"
+
+        if action == "NEUTRAL":
+            reason_code = "threshold_not_met"
+
         # Only emit if confidence meets minimum threshold
-        if confidence < self._min_confidence:
+        if scaled_confidence < self._min_confidence:
+            reason_code = "min_confidence_not_met"
+            result = "suppressed"
+            self._record_decision_trace(
+                weighted_long_score=long_score,
+                weighted_short_score=short_score,
+                total_weight=total_weight,
+                net_bias=net_bias,
+                raw_confidence=raw_confidence,
+                scaled_confidence=scaled_confidence,
+                action=action,
+                result=result,
+                reason_code=reason_code,
+            )
             return None
 
         # Only emit if different from last signal
         if self._should_emit(signal):
             self._last_signal = signal
             self._signals_generated += 1
+            self._record_decision_trace(
+                weighted_long_score=long_score,
+                weighted_short_score=short_score,
+                total_weight=total_weight,
+                net_bias=net_bias,
+                raw_confidence=raw_confidence,
+                scaled_confidence=scaled_confidence,
+                action=action,
+                result=result,
+                reason_code=reason_code,
+            )
             return signal
 
+        self._record_decision_trace(
+            weighted_long_score=long_score,
+            weighted_short_score=short_score,
+            total_weight=total_weight,
+            net_bias=net_bias,
+            raw_confidence=raw_confidence,
+            scaled_confidence=scaled_confidence,
+            action=action,
+            result="suppressed",
+            reason_code="duplicate_signal",
+        )
         return None
+
+    def _record_decision_trace(
+        self,
+        weighted_long_score: float,
+        weighted_short_score: float,
+        total_weight: float,
+        net_bias: float,
+        raw_confidence: float,
+        scaled_confidence: float,
+        action: str,
+        result: str,
+        reason_code: str,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        trace = {
+            "timestamp": now.isoformat(),
+            "timestamp_ts": now.timestamp(),
+            "symbol": self.symbol,
+            "tracked_traders": len(self._trader_positions),
+            "scored_traders": len(self._trader_scores),
+            "weighted_long_score": round(weighted_long_score, 8),
+            "weighted_short_score": round(weighted_short_score, 8),
+            "total_weight": round(total_weight, 8),
+            "bias_threshold": self._bias_threshold,
+            "conf_scale": self._conf_scale,
+            "min_confidence": self._min_confidence,
+            "net_bias": round(net_bias, 8),
+            "raw_confidence": round(raw_confidence, 8),
+            "scaled_confidence": round(scaled_confidence, 8),
+            "action": action,
+            "result": result,
+            "reason_code": reason_code,
+        }
+        self._last_decision_trace = trace
+        self._decision_traces.append(trace)
 
     def _should_emit(self, signal: dict) -> bool:
         """Check if signal should be emitted.
@@ -248,6 +328,7 @@ class SignalGenerationProcessor:
             "signals_generated": self._signals_generated,
             "tracked_traders": len(self._trader_positions),
             "scored_traders": len(self._trader_scores),
+            "decision_traces": len(self._decision_traces),
             "rl_params": {
                 "bias_threshold": self._bias_threshold,
                 "conf_scale": self._conf_scale,
@@ -292,3 +373,11 @@ class SignalGenerationProcessor:
             Latest signal or None
         """
         return self._last_signal
+
+    def get_latest_decision_trace(self) -> dict[str, Any] | None:
+        """Get latest decision trace for explainability."""
+        return self._last_decision_trace
+
+    def get_decision_traces(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Get recent decision traces."""
+        return list(self._decision_traces)[-limit:]

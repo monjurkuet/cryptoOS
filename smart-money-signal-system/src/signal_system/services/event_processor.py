@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -15,6 +16,7 @@ from signal_system.utils.safe_convert import safe_float
 if TYPE_CHECKING:
     from signal_system.rl.outcome_tracker import SignalOutcomeTracker
     from signal_system.rl.outcome_store import OutcomeStore
+    from signal_system.dashboard.store import DecisionTraceStore
 
 logger = structlog.get_logger(__name__)
 
@@ -35,6 +37,7 @@ class EventProcessor:
         settings: SignalSystemSettings,
         outcome_tracker: SignalOutcomeTracker | None = None,
         outcome_store: OutcomeStore | None = None,
+        trace_store: DecisionTraceStore | None = None,
     ) -> None:
         """Initialize the event processor.
 
@@ -52,6 +55,7 @@ class EventProcessor:
         self._settings = settings
         self._outcome_tracker = outcome_tracker
         self._outcome_store = outcome_store
+        self._trace_store = trace_store
 
     async def handle_position_event(self, event: dict) -> None:
         """Process trader position event.
@@ -100,19 +104,25 @@ class EventProcessor:
                                 )
                                 # Store alert if store available
                                 if self._signal_store:
-                                    self._signal_store.store_alert({
-                                        "priority": alert.priority.value,
-                                        "title": alert.title,
-                                        "description": alert.description,
-                                        "detected_at": alert.detected_at,
-                                    })
+                                    await asyncio.to_thread(
+                                        self._signal_store.store_alert,
+                                        {
+                                            "priority": alert.priority.value,
+                                            "title": alert.title,
+                                            "description": alert.description,
+                                            "detected_at": alert.detected_at,
+                                        },
+                                    )
 
                 # Generate signal
                 signal = await self._signal_processor.process_position(event)
+                latest_trace = self._signal_processor.get_latest_decision_trace()
+                if latest_trace and self._trace_store is not None:
+                    await asyncio.to_thread(self._trace_store.store_trace, latest_trace)
                 if signal:
                     # Store the signal if store available
                     if self._signal_store:
-                        self._signal_store.store_signal(signal)
+                        await asyncio.to_thread(self._signal_store.store_signal, signal)
                     logger.info(
                         "signal_generated",
                         action=signal["action"],
@@ -162,7 +172,7 @@ class EventProcessor:
 
         # Persist resolved outcomes to MongoDB
         if resolved and self._outcome_store is not None:
-            self._outcome_store.store_batch(resolved)
+            await asyncio.to_thread(self._outcome_store.store_batch, resolved)
 
         return resolved
 

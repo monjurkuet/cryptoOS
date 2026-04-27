@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 _PROJECT_ROOT = Path(__file__).parents[3]  # cryptoOS/
@@ -27,6 +27,7 @@ class MongoSettings(BaseSettings):
 
     url: str = Field(default="mongodb://localhost:27017")
     database: str = Field(default="signal_system")
+    market_database: str = Field(default="market_scraper")
 
     model_config = {"env_prefix": "SIGNAL_MONGO_"}
 
@@ -38,13 +39,26 @@ class SignalSystemSettings(BaseSettings):
     mongo: MongoSettings = Field(default_factory=MongoSettings)
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=4341)
+    api_root_path: str = Field(default="/signal-system")
     symbol: str = Field(default="BTC")
+    dashboard_retention_days: int = Field(default=30)
 
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env"),
         "env_nested_delimiter": "__",
         "extra": "ignore",
     }
+
+    @field_validator("api_root_path", mode="before")
+    @classmethod
+    def normalize_api_root_path(cls, value: str | None) -> str:
+        """Normalize API root path for reverse-proxy deployments."""
+        text = (value or "").strip()
+        if text in ("", "/"):
+            return ""
+        if not text.startswith("/"):
+            text = f"/{text}"
+        return text.rstrip("/")
 
 
 def get_settings() -> SignalSystemSettings:

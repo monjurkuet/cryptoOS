@@ -71,6 +71,7 @@ class LifecycleManager:
         # Scheduler and Health Monitor
         self._scheduler: Scheduler | None = None
         self._health_monitor: HealthMonitor | None = None
+        self._last_event_timestamps: dict[str, datetime] = {}
 
     RAW_EVENT_ALLOWLIST = {
         "trading_signal",
@@ -343,6 +344,8 @@ class LifecycleManager:
             """Handle events by storing them in the repository."""
             if self._repository:
                 try:
+                    self._record_event_freshness(event.event_type, event.timestamp)
+
                     if self._should_store_raw_event(event):
                         await self._retry_repository_op(
                             self._repository.store,
@@ -373,6 +376,55 @@ class LifecycleManager:
 
         # Subscribe to all events
         await self._event_bus.subscribe("*", storage_handler)
+
+    def _record_event_freshness(self, event_type: Any, timestamp: datetime) -> None:
+        """Track latest timestamps for key event types used by health checks."""
+        normalized = str(event_type)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        self._last_event_timestamps[normalized] = timestamp
+
+    def _build_freshness_component(self) -> dict[str, Any]:
+        """Build a high-level freshness component for health output."""
+        now = datetime.now(UTC)
+        thresholds_seconds = {
+            "trading_signal": 1800,   # 30m
+            "trader_positions": 600,  # 10m
+            "ohlcv": 600,             # 10m
+            "leaderboard": 7200,      # 2h
+        }
+        checks: dict[str, Any] = {}
+        stale_count = 0
+        missing_count = 0
+
+        for event_type, max_age in thresholds_seconds.items():
+            ts = self._last_event_timestamps.get(event_type)
+            if ts is None:
+                checks[event_type] = {"status": "missing", "last_seen": None, "age_seconds": None}
+                missing_count += 1
+                continue
+
+            age_seconds = (now - ts).total_seconds()
+            status = "fresh" if age_seconds <= max_age else "stale"
+            if status == "stale":
+                stale_count += 1
+            checks[event_type] = {
+                "status": status,
+                "last_seen": ts.isoformat(),
+                "age_seconds": round(age_seconds, 2),
+            }
+
+        if stale_count > 0:
+            overall = "degraded"
+        elif missing_count > 0:
+            overall = "unknown"
+        else:
+            overall = "healthy"
+
+        return {
+            "status": overall,
+            "checks": checks,
+        }
 
     def _should_store_raw_event(self, event: StandardEvent) -> bool:
         """Decide whether an event should be persisted to the raw audit log."""
@@ -1035,6 +1087,8 @@ class LifecycleManager:
 
         if self._trader_ws_collector:
             result["trader_ws"].update(self._trader_ws_collector.get_stats())
+
+        result["data_freshness"] = self._build_freshness_component()
 
         return result
 
