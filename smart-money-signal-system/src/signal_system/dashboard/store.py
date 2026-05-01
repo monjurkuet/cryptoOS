@@ -80,8 +80,6 @@ class DecisionTraceStore:
             self._collection = db[TRACE_COLLECTION]
             try:
                 self._collection.create_index("timestamp_ts")
-                self._collection.create_index("result")
-                self._collection.create_index("reason_code")
                 self._collection.create_index("expire_at", expireAfterSeconds=0)
             except Exception as error:
                 logger.warning("decision_trace_index_creation_failed", error=str(error))

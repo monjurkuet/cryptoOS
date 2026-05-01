@@ -143,6 +143,7 @@ class MongoRepository(DataRepository):
             (CollectionName.SIGNALS, "t", retention.signals),
             (CollectionName.TRADER_SIGNALS, "t", retention.trader_signals),
             (CollectionName.MARK_PRICES, "t", retention.mark_prices),
+            ("dead_letters", "timestamp", 7),
         ]
 
         for collection_name, field, days in ttl_collections:
@@ -206,11 +207,7 @@ class MongoRepository(DataRepository):
             # Signals - symbol and time
             await self._db[CollectionName.SIGNALS].create_index([("symbol", 1), ("t", -1)])
 
-            # Dead letter events for failed persistence/publish handling.
-            await self._db["dead_letters"].create_index([("timestamp", -1)])
-            await self._db["dead_letters"].create_index([("event_type", 1), ("source", 1)])
-
-            # Trader signals - compound indexes
+        # Trader signals - compound indexes
             await self._db[CollectionName.TRADER_SIGNALS].create_index([("eth", 1), ("t", -1)])
             await self._db[CollectionName.TRADER_SIGNALS].create_index([("symbol", 1), ("t", -1)])
 
@@ -250,8 +247,6 @@ class MongoRepository(DataRepository):
             "coin": str(data.get("coin", "")),
             "sz": float(data.get("sz", 0) or 0),
             "ep": float(data.get("ep", 0) or 0),
-            "mp": float(data.get("mp", 0) or 0),
-            "upnl": float(data.get("upnl", 0) or 0),
             "lev": float(data.get("lev", 0) or 0),
             "liq": data.get("liq"),
         }
@@ -310,7 +305,9 @@ class MongoRepository(DataRepository):
             raise StorageError("Not connected to MongoDB")
 
         try:
-            await self._db.events.insert_one(event.model_dump())
+            doc = event.model_dump()
+            doc.pop("payload", None)
+            await self._db.events.insert_one(doc)
             return True
         except DuplicateKeyError:
             logger.debug(
@@ -343,7 +340,7 @@ class MongoRepository(DataRepository):
             return 0
 
         try:
-            documents = [e.model_dump() for e in events]
+            documents = [{k: v for k, v in e.model_dump().items() if k != "payload"} for e in events]
             result = await self._db.events.insert_many(
                 documents,
                 ordered=False,  # Continue on error

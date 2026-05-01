@@ -2380,7 +2380,6 @@ source = { editable = "smart-money-signal-system" }
 dependencies = [
     { name = "crypto-shared" },
     { name = "fastapi" },
-    { name = "gymnasium" },
     { name = "httpx" },
     { name = "joblib" },
     { name = "numpy" },
@@ -2392,8 +2391,13 @@ dependencies = [
     { name = "redis" },
     { name = "scikit-learn" },
     { name = "structlog" },
-    { name = "torch" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+training = [
+    { name = "gymnasium" },
+    { name = "torch" },
 ]
 
 [package.dev-dependencies]
@@ -2409,7 +2413,7 @@ dev = [
 requires-dist = [
     { name = "crypto-shared", editable = "shared" },
     { name = "fastapi", specifier = ">=0.133.0" },
-    { name = "gymnasium", specifier = ">=0.29.0" },
+    { name = "gymnasium", marker = "extra == 'training'", specifier = ">=0.29.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "joblib", specifier = ">=1.5.3" },
     { name = "numpy", specifier = ">=2.2.6" },
@@ -2421,9 +2425,10 @@ requires-dist = [
     { name = "redis", specifier = ">=7.2.0" },
     { name = "scikit-learn", specifier = ">=1.7.2" },
     { name = "structlog", specifier = ">=25.5.0" },
-    { name = "torch", specifier = ">=2.11.0" },
+    { name = "torch", marker = "extra == 'training'", specifier = ">=2.11.0" },
     { name = "uvicorn", specifier = ">=0.41.0" },
 ]
+provides-extras = ["training"]
 
 [package.metadata.requires-dev]
 dev = [

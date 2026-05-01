@@ -554,10 +554,19 @@ class DataRepository(ABC):
                     ),
                 }
 
+        # Only store the position for the configured symbol to reduce doc size.
+        # Other coin positions are not used by the signal system.
+        filtered_positions = [
+            p for p in (positions or [])
+            if isinstance(p, dict) and str(
+                (p.get("position", p) if isinstance(p.get("position", p), dict) else p).get("coin", "")
+            ).upper() == str(symbol or "").upper()
+        ]
+
         payload = {
             "eth": cls._normalize_address(address),
             "symbol": str(symbol or "").upper(),
-            "positions": positions,
+            "positions": filtered_positions,
             "open_orders": open_orders,
             "margin_summary": dict(margin_summary or {}),
             "last_event_time": event_timestamp,

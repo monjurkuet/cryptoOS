@@ -81,9 +81,18 @@ class OutcomeStore:
             try:
                 self._collection.create_index("signal_id")
                 self._collection.create_index("resolved_at")
-                logger.info("outcome_store_mongo_indexes_created")
             except Exception as e:
                 logger.warning("outcome_store_index_creation_failed", error=str(e))
+
+            # TTL index - auto-expire outcomes after 90 days
+            try:
+                self._collection.create_index(
+                    [("resolved_at", 1)],
+                    name="ttl_retention",
+                    expireAfterSeconds=90 * 86400,
+                )
+            except Exception as e:
+                logger.warning("outcome_store_ttl_index_failed", error=str(e))
         else:
             self._collection = None
             logger.info("outcome_store_running_in_memory")

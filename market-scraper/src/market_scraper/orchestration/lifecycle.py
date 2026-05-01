@@ -574,11 +574,15 @@ class LifecycleManager:
             )
 
             # Keep normalized position history in trader_positions time-series when supported.
+            # Only store positions for the configured symbol to reduce storage volume.
             if hasattr(repository, "store_trader_position"):
                 for pos in positions:
                     p = pos.get("position", pos) if isinstance(pos, dict) else {}
                     coin = p.get("coin")
                     if not coin:
+                        continue
+                    # Skip non-target coin positions (signal system only uses BTC)
+                    if str(coin).upper() != str(symbol).upper():
                         continue
 
                     position_model = TraderPosition(
@@ -605,6 +609,7 @@ class LifecycleManager:
                         position_model,
                         operation_name="store_trader_position",
                     )
+
 
         except Exception as e:
             logger.error("trader_positions_store_error", error=str(e), event_id=event.event_id)

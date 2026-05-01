@@ -232,6 +232,7 @@ class SignalGenerationProcessor:
                 action=action,
                 result=result,
                 reason_code=reason_code,
+                store=False,
             )
             return None
 
@@ -262,6 +263,7 @@ class SignalGenerationProcessor:
             action=action,
             result="suppressed",
             reason_code="duplicate_signal",
+            store=False,
         )
         return None
 
@@ -276,20 +278,17 @@ class SignalGenerationProcessor:
         action: str,
         result: str,
         reason_code: str,
+        store: bool = True,
     ) -> None:
         now = datetime.now(timezone.utc)
         trace = {
-            "timestamp": now.isoformat(),
-            "timestamp_ts": now.timestamp(),
+                "timestamp_ts": now.timestamp(),
             "symbol": self.symbol,
             "tracked_traders": len(self._trader_positions),
             "scored_traders": len(self._trader_scores),
             "weighted_long_score": round(weighted_long_score, 8),
             "weighted_short_score": round(weighted_short_score, 8),
             "total_weight": round(total_weight, 8),
-            "bias_threshold": self._bias_threshold,
-            "conf_scale": self._conf_scale,
-            "min_confidence": self._min_confidence,
             "net_bias": round(net_bias, 8),
             "raw_confidence": round(raw_confidence, 8),
             "scaled_confidence": round(scaled_confidence, 8),
@@ -297,8 +296,9 @@ class SignalGenerationProcessor:
             "result": result,
             "reason_code": reason_code,
         }
-        self._last_decision_trace = trace
-        self._decision_traces.append(trace)
+        if store:
+            self._last_decision_trace = trace
+            self._decision_traces.append(trace)
 
     def _should_emit(self, signal: dict) -> bool:
         """Check if signal should be emitted.
@@ -330,9 +330,6 @@ class SignalGenerationProcessor:
             "scored_traders": len(self._trader_scores),
             "decision_traces": len(self._decision_traces),
             "rl_params": {
-                "bias_threshold": self._bias_threshold,
-                "conf_scale": self._conf_scale,
-                "min_confidence": self._min_confidence,
             },
         }
 
