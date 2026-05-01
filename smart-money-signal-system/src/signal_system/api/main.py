@@ -90,8 +90,9 @@ async def lifespan(app: FastAPI):
     )
     _rl_param_server = RLParameterServer(checkpoint_dir=_CHECKPOINT_DIR)
 
-    # Load latest checkpoint and apply to signal processor
-    _rl_param_server.load_from_checkpoint()
+    # Keep production API lightweight on constrained hosts unless explicitly enabled.
+    if settings.load_rl_checkpoint_on_startup:
+        _rl_param_server.load_from_checkpoint()
     rl_params = _rl_param_server.get_params()
     _signal_processor.set_rl_params(**rl_params)
     _param_event_store.store_event(rl_params, source="startup")

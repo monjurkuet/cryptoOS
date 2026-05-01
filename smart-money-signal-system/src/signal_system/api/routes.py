@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
+import structlog
 
 from signal_system.api.dependencies import (
     get_signal_processor,
@@ -21,6 +22,7 @@ from signal_system.api.dependencies import (
 from signal_system.dashboard.store import normalize_market_scraper_signal
 
 router = APIRouter()
+logger = structlog.get_logger(__name__)
 
 
 class SignalResponse(BaseModel):
@@ -462,13 +464,17 @@ async def get_dashboard_overview(window: str = "24h") -> DashboardOverviewRespon
     mongo_client = get_mongo_client()
     settings = get_settings_ref()
     if mongo_client is not None:
-        market_coll = mongo_client[settings.mongo.market_database]["signals"]
-        market_docs = list(
-            market_coll.find({"t": {"$gte": datetime.fromtimestamp(cutoff_ts, tz=UTC)}})
-            .sort("t", -1)
-            .limit(5000)
-        )
-        market_rows = [normalize_market_scraper_signal(doc) for doc in market_docs]
+        try:
+            market_coll = mongo_client[settings.mongo.market_database]["signals"]
+            market_docs = list(
+                market_coll.find({"t": {"$gte": datetime.fromtimestamp(cutoff_ts, tz=UTC)}})
+                .sort("t", -1)
+                .limit(5000)
+            )
+            market_rows = [normalize_market_scraper_signal(doc) for doc in market_docs]
+        except Exception as error:
+            logger.warning("dashboard_market_query_failed", error=str(error))
+            market_rows = []
 
     market_actions: dict[str, int] = {}
     for row in market_rows:
@@ -538,9 +544,12 @@ async def get_dashboard_timeline(
                     query["t"]["$gte"] = datetime.fromtimestamp(from_ts, tz=UTC)
                 if to_ts is not None:
                     query["t"]["$lte"] = datetime.fromtimestamp(to_ts, tz=UTC)
-            coll = mongo_client[settings.mongo.market_database]["signals"]
-            docs = list(coll.find(query).sort("t", -1).limit(limit))
-            items.extend([normalize_market_scraper_signal(doc) for doc in docs])
+            try:
+                coll = mongo_client[settings.mongo.market_database]["signals"]
+                docs = list(coll.find(query).sort("t", -1).limit(limit))
+                items.extend([normalize_market_scraper_signal(doc) for doc in docs])
+            except Exception as error:
+                logger.warning("dashboard_market_query_failed", error=str(error))
 
     items.sort(key=lambda row: row.get("timestamp_ts", 0.0), reverse=True)
     items = items[:limit]
@@ -612,6 +621,13 @@ async def trigger_retrain(episodes: int = 100) -> dict[str, Any]:
     Returns:
         Status indicating retraining was initiated
     """
+    settings = get_settings_ref()
+    if not settings.enable_rl_retrain_api:
+        return {
+            "status": "disabled",
+            "message": "RL retraining API is disabled in this runtime profile",
+        }
+
     import subprocess
     import sys
     from pathlib import Path

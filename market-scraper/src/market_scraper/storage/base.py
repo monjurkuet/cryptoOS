@@ -689,6 +689,7 @@ class DataRepository(ABC):
         tag: str | None = None,
         active_only: bool = True,
         limit: int = 100,
+        include_performances: bool = False,
     ) -> list[dict[str, Any]]:
         """Get tracked traders.
 
@@ -697,6 +698,7 @@ class DataRepository(ABC):
             tag: Filter by tag.
             active_only: Only return active traders.
             limit: Maximum results.
+            include_performances: Include raw performance snapshots when needed for ROI/volume filters.
 
         Returns:
             List of trader dictionaries.
@@ -712,6 +714,7 @@ class DataRepository(ABC):
         min_score: float = 0,
         tag: str | None = None,
         active_only: bool = True,
+        include_exact_count: bool = True,
     ) -> int:
         """Count tracked traders.
 
@@ -719,6 +722,7 @@ class DataRepository(ABC):
             min_score: Minimum score filter.
             tag: Filter by tag.
             active_only: Only count active traders.
+            include_exact_count: When False, implementations may return a fast approximation.
 
         Returns:
             Number of matching traders.
@@ -763,12 +767,14 @@ class DataRepository(ABC):
         self,
         addresses: list[str],
         symbol: str | None = None,
+        include_legacy_fallback: bool = True,
     ) -> dict[str, dict[str, Any]]:
         """Get current state snapshots for multiple traders.
 
         Args:
             addresses: Trader Ethereum addresses.
             symbol: Optional symbol filter.
+            include_legacy_fallback: Query legacy `ethAddress` field for missing rows.
 
         Returns:
             Mapping of normalized address -> current-state dictionary.

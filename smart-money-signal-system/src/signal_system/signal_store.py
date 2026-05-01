@@ -167,12 +167,55 @@ class SignalStore:
             stored_at=str(doc.get("stored_at", "")),
         )
 
+    def _in_memory_signals(self, limit: int) -> list[StoredSignal]:
+        if limit <= 0:
+            return []
+        return list(self._signals)[-limit:][::-1]
+
+    def _signal_in_window(
+        self,
+        signal: StoredSignal,
+        from_ts: float | None,
+        to_ts: float | None,
+    ) -> bool:
+        try:
+            ts = datetime.fromisoformat(signal.stored_at.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return False
+        if from_ts is not None and ts < from_ts:
+            return False
+        if to_ts is not None and ts > to_ts:
+            return False
+        return True
+
+    def _signal_to_dashboard_row(self, signal: StoredSignal) -> dict[str, Any]:
+        ts = 0.0
+        try:
+            ts = datetime.fromisoformat(signal.stored_at.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+        return {
+            "source": "signal_system",
+            "timestamp": signal.timestamp,
+            "timestamp_ts": ts,
+            "action": signal.action,
+            "confidence": float(signal.confidence),
+            "long_bias": float(signal.long_bias),
+            "short_bias": float(signal.short_bias),
+            "net_bias": float(signal.net_bias),
+            "traders_long": int(signal.traders_long),
+            "traders_short": int(signal.traders_short),
+        }
+
     def get_latest_signal(self) -> StoredSignal | None:
         """Get the most recent signal."""
         if self._signals_collection is not None:
-            doc = self._signals_collection.find_one(sort=[("stored_at_ts", -1)])
-            if doc:
-                return self._signal_from_doc(doc)
+            try:
+                doc = self._signals_collection.find_one(sort=[("stored_at_ts", -1)])
+                if doc:
+                    return self._signal_from_doc(doc)
+            except Exception as error:
+                logger.warning("signal_store_mongo_read_failed", error=str(error))
         if self._signals:
             return self._signals[-1]
         return None
@@ -180,9 +223,12 @@ class SignalStore:
     def get_signals(self, limit: int = 100) -> list[StoredSignal]:
         """Get recent signals."""
         if self._signals_collection is not None:
-            docs = list(self._signals_collection.find({}).sort("stored_at_ts", -1).limit(limit))
-            return [self._signal_from_doc(doc) for doc in docs]
-        return list(self._signals)[-limit:]
+            try:
+                docs = list(self._signals_collection.find({}).sort("stored_at_ts", -1).limit(limit))
+                return [self._signal_from_doc(doc) for doc in docs]
+            except Exception as error:
+                logger.warning("signal_store_mongo_read_failed", error=str(error))
+        return self._in_memory_signals(limit)
 
     def get_signals_in_window(
         self,
@@ -191,36 +237,44 @@ class SignalStore:
         limit: int = 500,
     ) -> list[dict[str, Any]]:
         """Get normalized signal rows from Mongo for dashboard timeline."""
-        if self._signals_collection is None:
-            return []
-        query: dict[str, Any] = {}
-        if from_ts is not None or to_ts is not None:
-            query["stored_at_ts"] = {}
-            if from_ts is not None:
-                query["stored_at_ts"]["$gte"] = from_ts
-            if to_ts is not None:
-                query["stored_at_ts"]["$lte"] = to_ts
+        if self._signals_collection is not None:
+            query: dict[str, Any] = {}
+            if from_ts is not None or to_ts is not None:
+                query["stored_at_ts"] = {}
+                if from_ts is not None:
+                    query["stored_at_ts"]["$gte"] = from_ts
+                if to_ts is not None:
+                    query["stored_at_ts"]["$lte"] = to_ts
+            try:
+                docs = list(self._signals_collection.find(query).sort("stored_at_ts", -1).limit(limit))
+                rows: list[dict[str, Any]] = []
+                for doc in docs:
+                    doc.pop("_id", None)
+                    doc.pop("expire_at", None)
+                    rows.append(
+                        {
+                            "source": "signal_system",
+                            "timestamp": doc.get("timestamp", ""),
+                            "timestamp_ts": doc.get("stored_at_ts", 0.0),
+                            "action": doc.get("action", "NEUTRAL"),
+                            "confidence": float(doc.get("confidence", 0.0)),
+                            "long_bias": float(doc.get("long_bias", 0.0)),
+                            "short_bias": float(doc.get("short_bias", 0.0)),
+                            "net_bias": float(doc.get("net_bias", 0.0)),
+                            "traders_long": int(doc.get("traders_long", 0)),
+                            "traders_short": int(doc.get("traders_short", 0)),
+                        }
+                    )
+                return rows
+            except Exception as error:
+                logger.warning("signal_store_mongo_read_failed", error=str(error))
 
-        docs = list(self._signals_collection.find(query).sort("stored_at_ts", -1).limit(limit))
-        rows: list[dict[str, Any]] = []
-        for doc in docs:
-            doc.pop("_id", None)
-            doc.pop("expire_at", None)
-            rows.append(
-                {
-                    "source": "signal_system",
-                    "timestamp": doc.get("timestamp", ""),
-                    "timestamp_ts": doc.get("stored_at_ts", 0.0),
-                    "action": doc.get("action", "NEUTRAL"),
-                    "confidence": float(doc.get("confidence", 0.0)),
-                    "long_bias": float(doc.get("long_bias", 0.0)),
-                    "short_bias": float(doc.get("short_bias", 0.0)),
-                    "net_bias": float(doc.get("net_bias", 0.0)),
-                    "traders_long": int(doc.get("traders_long", 0)),
-                    "traders_short": int(doc.get("traders_short", 0)),
-                }
-            )
-        return rows
+        memory_rows = [
+            self._signal_to_dashboard_row(signal)
+            for signal in self._in_memory_signals(self.max_signals)
+            if self._signal_in_window(signal, from_ts=from_ts, to_ts=to_ts)
+        ]
+        return memory_rows[:max(0, limit)]
 
     def get_alerts(self, limit: int = 50) -> list[StoredAlert]:
         """Get recent alerts."""

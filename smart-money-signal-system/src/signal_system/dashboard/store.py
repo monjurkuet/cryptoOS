@@ -115,12 +115,16 @@ class DecisionTraceStore:
                 query["timestamp_ts"]["$lte"] = to_ts
         if result:
             query["result"] = result
-        cursor = self._collection.find(query).sort("timestamp_ts", -1).limit(limit)
-        rows = list(cursor)
-        for row in rows:
-            row.pop("_id", None)
-            row.pop("expire_at", None)
-        return rows
+        try:
+            cursor = self._collection.find(query).sort("timestamp_ts", -1).limit(limit)
+            rows = list(cursor)
+            for row in rows:
+                row.pop("_id", None)
+                row.pop("expire_at", None)
+            return rows
+        except Exception as error:
+            logger.warning("decision_trace_query_failed", error=str(error))
+            return []
 
     def get_stats(self) -> dict[str, Any]:
         if self._collection is None:
@@ -188,12 +192,16 @@ class ParamEventStore:
                 query["timestamp_ts"]["$gte"] = from_ts
             if to_ts is not None:
                 query["timestamp_ts"]["$lte"] = to_ts
-        cursor = self._collection.find(query).sort("timestamp_ts", -1).limit(limit)
-        rows = list(cursor)
-        for row in rows:
-            row.pop("_id", None)
-            row.pop("expire_at", None)
-        return rows
+        try:
+            cursor = self._collection.find(query).sort("timestamp_ts", -1).limit(limit)
+            rows = list(cursor)
+            for row in rows:
+                row.pop("_id", None)
+                row.pop("expire_at", None)
+            return rows
+        except Exception as error:
+            logger.warning("param_event_query_failed", error=str(error))
+            return []
 
     def get_stats(self) -> dict[str, Any]:
         if self._collection is None:

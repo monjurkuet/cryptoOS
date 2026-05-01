@@ -16,11 +16,11 @@ from typing import Any
 
 import structlog
 
-from signal_system.rl.environment import (
-    DEFAULT_BIAS_THRESHOLD,
-    DEFAULT_CONF_SCALE,
-    DEFAULT_MIN_CONFIDENCE,
-)
+# Runtime defaults are intentionally duplicated here so minimal API/runtime
+# does not import gymnasium-heavy RL environment modules.
+DEFAULT_BIAS_THRESHOLD = 0.2
+DEFAULT_CONF_SCALE = 1.0
+DEFAULT_MIN_CONFIDENCE = 0.3
 
 logger = structlog.get_logger(__name__)
 
@@ -101,8 +101,6 @@ class RLParameterServer:
         Returns:
             True if loaded successfully, False otherwise
         """
-        import torch
-
         if path is None:
             path = self._find_latest_checkpoint()
             if path is None:
@@ -110,6 +108,8 @@ class RLParameterServer:
                 return False
 
         try:
+            import torch
+
             checkpoint = torch.load(path, map_location="cpu", weights_only=True)
             params = checkpoint.get("params", {})
             if params:
@@ -120,6 +120,9 @@ class RLParameterServer:
             else:
                 logger.warning("param_server_checkpoint_no_params", path=path)
                 return False
+        except ImportError as e:
+            logger.warning("param_server_torch_unavailable", path=path, error=str(e))
+            return False
         except Exception as e:
             logger.warning("param_server_load_failed", path=path, error=str(e))
             return False

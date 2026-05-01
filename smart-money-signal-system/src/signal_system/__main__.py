@@ -70,8 +70,9 @@ class SignalSystem:
         )
         self.rl_param_server = RLParameterServer(checkpoint_dir=_CHECKPOINT_DIR)
 
-        # Load latest RL checkpoint on startup
-        self.rl_param_server.load_from_checkpoint()
+        # Keep runtime lightweight unless checkpoint loading is explicitly enabled.
+        if self.settings.load_rl_checkpoint_on_startup:
+            self.rl_param_server.load_from_checkpoint()
         rl_params = self.rl_param_server.get_params()
         self.signal_processor.set_rl_params(**rl_params)
         self.param_event_store.store_event(rl_params, source="startup")

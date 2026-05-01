@@ -1,8 +1,11 @@
 """Unit tests for dashboard normalization and stores."""
 
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 from signal_system.dashboard.store import (
+    DecisionTraceStore,
+    ParamEventStore,
     normalize_market_scraper_signal,
     normalize_signal_system_signal,
 )
@@ -43,3 +46,21 @@ def test_normalize_market_scraper_signal():
     assert normalized["net_bias"] == -0.6
     assert normalized["traders_long"] == 3
     assert normalized["traders_short"] == 9
+
+
+def test_decision_trace_store_query_error_returns_empty():
+    store = DecisionTraceStore()
+    failing_collection = MagicMock()
+    failing_collection.find.side_effect = RuntimeError("mongo unavailable")
+    store._collection = failing_collection
+
+    assert store.get_traces(limit=10) == []
+
+
+def test_param_event_store_query_error_returns_empty():
+    store = ParamEventStore()
+    failing_collection = MagicMock()
+    failing_collection.find.side_effect = RuntimeError("mongo unavailable")
+    store._collection = failing_collection
+
+    assert store.get_events(limit=10) == []

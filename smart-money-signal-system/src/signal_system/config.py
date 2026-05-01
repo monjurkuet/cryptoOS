@@ -42,6 +42,9 @@ class SignalSystemSettings(BaseSettings):
     api_root_path: str = Field(default="/signal-system")
     symbol: str = Field(default="BTC")
     dashboard_retention_days: int = Field(default=30)
+    runtime_profile: str = Field(default="minimal")
+    enable_rl_retrain_api: bool = Field(default=False)
+    load_rl_checkpoint_on_startup: bool = Field(default=False)
 
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env"),
@@ -59,6 +62,15 @@ class SignalSystemSettings(BaseSettings):
         if not text.startswith("/"):
             text = f"/{text}"
         return text.rstrip("/")
+
+    @field_validator("runtime_profile", mode="before")
+    @classmethod
+    def normalize_runtime_profile(cls, value: str | None) -> str:
+        """Normalize runtime profile and default to minimal for constrained hosts."""
+        profile = (value or "minimal").strip().lower()
+        if profile not in {"minimal", "full"}:
+            return "minimal"
+        return profile
 
 
 def get_settings() -> SignalSystemSettings:

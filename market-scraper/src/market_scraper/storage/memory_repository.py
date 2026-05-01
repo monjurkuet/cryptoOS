@@ -441,6 +441,7 @@ class MemoryRepository(DataRepository):
         tag: str | None = None,
         active_only: bool = True,
         limit: int = 100,
+        include_performances: bool = False,
     ) -> list[dict[str, Any]]:
         """Get tracked traders from in-memory state.
 
@@ -471,6 +472,7 @@ class MemoryRepository(DataRepository):
         min_score: float = 0,
         tag: str | None = None,
         active_only: bool = True,
+        include_exact_count: bool = True,
     ) -> int:
         """Count tracked traders from in-memory state.
 
@@ -524,6 +526,7 @@ class MemoryRepository(DataRepository):
         self,
         addresses: list[str],
         symbol: str | None = None,
+        include_legacy_fallback: bool = True,
     ) -> dict[str, dict[str, Any]]:
         """Get current state snapshots for multiple traders from in-memory state."""
         normalized_addresses = {str(address).lower() for address in addresses if address}

@@ -189,6 +189,10 @@ class MongoRepository(DataRepository):
                 [("eth", 1), ("symbol", 1)],
                 unique=True,
             )
+            # Legacy compatibility during migration: keep ethAddress lookups indexed
+            await self._db[CollectionName.TRADER_CURRENT_STATE].create_index(
+                [("ethAddress", 1), ("symbol", 1)]
+            )
             await self._db[CollectionName.TRADER_CURRENT_STATE].create_index([("updated_at", -1)])
 
             await self._db[CollectionName.TRADER_CLOSED_TRADES].create_index(
@@ -1102,6 +1106,7 @@ class MongoRepository(DataRepository):
         tag: str | None = None,
         active_only: bool = True,
         limit: int = 100,
+        include_performances: bool = False,
     ) -> list[dict[str, Any]]:
         """Get tracked traders with filtering.
 
@@ -1123,6 +1128,20 @@ class MongoRepository(DataRepository):
         try:
             collection = self._db[CollectionName.TRACKED_TRADERS]
             query: dict[str, Any] = {}
+            projection = {
+                "_id": 0,
+                "eth": 1,
+                "address": 1,
+                "name": 1,
+                "displayName": 1,
+                "score": 1,
+                "tags": 1,
+                "acct_val": 1,
+                "accountValue": 1,
+                "active": 1,
+            }
+            if include_performances:
+                projection["performances"] = 1
 
             if active_only:
                 query["active"] = True
@@ -1131,7 +1150,7 @@ class MongoRepository(DataRepository):
             if tag:
                 query["tags"] = tag
 
-            cursor = collection.find(query).sort("score", -1).limit(limit)
+            cursor = collection.find(query, projection).sort("score", -1).limit(limit)
             docs = await cursor.to_list(length=limit)
 
             traders = []
@@ -1147,6 +1166,7 @@ class MongoRepository(DataRepository):
         min_score: float = 0,
         tag: str | None = None,
         active_only: bool = True,
+        include_exact_count: bool = True,
     ) -> int:
         """Count tracked traders.
 
@@ -1165,6 +1185,9 @@ class MongoRepository(DataRepository):
             raise StorageError("Not connected to MongoDB")
 
         try:
+            if not include_exact_count:
+                return 0
+
             collection = self._db[CollectionName.TRACKED_TRADERS]
             query: dict[str, Any] = {}
 
@@ -1225,12 +1248,20 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRADER_CURRENT_STATE]
-            doc = await collection.find_one({"eth": address})
+            projection = {
+                "_id": 0,
+                "eth": 1,
+                "ethAddress": 1,
+                "symbol": 1,
+                "positions": 1,
+                "open_orders": 1,
+                "updated_at": 1,
+                "last_event_time": 1,
+            }
+            doc = await collection.find_one({"eth": address}, projection)
             if not doc:
                 # Backward-compatible fallback for legacy field name.
-                doc = await collection.find_one({"ethAddress": address})
-            if doc:
-                doc.pop("_id", None)
+                doc = await collection.find_one({"ethAddress": address}, projection)
             return doc
         except Exception as e:
             raise StorageError(f"Failed to get trader current state: {e}") from e
@@ -1239,6 +1270,7 @@ class MongoRepository(DataRepository):
         self,
         addresses: list[str],
         symbol: str | None = None,
+        include_legacy_fallback: bool = True,
     ) -> dict[str, dict[str, Any]]:
         """Get current state snapshots for multiple traders."""
         if self._db is None:
@@ -1250,30 +1282,62 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRADER_CURRENT_STATE]
-            query: dict[str, Any] = {
-                "$or": [
-                    {"eth": {"$in": normalized_addresses}},
-                    {"ethAddress": {"$in": normalized_addresses}},
-                ]
-            }
+            query_base: dict[str, Any] = {}
             if symbol is not None:
-                query["symbol"] = symbol
+                query_base["symbol"] = symbol
 
-            cursor = collection.find(query).sort(
+            projection = {
+                "_id": 0,
+                "eth": 1,
+                "ethAddress": 1,
+                "symbol": 1,
+                "positions": 1,
+                "open_orders": 1,
+                "updated_at": 1,
+                "last_event_time": 1,
+            }
+
+            primary_query = {
+                **query_base,
+                "eth": {"$in": normalized_addresses},
+            }
+            primary_limit = max(50, len(normalized_addresses) * 2)
+            primary_cursor = collection.find(primary_query, projection).sort(
                 [
                     ("updated_at", -1),
                     ("last_event_time", -1),
                 ]
             )
-            docs = await cursor.to_list(length=None)
+            primary_docs = await primary_cursor.to_list(length=primary_limit)
 
             states_by_address: dict[str, dict[str, Any]] = {}
-            for doc in docs:
-                key = str(doc.get("eth") or doc.get("ethAddress") or "").lower()
+            for doc in primary_docs:
+                key = str(doc.get("eth") or "").lower()
                 if not key or key not in normalized_addresses or key in states_by_address:
                     continue
-                doc.pop("_id", None)
                 states_by_address[key] = doc
+
+            if include_legacy_fallback and len(states_by_address) < len(normalized_addresses):
+                missing_addresses = [address for address in normalized_addresses if address not in states_by_address]
+                if missing_addresses:
+                    legacy_query = {
+                        **query_base,
+                        "ethAddress": {"$in": missing_addresses},
+                    }
+                    legacy_limit = max(50, len(missing_addresses) * 2)
+                    legacy_cursor = collection.find(legacy_query, projection).sort(
+                        [
+                            ("updated_at", -1),
+                            ("last_event_time", -1),
+                        ]
+                    )
+                    legacy_docs = await legacy_cursor.to_list(length=legacy_limit)
+
+                    for doc in legacy_docs:
+                        key = str(doc.get("ethAddress") or doc.get("eth") or "").lower()
+                        if not key or key not in missing_addresses or key in states_by_address:
+                            continue
+                        states_by_address[key] = doc
 
             return states_by_address
         except Exception as e:

@@ -1,5 +1,7 @@
 """Integration tests for event flow and API."""
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -61,6 +63,37 @@ class TestAPIEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
+
+    def test_get_signal_history_mongo_failure_falls_back(self, test_client):
+        """Test signal history stays available if Mongo read fails."""
+        client, signal_processor, whale_detector, store = test_client
+        store.store_signal({
+            "symbol": "BTC",
+            "action": "BUY",
+            "confidence": 0.8,
+            "long_bias": 0.7,
+            "short_bias": 0.3,
+            "net_bias": 0.4,
+            "traders_long": 3,
+            "traders_short": 1,
+            "timestamp": "2026-04-27T00:00:00Z",
+        })
+
+        failing_collection = MagicMock()
+        failing_collection.find.side_effect = RuntimeError("mongo unavailable")
+        store._signals_collection = failing_collection
+        set_components(
+            signal_processor=signal_processor,
+            whale_detector=whale_detector,
+            signal_store=store,
+        )
+
+        response = client.get("/api/v1/signals/history?limit=5")
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["action"] == "BUY"
 
     def test_get_signal_stats(self, test_client):
         """Test getting signal stats."""
@@ -203,8 +236,6 @@ class TestSignalFlow:
         stats = processor.get_stats()
         assert stats["tracked_traders"] == 2
 
-        # The latest signal should reflect both traders
-        latest2 = processor.get_latest_signal()
         if signal2:  # If signal was emitted
             assert signal2["traders_long"] == 1
             assert signal2["traders_short"] == 1

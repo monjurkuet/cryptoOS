@@ -187,6 +187,102 @@ class TestListTraders:
         assert data["traders"][0]["open_order_count"] == 1
 
     @pytest.mark.asyncio
+    async def test_list_traders_applies_filters_before_pagination(self, app, mock_repository) -> None:
+        """Filtered rows should be matched before limit/offset pagination is applied."""
+        mock_repository.get_tracked_traders.return_value = [
+            {
+                "eth": "0x1111111111111111111111111111111111111111",
+                "name": "Flat A",
+                "score": 99,
+                "tags": [],
+                "acct_val": 500000,
+                "active": True,
+                "performances": {"day": {"roi": 0.1}},
+            },
+            {
+                "eth": "0x2222222222222222222222222222222222222222",
+                "name": "Flat B",
+                "score": 98,
+                "tags": [],
+                "acct_val": 500000,
+                "active": True,
+                "performances": {"day": {"roi": 0.1}},
+            },
+            {
+                "eth": "0x3333333333333333333333333333333333333333",
+                "name": "Long C",
+                "score": 10,
+                "tags": [],
+                "acct_val": 500000,
+                "active": True,
+                "performances": {"day": {"roi": 0.1}},
+            },
+        ]
+        mock_repository.get_trader_current_states.return_value = {
+            "0x1111111111111111111111111111111111111111": {"positions": []},
+            "0x2222222222222222222222222222222222222222": {"positions": []},
+            "0x3333333333333333333333333333333333333333": {
+                "positions": [{"position": {"coin": "BTC", "szi": 1}}],
+            },
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/traders",
+                params={"limit": 1, "position_status": "long"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["returned_count"] == 1
+        assert data["matched_total"] == 1
+        assert data["traders"][0]["address"] == "0x3333333333333333333333333333333333333333"
+
+    @pytest.mark.asyncio
+    async def test_list_traders_filters_profitable_windows(self, app, mock_repository) -> None:
+        """Profitable-window filter should require all requested ROI windows > 0."""
+        mock_repository.get_tracked_traders.return_value = [
+            {
+                "eth": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "name": "Profitable",
+                "score": 80,
+                "tags": ["consistent"],
+                "acct_val": 100000,
+                "active": True,
+                "performances": {
+                    "day": {"roi": 0.05},
+                    "week": {"roi": 0.1},
+                    "month": {"roi": 0.2},
+                },
+            },
+            {
+                "eth": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "name": "Not profitable",
+                "score": 81,
+                "tags": [],
+                "acct_val": 100000,
+                "active": True,
+                "performances": {
+                    "day": {"roi": -0.01},
+                    "week": {"roi": 0.1},
+                    "month": {"roi": 0.2},
+                },
+            },
+        ]
+        mock_repository.get_trader_current_states.return_value = {}
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/traders",
+                params={"profitable_windows": "day,week,month"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["returned_count"] == 1
+        assert data["traders"][0]["address"] == "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    @pytest.mark.asyncio
     async def test_list_traders_no_repository(self, app, mock_lifecycle) -> None:
         """Test list traders when repository is not available."""
         mock_lifecycle.repository = None
