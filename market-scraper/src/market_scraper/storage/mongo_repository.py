@@ -797,6 +797,44 @@ class MongoRepository(DataRepository):
         except Exception as e:
             raise StorageError(f"Failed to store position: {e}") from e
 
+    async def store_trader_position_bulk(self, positions: list[TraderPosition]) -> int:
+        """Bulk-store trader position snapshots with a single insert_many call.
+
+        Skips per-document find_one dedup checks — the TTL index handles cleanup
+        and duplicate positions are acceptable in time-series collections.
+
+        Args:
+            positions: List of TraderPosition models to store.
+
+        Returns:
+            Count of inserted documents.
+
+        Raises:
+            StorageError: If not connected or storage fails.
+        """
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        if not positions:
+            return 0
+
+        try:
+            collection = self._db[CollectionName.TRADER_POSITIONS]
+            documents = []
+            for position in positions:
+                normalized = position.model_dump()
+                normalized["eth"] = str(normalized.get("eth", "")).lower()
+                documents.append(normalized)
+
+            result = await collection.insert_many(documents, ordered=False)
+            return len(result.inserted_ids)
+        except BulkWriteError:
+            # Partial failures (e.g. duplicate _id) are acceptable for
+            # time-series data — the TTL index handles cleanup.
+            return len(documents)
+        except Exception as e:
+            raise StorageError(f"Failed to bulk-store positions: {e}") from e
+
     async def store_trader_closed_trade(self, trade: TraderClosedTrade | dict[str, Any]) -> bool:
         """Store a closed-trade ledger row idempotently."""
         if self._db is None:

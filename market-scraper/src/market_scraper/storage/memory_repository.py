@@ -755,6 +755,16 @@ class MemoryRepository(DataRepository):
         self._trader_positions_history.append(data)
         return True
 
+    async def store_trader_position_bulk(self, positions: list[Any]) -> int:
+        """Bulk-store normalized trader position history rows (in-memory)."""
+        count = 0
+        for position in positions:
+            data = position.model_dump() if hasattr(position, "model_dump") else dict(position)
+            data["eth"] = str(data.get("eth", "")).lower()
+            self._trader_positions_history.append(data)
+            count += 1
+        return count
+
     async def store_trader_closed_trade(self, trade: Any) -> bool:
         """Store an immutable closed-trade row (in-memory)."""
         data = trade.model_dump() if hasattr(trade, "model_dump") else dict(trade)

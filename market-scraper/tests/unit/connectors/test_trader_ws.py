@@ -1,6 +1,7 @@
 """Tests for TraderWebSocketCollector."""
 
 import asyncio
+import hashlib
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -138,7 +139,9 @@ class TestTraderWebSocketCollector:
         positions = [{"position": {"coin": "BTC", "szi": 1.0}}]
 
         # New trader should be significant
-        assert collector._has_significant_change("new_address", positions) is True
+        changed, computed = collector._has_significant_change("new_address", positions)
+        assert changed is True
+        assert "normalized" in computed
 
     def test_has_significant_change_same_position(
         self,
@@ -154,15 +157,17 @@ class TestTraderWebSocketCollector:
         address = "test_address"
         positions = [{"position": {"coin": "BTC", "szi": 1.0}}]
 
-        # First save
+        # First save - store hash like _create_trader_positions_event does
+        normalized = collector._normalize_positions(positions)
+        combined_hash = hashlib.sha256((normalized + "").encode()).hexdigest()
         collector._last_positions[address] = {
-            "positions": positions,
-            "normalized": collector._normalize_positions(positions),
+            "hash": combined_hash,
             "timestamp": time.time(),
         }
 
         # Same position should not be significant
-        assert collector._has_significant_change(address, positions) is False
+        changed, computed = collector._has_significant_change(address, positions)
+        assert changed is False
 
     def test_has_significant_change_same_size_different_mark_price(
         self,
@@ -183,19 +188,21 @@ class TestTraderWebSocketCollector:
             {"position": {"coin": "BTC", "szi": 1.0, "markPx": 50500, "unrealizedPnl": 600}}
         ]
 
+        normalized = collector._normalize_positions(original_positions)
+        margin_str = collector._normalize_margin_summary({"accountValue": 100000})
+        combined_hash = hashlib.sha256((normalized + "" + margin_str).encode()).hexdigest()
         collector._last_positions[address] = {
-            "positions": original_positions,
-            "normalized": collector._normalize_positions(original_positions),
-            "margin_summary": collector._normalize_margin_summary({"accountValue": 100000}),
+            "hash": combined_hash,
             "timestamp": time.time(),
         }
 
-        assert collector._has_significant_change(
+        changed, computed = collector._has_significant_change(
             address,
             updated_positions,
             [],
             {"accountValue": 100000},
-        ) is True
+        )
+        assert changed is True
 
     def test_has_significant_change_margin_summary_update(
         self,
@@ -211,19 +218,21 @@ class TestTraderWebSocketCollector:
         address = "test_address"
         positions = [{"position": {"coin": "BTC", "szi": 1.0}}]
 
+        normalized = collector._normalize_positions(positions)
+        margin_str = collector._normalize_margin_summary({"accountValue": 100000})
+        combined_hash = hashlib.sha256((normalized + "" + margin_str).encode()).hexdigest()
         collector._last_positions[address] = {
-            "positions": positions,
-            "normalized": collector._normalize_positions(positions),
-            "margin_summary": collector._normalize_margin_summary({"accountValue": 100000}),
+            "hash": combined_hash,
             "timestamp": time.time(),
         }
 
-        assert collector._has_significant_change(
+        changed, computed = collector._has_significant_change(
             address,
             positions,
             [],
             {"accountValue": 125000},
-        ) is True
+        )
+        assert changed is True
 
     def test_has_significant_change_time_elapsed(
         self,
@@ -240,14 +249,16 @@ class TestTraderWebSocketCollector:
         positions = [{"position": {"coin": "BTC", "szi": 1.0}}]
 
         # Set old timestamp
+        normalized = collector._normalize_positions(positions)
+        combined_hash = hashlib.sha256((normalized + "").encode()).hexdigest()
         collector._last_positions[address] = {
-            "positions": positions,
-            "normalized": collector._normalize_positions(positions),
+            "hash": combined_hash,
             "timestamp": time.time() - 3600,  # 1 hour ago
         }
 
         # Should be significant due to time
-        assert collector._has_significant_change(address, positions) is True
+        changed, computed = collector._has_significant_change(address, positions)
+        assert changed is True
 
     def test_cleanup_stale_positions(
         self,
@@ -260,24 +271,22 @@ class TestTraderWebSocketCollector:
             config=mock_config,
         )
 
-        # Add stale entry
-        collector._last_positions["stale_address"] = {
-            "positions": [],
-            "normalized": "",
-            "timestamp": time.time() - 86400 - 1,  # Older than TTL
-        }
+    # Add stale entry
+    collector._last_positions["stale_address"] = {
+        "hash": "",
+        "timestamp": time.time() - 86400 - 1,
+    }
 
-        # Add fresh entry
-        collector._last_positions["fresh_address"] = {
-            "positions": [],
-            "normalized": "",
-            "timestamp": time.time(),
-        }
+    # Add fresh entry
+    collector._last_positions["fresh_address"] = {
+        "hash": "",
+        "timestamp": time.time(),
+    }
 
-        collector._cleanup_stale_positions()
+    collector._cleanup_stale_positions()
 
-        assert "stale_address" not in collector._last_positions
-        assert "fresh_address" in collector._last_positions
+    assert "stale_address" not in collector._last_positions
+    assert "fresh_address" in collector._last_positions
 
     @pytest.mark.asyncio
     async def test_process_webdata2(

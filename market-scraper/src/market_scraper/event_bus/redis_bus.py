@@ -239,6 +239,11 @@ class RedisEventBus(EventBus):
                                 exc_info=True,
                             )
 
+                        # Yield to event loop after each handler to prevent
+                        # starving HTTP request handling during high-throughput
+                        # bursts (e.g. 37+ trader events/flush)
+                        await asyncio.sleep(0)
+
                 except json.JSONDecodeError as e:
                     self._metrics["errors"] += 1
                     logger.warning("redis_listener_json_error", error=str(e))

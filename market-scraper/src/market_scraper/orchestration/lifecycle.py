@@ -517,6 +517,8 @@ class LifecycleManager:
 
     async def _store_trader_positions_state(self, event: StandardEvent) -> None:
         """Persist trader position event into current-state and history collections."""
+        store_start = time.monotonic()
+
         logger.debug(
             "trader_positions_handler_called",
             event_id=event.event_id,
@@ -575,17 +577,19 @@ class LifecycleManager:
 
             # Keep normalized position history in trader_positions time-series when supported.
             # Only store positions for the configured symbol to reduce storage volume.
-            if hasattr(repository, "store_trader_position"):
-                for pos in positions:
-                    p = pos.get("position", pos) if isinstance(pos, dict) else {}
-                    coin = p.get("coin")
-                    if not coin:
-                        continue
-                    # Skip non-target coin positions (signal system only uses BTC)
-                    if str(coin).upper() != str(symbol).upper():
-                        continue
+            # Collect all matching position models first, then bulk-insert in one call.
+            position_models: list[TraderPosition] = []
+            for pos in positions:
+                p = pos.get("position", pos) if isinstance(pos, dict) else {}
+                coin = p.get("coin")
+                if not coin:
+                    continue
+                # Skip non-target coin positions (signal system only uses BTC)
+                if str(coin).upper() != str(symbol).upper():
+                    continue
 
-                    position_model = TraderPosition(
+                position_models.append(
+                    TraderPosition(
                         eth=address,
                         t=event_timestamp,
                         coin=str(coin),
@@ -604,11 +608,30 @@ class LifecycleManager:
                             else None
                         ),
                     )
+                )
+
+            if position_models and hasattr(repository, "store_trader_position_bulk"):
+                await self._retry_repository_op(
+                    getattr(repository, "store_trader_position_bulk"),
+                    position_models,
+                    operation_name="store_trader_position_bulk",
+                )
+            elif position_models and hasattr(repository, "store_trader_position"):
+                # Fallback: per-position insert when bulk method unavailable.
+                for position_model in position_models:
                     await self._retry_repository_op(
                         getattr(repository, "store_trader_position"),
                         position_model,
                         operation_name="store_trader_position",
                     )
+
+            store_duration = time.monotonic() - store_start
+            logger.info(
+                "trader_positions_stored",
+                address=address[:16],
+                duration_ms=round(store_duration * 1000, 1),
+                position_count=len(position_models),
+            )
 
 
         except Exception as e:

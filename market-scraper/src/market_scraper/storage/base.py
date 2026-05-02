@@ -984,6 +984,21 @@ class DataRepository(ABC):
         pass
 
     @abstractmethod
+    async def store_trader_position_bulk(self, positions: list[Any]) -> int:
+        """Bulk-store normalized trader position history rows.
+
+        Args:
+            positions: List of position snapshots to store.
+
+        Returns:
+            Count of inserted documents.
+
+        Raises:
+            StorageError: If operation fails.
+        """
+        pass
+
+    @abstractmethod
     async def store_trader_closed_trade(self, trade: Any) -> bool:
         """Store an immutable closed-trade row.
 
