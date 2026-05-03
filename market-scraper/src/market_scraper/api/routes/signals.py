@@ -227,6 +227,24 @@ async def get_current_signal(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@router.get("/latest", response_model=AggregatedSignalResponse)
+async def get_latest_signal(
+    lifecycle: LifecycleManager = Depends(get_lifecycle),
+) -> dict[str, Any]:
+    """Get latest signal (alias for /current).
+
+    This route must be registered BEFORE /{signal_id} to avoid
+    the catch-all matching "latest" as a signal ID.
+
+    Args:
+        lifecycle: Lifecycle manager
+
+    Returns:
+        Latest signal (same as current)
+    """
+    return await get_current_signal(lifecycle=lifecycle)
+
+
 @router.get("/stats", response_model=SignalStatsResponse)
 async def get_signal_stats(
     lifecycle: LifecycleManager = Depends(get_lifecycle),

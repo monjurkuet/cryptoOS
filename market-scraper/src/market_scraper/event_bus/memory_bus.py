@@ -16,11 +16,11 @@ class MemoryEventBus(EventBus):
     Events are stored in memory and processed asynchronously.
     """
 
-    def __init__(self, max_queue_size: int = 10000) -> None:
+    def __init__(self, max_queue_size: int = 5000) -> None:
         """Initialize memory event bus.
 
         Args:
-            max_queue_size: Maximum number of events to queue
+            max_queue_size: Maximum number of events to queue (reduced from 10K for VPS memory)
         """
         super().__init__(max_queue_size)
         self._queue: asyncio.Queue[StandardEvent] = asyncio.Queue(maxsize=max_queue_size)

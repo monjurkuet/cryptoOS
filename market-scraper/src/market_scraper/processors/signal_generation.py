@@ -21,8 +21,8 @@ logger = structlog.get_logger(__name__)
 
 # Default TTL for trader data (24 hours in seconds)
 TRADER_TTL_SECONDS = 86400
-# Maximum number of traders to track
-MAX_TRACKED_TRADERS = 10000
+# Maximum number of traders to track (reduced from 10000 to 5000 for VPS memory)
+MAX_TRACKED_TRADERS = 5000
 
 
 def determine_recommendation(long_bias: float, short_bias: float) -> str:

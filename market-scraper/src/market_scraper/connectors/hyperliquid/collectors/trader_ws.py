@@ -74,8 +74,8 @@ class TraderWebSocketCollector:
 
     # TTL for position state (1 hour)
     POSITION_STATE_TTL = 3600
-    # Max tracked positions
-    MAX_TRACKED_POSITIONS = 200
+    # Max tracked positions (reduced from 200 to 150 for VPS memory pressure)
+    MAX_TRACKED_POSITIONS = 150
 
     # Global rate limiter: caps HTTP POST requests to ~10/s for the Hyperliquid API
     _api_rate_limiter = _RateLimiter(max_rate=10.0, window=1.0)
@@ -105,8 +105,8 @@ class TraderWebSocketCollector:
 
         # Connection management
         self._clients: list[TraderWSClient] = []
-        self._num_clients = 5  # Number of concurrent connections (supports up to 500 traders with batch_size=100)
-        self._batch_size = 100  # Traders per connection
+        self._num_clients = 50  # Hyperliquid limits 10 user subscriptions per WS connection
+        self._batch_size = 10  # Must match Hyperliquid's per-connection user limit
 
         # State
         self._running = False
@@ -138,6 +138,12 @@ class TraderWebSocketCollector:
         self._messages_received = 0
         self._positions_saved = 0
         self._positions_skipped = 0
+
+        # Error channel rate-limiting — prevents log flooding from Hyperliquid
+        # "Cannot track more than 10 total users" errors which can arrive at
+        # hundreds per second and block the event loop with synchronous I/O.
+        self._error_channel_count = 0
+        self._error_channel_last_log: float = 0.0  # monotonic timestamp
 
     async def start(self, traders: list[str] | None = None) -> None:
         """Start the collector with specified traders.
@@ -518,11 +524,19 @@ class TraderWebSocketCollector:
         # Filter error channel messages (e.g. "Cannot track more than 10 total users.")
         # These have channel="error" and data is a string, not a dict — skip them entirely
         # to prevent AttributeError crashes downstream.
+        # Rate-limited: only log once per 60s with count to avoid flooding the event loop.
         if data.get("channel") == "error":
-            logger.warning(
-                "trader_ws_server_error",
-                error_data=data.get("data"),
-            )
+            self._error_channel_count += 1
+            now = time.monotonic()
+            if now - self._error_channel_last_log >= 60.0:
+                logger.warning(
+                    "trader_ws_server_error",
+                    error_data=data.get("data"),
+                    count=self._error_channel_count,
+                    suppressed=self._error_channel_count - 1,
+                )
+                self._error_channel_count = 0
+                self._error_channel_last_log = now
             return
 
         # Debug: Log message receipt
@@ -1094,6 +1108,7 @@ class TraderWebSocketCollector:
             "messages_received": self._messages_received,
             "positions_saved": self._positions_saved,
             "positions_skipped": self._positions_skipped,
+            "error_channel_count": self._error_channel_count,
             "buffer_size": len(self._message_buffer),
         }
 

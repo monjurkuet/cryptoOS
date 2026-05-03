@@ -1,5 +1,6 @@
 """API Routes for signals and alerts."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from typing import Any
@@ -65,12 +66,23 @@ async def get_latest_signal() -> SignalResponse | None:
         Latest signal or None if no signal generated yet
     """
     processor = get_signal_processor()
-    signal = processor.get_latest_signal()
+    store = get_signal_store()
+    signal = await asyncio.to_thread(store.get_latest_signal)
 
     if signal is None:
         return None
 
-    return SignalResponse(**signal)
+    return SignalResponse(
+        symbol=signal.symbol,
+        action=signal.action,
+        confidence=signal.confidence,
+        long_bias=signal.long_bias,
+        short_bias=signal.short_bias,
+        net_bias=signal.net_bias,
+        traders_long=signal.traders_long,
+        traders_short=signal.traders_short,
+        timestamp=signal.timestamp,
+    )
 
 
 @router.get("/signal-system/signals/latest", response_model=SignalResponse | None)
@@ -90,7 +102,7 @@ async def get_signal_history(limit: int = 100) -> list[dict[str, Any]]:
         List of historical signals
     """
     store = get_signal_store()
-    signals = store.get_signals(limit)
+    signals = await asyncio.to_thread(store.get_signals, limit)
 
     return [
         {
@@ -244,9 +256,11 @@ async def get_signal_store_stats() -> dict[str, Any]:
         Signal store statistics
     """
     store = get_signal_store()
+    signal_stats = await asyncio.to_thread(store.get_signal_stats)
+    alert_stats = await asyncio.to_thread(store.get_alert_stats)
     return {
-        "signals": store.get_signal_stats(),
-        "alerts": store.get_alert_stats(),
+        "signals": signal_stats,
+        "alerts": alert_stats,
     }
 
 
@@ -394,11 +408,11 @@ async def update_rl_params(update: RLParamsUpdate) -> dict[str, Any]:
     new_params = {k: v for k, v in update.model_dump().items() if v is not None}
     if new_params:
         server.update_params(**new_params)
-        # Also push to signal processor
-        processor = get_signal_processor()
-        processor.set_rl_params(**server.get_params())
-        param_store = get_param_event_store()
-        param_store.store_event(server.get_params(), source="api_update")
+    # Also push to signal processor
+    processor = get_signal_processor()
+    processor.set_rl_params(**server.get_params())
+    param_store = get_param_event_store()
+    await asyncio.to_thread(param_store.store_event, server.get_params(), "api_update")
     return {"params": server.get_params()}
 
 
@@ -413,7 +427,7 @@ async def get_rl_outcomes(limit: int = 100) -> dict[str, Any]:
         Recent outcomes with summary stats
     """
     store = get_outcome_store()
-    outcomes = store.get_recent_outcomes(limit=limit)
+    outcomes = await asyncio.to_thread(store.get_recent_outcomes, limit=limit)
 
     resolved = [o for o in outcomes if o.get("resolved_at") is not None]
     pnl_values = [o.get("pnl_pct", 0.0) for o in resolved if o.get("pnl_pct") is not None]
@@ -455,7 +469,7 @@ async def get_dashboard_overview(window: str = "24h") -> DashboardOverviewRespon
     cutoff_ts = (datetime.now(UTC) - timedelta(hours=window_hours)).timestamp()
 
     signal_store = get_signal_store()
-    signal_rows = signal_store.get_signals_in_window(from_ts=cutoff_ts, limit=5000)
+    signal_rows = await asyncio.to_thread(signal_store.get_signals_in_window, from_ts=cutoff_ts, limit=5000)
     signal_actions: dict[str, int] = {}
     for row in signal_rows:
         signal_actions[row["action"]] = signal_actions.get(row["action"], 0) + 1
@@ -466,12 +480,16 @@ async def get_dashboard_overview(window: str = "24h") -> DashboardOverviewRespon
     if mongo_client is not None:
         try:
             market_coll = mongo_client[settings.mongo.market_database]["signals"]
-            market_docs = list(
-                market_coll.find({"t": {"$gte": datetime.fromtimestamp(cutoff_ts, tz=UTC)}})
-                .sort("t", -1)
-                .limit(5000)
-            )
-            market_rows = [normalize_market_scraper_signal(doc) for doc in market_docs]
+
+            def _query_market_signals() -> list[dict[str, Any]]:
+                docs = list(
+                    market_coll.find({"t": {"$gte": datetime.fromtimestamp(cutoff_ts, tz=UTC)}})
+                    .sort("t", -1)
+                    .limit(5000)
+                )
+                return [normalize_market_scraper_signal(doc) for doc in docs]
+
+            market_rows = await asyncio.to_thread(_query_market_signals)
         except Exception as error:
             logger.warning("dashboard_market_query_failed", error=str(error))
             market_rows = []
@@ -481,7 +499,7 @@ async def get_dashboard_overview(window: str = "24h") -> DashboardOverviewRespon
         market_actions[row["action"]] = market_actions.get(row["action"], 0) + 1
 
     outcome_store = get_outcome_store()
-    outcomes = outcome_store.get_recent_outcomes(limit=1000)
+    outcomes = await asyncio.to_thread(outcome_store.get_recent_outcomes, limit=1000)
     pnl_values = [o.get("pnl_pct", 0.0) for o in outcomes if o.get("pnl_pct") is not None]
     win_rate = (
         len([value for value in pnl_values if value > 0]) / len(pnl_values)
@@ -492,13 +510,14 @@ async def get_dashboard_overview(window: str = "24h") -> DashboardOverviewRespon
     processor = get_signal_processor()
     rl_server = get_rl_param_server()
     trace_store = get_trace_store()
+    trace_stats = await asyncio.to_thread(trace_store.get_stats)
     return DashboardOverviewResponse(
         window=window,
         window_hours=window_hours,
         live={
             "signal_processor": processor.get_stats(),
             "rl_status": rl_server.get_status(),
-            "trace_store": trace_store.get_stats(),
+            "trace_store": trace_stats,
         },
         totals={
             "signal_system_count": len(signal_rows),
@@ -531,7 +550,8 @@ async def get_dashboard_timeline(
     items: list[dict[str, Any]] = []
     if source in ("all", "signal_system"):
         signal_store = get_signal_store()
-        items.extend(signal_store.get_signals_in_window(from_ts=from_ts, to_ts=to_ts, limit=limit))
+        rows = await asyncio.to_thread(signal_store.get_signals_in_window, from_ts=from_ts, to_ts=to_ts, limit=limit)
+        items.extend(rows)
 
     if source in ("all", "market_scraper"):
         mongo_client = get_mongo_client()
@@ -540,14 +560,19 @@ async def get_dashboard_timeline(
             query: dict[str, Any] = {}
             if from_ts is not None or to_ts is not None:
                 query["t"] = {}
-                if from_ts is not None:
-                    query["t"]["$gte"] = datetime.fromtimestamp(from_ts, tz=UTC)
-                if to_ts is not None:
-                    query["t"]["$lte"] = datetime.fromtimestamp(to_ts, tz=UTC)
+            if from_ts is not None:
+                query["t"]["$gte"] = datetime.fromtimestamp(from_ts, tz=UTC)
+            if to_ts is not None:
+                query["t"]["$lte"] = datetime.fromtimestamp(to_ts, tz=UTC)
             try:
                 coll = mongo_client[settings.mongo.market_database]["signals"]
-                docs = list(coll.find(query).sort("t", -1).limit(limit))
-                items.extend([normalize_market_scraper_signal(doc) for doc in docs])
+
+                def _query_market_timeline() -> list[dict[str, Any]]:
+                    docs = list(coll.find(query).sort("t", -1).limit(limit))
+                    return [normalize_market_scraper_signal(doc) for doc in docs]
+
+                market_rows = await asyncio.to_thread(_query_market_timeline)
+                items.extend(market_rows)
             except Exception as error:
                 logger.warning("dashboard_market_query_failed", error=str(error))
 
@@ -581,7 +606,8 @@ async def get_dashboard_params_history(
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> DashboardParamsHistoryResponse:
     """Get runtime parameter update history."""
-    rows = get_param_event_store().get_events(
+    rows = await asyncio.to_thread(
+        get_param_event_store().get_events,
         from_ts=_to_ts(from_time),
         to_ts=_to_ts(to_time),
         limit=limit,
@@ -601,7 +627,8 @@ async def get_dashboard_decisions(
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> DashboardDecisionResponse:
     """Get persisted signal decision traces for explainability panels."""
-    rows = get_trace_store().get_traces(
+    rows = await asyncio.to_thread(
+        get_trace_store().get_traces,
         from_ts=_to_ts(from_time),
         to_ts=_to_ts(to_time),
         limit=limit,

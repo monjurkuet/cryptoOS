@@ -340,42 +340,47 @@ class LifecycleManager:
         if not self._event_bus:
             raise RuntimeError("Event bus not initialized")
 
-        async def storage_handler(event: StandardEvent) -> None:
-            """Handle events by storing them in the repository."""
-            if self._repository:
-                try:
-                    self._record_event_freshness(event.event_type, event.timestamp)
+    async def storage_handler(event: StandardEvent) -> None:
+        """Handle events by storing them in the repository.
 
-                    if self._should_store_raw_event(event):
-                        await self._retry_repository_op(
+        All MongoDB Atlas writes are offloaded to background tasks (asyncio.create_task)
+        to prevent blocking the event loop. Remote Atlas writes can take 10-150s,
+        which causes massive event loop lag, making health checks time out.
+        Each background task handles its own errors and dead-letter routing.
+        """
+        if self._repository:
+            try:
+                self._record_event_freshness(event.event_type, event.timestamp)
+
+                if self._should_store_raw_event(event):
+                    asyncio.create_task(
+                        self._retry_repository_op(
                             self._repository.store,
                             event,
                             operation_name="store_event",
                         )
-
-                    if event.event_type == "trading_signal":
-                        await self._store_trading_signal(event)
-
-                    if event.event_type == "trader_positions":
-                        # Offload to background task to avoid blocking the event loop.
-                        # MongoDB Atlas writes can take 10-150s which causes massive
-                        # event loop lag, making health checks time out.
-                        asyncio.create_task(self._store_trader_positions_state(event))
-
-                    if event.event_type == "ohlcv":
-                        await self._store_ohlcv_candle(event)
-
-                except Exception as e:
-                    logger.error(
-                        "storage_handler_error",
-                        event_id=event.event_id,
-                        error=str(e),
                     )
-                    await self._store_dead_letter(
-                        event=event,
-                        reason="event_storage_failed",
-                        error=e,
-                    )
+
+                if event.event_type == "trading_signal":
+                    await self._store_trading_signal(event)
+
+                if event.event_type == "trader_positions":
+                    asyncio.create_task(self._store_trader_positions_state(event))
+
+                if event.event_type == "ohlcv":
+                    asyncio.create_task(self._store_ohlcv_candle(event))
+
+            except Exception as e:
+                logger.error(
+                    "storage_handler_error",
+                    event_id=event.event_id,
+                    error=str(e),
+                )
+                await self._store_dead_letter(
+                    event=event,
+                    reason="event_storage_failed",
+                    error=e,
+                )
 
         # Subscribe to all events
         await self._event_bus.subscribe("*", storage_handler)
