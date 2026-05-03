@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import time
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -24,6 +25,35 @@ from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
 
 logger = structlog.get_logger(__name__)
+
+class _RateLimiter:
+    """Simple sliding-window rate limiter (token-bucket style).
+
+    Caps outgoing HTTP requests to a configurable max-per-second rate.
+    Thread-safe for single-event-loop usage (no true cross-thread concern).
+    """
+
+    def __init__(self, max_rate: float = 10.0, window: float = 1.0) -> None:
+        self._max_rate = max_rate
+        self._window = window
+        self._timestamps: deque[float] = deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        """Block until a request slot is available under the rate limit."""
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                # Evict timestamps outside the sliding window
+                cutoff = now - self._window
+                while self._timestamps and self._timestamps[0] <= cutoff:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self._max_rate:
+                    self._timestamps.append(now)
+                    return
+                # Compute how long to wait for the oldest timestamp to expire
+                wait = self._timestamps[0] - cutoff
+            await asyncio.sleep(wait)
 
 
 class TraderWebSocketCollector:
@@ -46,6 +76,9 @@ class TraderWebSocketCollector:
     POSITION_STATE_TTL = 3600
     # Max tracked positions
     MAX_TRACKED_POSITIONS = 200
+
+    # Global rate limiter: caps HTTP POST requests to ~10/s for the Hyperliquid API
+    _api_rate_limiter = _RateLimiter(max_rate=10.0, window=1.0)
 
     def __init__(
         self,
@@ -319,6 +352,9 @@ class TraderWebSocketCollector:
 
         This seeds/corrects current-state rows so unknown/stale states converge
         even when WebSocket updates were missed.
+
+        Processes traders in chunks of 25 with a 2-second pause between
+        chunks to avoid flooding the API and triggering 429 rate-limits.
         """
         normalized = sorted({str(address).lower() for address in addresses if address})
         if not normalized:
@@ -326,44 +362,55 @@ class TraderWebSocketCollector:
 
         logger.info("trader_ws_bootstrap_start", addresses=len(normalized))
 
-        sem = asyncio.Semaphore(20)
+        # Reduced concurrency: max 5 concurrent traders (10 HTTP requests)
+        sem = asyncio.Semaphore(5)
         timeout = aiohttp.ClientTimeout(total=25)
 
+        # Process traders in chunks with a pause between them to avoid API flood
+        CHUNK_SIZE = 25
+        all_events: list[StandardEvent] = []
+        total_errors = 0
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            tasks = [self._fetch_bootstrap_event(session, sem, address) for address in normalized]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for chunk_start in range(0, len(normalized), CHUNK_SIZE):
+                chunk = normalized[chunk_start : chunk_start + CHUNK_SIZE]
+                if chunk_start > 0:
+                    await asyncio.sleep(2)  # Pause between chunks to avoid 429 flood
+                tasks = [self._fetch_bootstrap_event(session, sem, address) for address in chunk]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            events: list[StandardEvent] = []
-            errors = 0
-            for result in results:
-                if isinstance(result, Exception):
-                    errors += 1
-                    continue
-                if result is not None:
-                    events.append(result)
+                for result in results:
+                    if isinstance(result, Exception):
+                        total_errors += 1
+                        continue
+                    if result is not None:
+                        all_events.append(result)
 
-            if events:
-                if self._on_bootstrap_event:
-                    sem_direct = asyncio.Semaphore(25)
+        events = all_events
 
-                    async def handle_direct(event: StandardEvent) -> None:
-                        async with sem_direct:
-                            try:
-                                result = self._on_bootstrap_event(event)
-                                if asyncio.iscoroutine(result):
-                                    await result
-                            except Exception as exc:
-                                logger.warning(
-                                    "trader_ws_bootstrap_direct_handler_failed",
-                                    event_id=event.event_id,
-                                    error=str(exc),
-                                )
+        if events:
+            if self._on_bootstrap_event:
+                # Reduced from 25 to 10 to limit concurrent handler pressure
+                sem_direct = asyncio.Semaphore(10)
 
-                    await asyncio.gather(*(handle_direct(event) for event in events))
-                await self.event_bus.publish_bulk(events)
-                logger.info("trader_ws_bootstrap_published", events=len(events), errors=errors)
-            else:
-                logger.info("trader_ws_bootstrap_no_events", errors=errors)
+                async def handle_direct(event: StandardEvent) -> None:
+                    async with sem_direct:
+                        try:
+                            result = self._on_bootstrap_event(event)
+                            if asyncio.iscoroutine(result):
+                                await result
+                        except Exception as exc:
+                            logger.warning(
+                                "trader_ws_bootstrap_direct_handler_failed",
+                                event_id=event.event_id,
+                                error=str(exc),
+                            )
+
+                await asyncio.gather(*(handle_direct(event) for event in events))
+            await self.event_bus.publish_bulk(events)
+            logger.info("trader_ws_bootstrap_published", events=len(events), errors=total_errors)
+        else:
+            logger.info("trader_ws_bootstrap_no_events", errors=total_errors)
 
     async def _fetch_bootstrap_event(
         self,
@@ -371,45 +418,82 @@ class TraderWebSocketCollector:
         sem: asyncio.Semaphore,
         address: str,
     ) -> StandardEvent | None:
-        """Fetch one trader state snapshot from Hyperliquid info API."""
+        """Fetch one trader state snapshot from Hyperliquid info API.
+
+        Uses the class-level rate limiter to cap at ~10 req/s and applies
+        429-specific exponential backoff (2s, 4s, 8s) with Retry-After
+        header support.  Non-429 errors use shorter retry delays.
+        """
         payload = {"type": "clearinghouseState", "user": address}
 
         async with sem:
             for attempt in range(3):
                 try:
-                    async with session.post("https://api.hyperliquid.xyz/info", json=payload) as response:
+                    # Rate-limit: wait for a slot before issuing the request
+                    await self._api_rate_limiter.acquire()
+                    async with session.post(
+                        "https://api.hyperliquid.xyz/info", json=payload
+                    ) as response:
+                        if response.status == 429:
+                            retry_after = float(response.headers.get("Retry-After", 0))
+                            backoff = max(retry_after, 2.0 * (2 ** attempt))  # 2s, 4s, 8s
+                            logger.warning(
+                                "trader_ws_bootstrap_429",
+                                address=address[:10],
+                                attempt=attempt,
+                                backoff_s=backoff,
+                            )
+                            if attempt == 2:
+                                return None
+                            await asyncio.sleep(backoff)
+                            continue
                         if response.status != 200:
                             raise RuntimeError(f"status={response.status}")
                         clearinghouse_state = await response.json()
 
-                        async with session.post(
-                            "https://api.hyperliquid.xyz/info",
-                            json={"type": "openOrders", "user": address},
-                        ) as response:
-                            if response.status != 200:
-                                raise RuntimeError(f"open_orders_status={response.status}")
-                            open_orders_data = await response.json()
-
-                            positions = clearinghouse_state.get("assetPositions", [])
-                            if not isinstance(positions, list):
-                                positions = []
-                            active_positions = [
-                                p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0
-                            ]
-                            symbol_positions = [
-                                p
-                                for p in active_positions
-                                if p.get("position", {}).get("coin") == self.config.symbol
-                            ]
-                            symbol_open_orders = self._filter_symbol_open_orders(open_orders_data)
-                            margin_summary = clearinghouse_state.get("marginSummary", {})
-                            return self._create_trader_positions_event(
-                                address=address,
-                                symbol_positions=symbol_positions,
-                                open_orders=symbol_open_orders,
-                                margin_summary=margin_summary if isinstance(margin_summary, dict) else {},
-                                allow_empty=True,
+                    # Rate-limit second request too
+                    await self._api_rate_limiter.acquire()
+                    async with session.post(
+                        "https://api.hyperliquid.xyz/info",
+                        json={"type": "openOrders", "user": address},
+                    ) as response:
+                        if response.status == 429:
+                            retry_after = float(response.headers.get("Retry-After", 0))
+                            backoff = max(retry_after, 2.0 * (2 ** attempt))
+                            logger.warning(
+                                "trader_ws_bootstrap_429_open_orders",
+                                address=address[:10],
+                                attempt=attempt,
+                                backoff_s=backoff,
                             )
+                            if attempt == 2:
+                                return None
+                            await asyncio.sleep(backoff)
+                            continue
+                        if response.status != 200:
+                            raise RuntimeError(f"open_orders_status={response.status}")
+                        open_orders_data = await response.json()
+
+                    positions = clearinghouse_state.get("assetPositions", [])
+                    if not isinstance(positions, list):
+                        positions = []
+                    active_positions = [
+                        p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0
+                    ]
+                    symbol_positions = [
+                        p
+                        for p in active_positions
+                        if p.get("position", {}).get("coin") == self.config.symbol
+                    ]
+                    symbol_open_orders = self._filter_symbol_open_orders(open_orders_data)
+                    margin_summary = clearinghouse_state.get("marginSummary", {})
+                    return self._create_trader_positions_event(
+                        address=address,
+                        symbol_positions=symbol_positions,
+                        open_orders=symbol_open_orders,
+                        margin_summary=margin_summary if isinstance(margin_summary, dict) else {},
+                        allow_empty=True,
+                    )
                 except Exception as exc:
                     if attempt == 2:
                         logger.warning(
@@ -418,7 +502,10 @@ class TraderWebSocketCollector:
                             error=str(exc),
                         )
                         return None
-                    await asyncio.sleep(0.2 * (attempt + 1))
+                    # Non-429 errors: short retry (0.5s, 1.0s, 1.5s)
+                    await asyncio.sleep(0.5 * (attempt + 1))
+
+            return None
 
     async def _handle_message(self, data: dict) -> None:
         """Handle incoming WebSocket message.
@@ -428,13 +515,25 @@ class TraderWebSocketCollector:
         """
         self._messages_received += 1
 
+        # Filter error channel messages (e.g. "Cannot track more than 10 total users.")
+        # These have channel="error" and data is a string, not a dict — skip them entirely
+        # to prevent AttributeError crashes downstream.
+        if data.get("channel") == "error":
+            logger.warning(
+                "trader_ws_server_error",
+                error_data=data.get("data"),
+            )
+            return
+
         # Debug: Log message receipt
         if self._messages_received <= 5:
+            msg_data = data.get("data", {})
+            has_user = bool(msg_data.get("user")) if isinstance(msg_data, dict) else False
             logger.debug(
                 "trader_ws_message_received",
                 msg_num=self._messages_received,
                 channel=data.get("channel"),
-                has_user=bool(data.get("data", {}).get("user")),
+                has_user=has_user,
             )
 
         should_flush = False
@@ -714,6 +813,9 @@ class TraderWebSocketCollector:
                 norm_items = []
                 for msg in norm_chunk:
                     data = msg.get("data", {})
+                    # Safety guard: skip messages where data is not a dict (e.g. error channel)
+                    if not isinstance(data, dict):
+                        continue
                     address = str(data.get("user", "")).lower()
                     clearinghouse = data.get("clearinghouseState", {})
                     positions = clearinghouse.get("assetPositions", [])
@@ -794,7 +896,10 @@ class TraderWebSocketCollector:
         Returns:
             StandardEvent or None if filtered
         """
+        # Safety guard: skip messages where data is not a dict (e.g. error channel messages)
         data = msg.get("data", {})
+        if not isinstance(data, dict):
+            return None
         address = str(data.get("user", "")).lower()
         clearinghouse = data.get("clearinghouseState", {})
         positions = clearinghouse.get("assetPositions", [])

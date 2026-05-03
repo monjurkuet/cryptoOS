@@ -161,7 +161,7 @@ class CandleBackfillConfig(BaseModel):
     )
     batch_size: int = Field(default=500, description="Candles per API request")
     rate_limit_delay: float = Field(default=0.5, description="Delay between requests (seconds)")
-    run_on_startup: bool = Field(default=True, description="Run backfill on every startup")
+    run_on_startup: bool = Field(default=False, description="Run backfill on every startup (disabled: causes OOM on budget VPS)")
     incremental: bool = Field(
         default=True,
         description="Only fetch missing data (check latest candle and fetch from there)",

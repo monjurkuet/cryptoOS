@@ -1,6 +1,7 @@
 # src/market_scraper/api/main.py
 
 import asyncio
+import os
 from contextlib import asynccontextmanager, suppress
 
 import structlog
@@ -20,6 +21,8 @@ from market_scraper.api.routes import (
 )
 from market_scraper.core.config import get_settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
+from market_scraper.utils.logging import configure_logging
+from market_scraper.utils.watchdog import WatchdogHeartbeat, notify_ready
 
 logger = structlog.get_logger(__name__)
 
@@ -31,9 +34,17 @@ async def lifespan(app: FastAPI):
     The HTTP server starts immediately, allowing access to API docs
     and health endpoints while MongoDB connects in the background.
     """
+    # Configure structured logging with LOG_LEVEL env var (default INFO)
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    configure_logging(level=log_level)
+
     lifecycle = LifecycleManager()
     app.state.lifecycle = lifecycle
     settings = get_settings()
+
+    # Start systemd watchdog heartbeat to prevent WatchdogSec kills
+    watchdog = WatchdogHeartbeat()
+    await watchdog.start()
 
     logger.info(
         "api_starting",
@@ -45,9 +56,15 @@ async def lifespan(app: FastAPI):
     # Start lifecycle in background - don't block HTTP server startup
     startup_task = asyncio.create_task(lifecycle.startup_background())
 
+    # Notify systemd that we're ready
+    notify_ready()
+
     yield
 
     logger.info("api_shutting_down")
+
+    # Stop watchdog heartbeat
+    await watchdog.stop()
 
     # Close all connectors
     try:

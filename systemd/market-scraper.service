@@ -14,13 +14,32 @@ Environment="PYTHONUNBUFFERED=1"
 Environment="LOG_LEVEL=INFO"
 ExecStart=/home/administrator/githubrepo/cryptoOS/.venv/bin/python -m market_scraper server --host 127.0.0.1 --port 3845
 Restart=always
-RestartSec=5
+RestartSec=15
+StartLimitIntervalSec=600
+StartLimitBurst=8
 StandardOutput=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper.log
 StandardError=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper.error.log
 
-# Resource limits - optimized for budget constraints
-MemoryMax=1G
-CPUQuota=80%
+# Resource limits - budget VPS (961MB RAM)
+# MemoryMax=768M to allow the service enough headroom to function
+# MemoryHigh=600M - throttle at 600M rather than kill
+MemoryMax=768M
+MemoryHigh=600M
+CPUQuota=70%
+
+# OOM protection - prefer killing this over critical system services
+OOMScoreAdjust=100
+
+# Watchdog - give 300s before declaring unresponsive
+# The service needs time to connect to MongoDB Atlas, subscribe to WebSockets,
+# and process large message batches. Previous 120s was too aggressive - the
+# error channel crash loop caused massive event loop lag (11-49s per flush)
+# that kept triggering the watchdog. The error channel fix should resolve the
+# crash loop, but remote MongoDB Atlas writes can still take 10-20s each,
+# and the bootstrap phase with 429 retries can take several minutes.
+# 300s provides sufficient margin for all startup and steady-state scenarios.
+WatchdogSec=300
+NotifyAccess=all
 
 # Security hardening
 NoNewPrivileges=true
@@ -29,7 +48,7 @@ ProtectHome=read-only
 ReadWritePaths=/home/administrator/githubrepo/cryptoOS/logs
 
 # Graceful shutdown
-TimeoutStopSec=30
+TimeoutStopSec=45
 KillMode=mixed
 KillSignal=SIGTERM
 
