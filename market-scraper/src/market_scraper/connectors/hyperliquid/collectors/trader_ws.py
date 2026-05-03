@@ -1162,11 +1162,17 @@ class TraderWSClient:
                 heartbeat=self.config.heartbeat_interval,
             )
 
-            self._reconnect_attempts = 0
             logger.info("trader_ws_client_connected", client_id=self.client_id)
 
             # Subscribe to all traders
+            # Guard against writing to a closing transport — check ws.closed
+            # before each send_json. If the WS closes mid-subscription, raise
+            # to trigger proper backoff reconnect (instead of a rapid 1s loop).
             for address in self.traders:
+                if self._ws.closed:
+                    raise ConnectionError(
+                        "WebSocket closed before subscription completed"
+                    )
                 await self._ws.send_json(
                     {
                         "method": "subscribe",
@@ -1174,6 +1180,11 @@ class TraderWSClient:
                     }
                 )
                 await asyncio.sleep(0.01)  # Small delay between subscriptions
+
+            # Only reset reconnect counter after full subscription success
+            # Previously this was set right after ws_connect, which caused
+            # only 1s backoff when send_json failed on a closing transport.
+            self._reconnect_attempts = 0
 
             logger.info(
                 "trader_ws_client_subscribed",
@@ -1301,11 +1312,12 @@ class TraderWSClient:
             await self.on_disconnect(self.client_id)
             return
 
-        # Exponential backoff
-        delay = min(
-            self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1)),
-            self.config.reconnect_max_delay,
-        )
+        # Exponential backoff with a minimum floor of 2s to prevent
+        # rapid reconnection storms that block the event loop.
+        # With 30+ WS clients all reconnecting at 1s, the event loop
+        # gets overwhelmed and HTTP becomes unresponsive.
+        raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
+        delay = max(2.0, min(raw_delay, self.config.reconnect_max_delay))
 
         logger.info(
             "trader_ws_client_reconnecting",
