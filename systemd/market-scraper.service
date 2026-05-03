@@ -3,6 +3,8 @@ Description=CryptoData Market Scraper Service
 Documentation=https://github.com/monjurkuet/cryptoOS
 After=network.target mongodb.service redis.service
 Wants=mongodb.service redis.service
+StartLimitIntervalSec=600
+StartLimitBurst=8
 
 [Service]
 Type=simple
@@ -15,8 +17,6 @@ Environment="LOG_LEVEL=INFO"
 ExecStart=/home/administrator/githubrepo/cryptoOS/.venv/bin/python -m market_scraper server --host 127.0.0.1 --port 3845
 Restart=always
 RestartSec=15
-StartLimitIntervalSec=600
-StartLimitBurst=8
 StandardOutput=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper.log
 StandardError=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper.error.log
 

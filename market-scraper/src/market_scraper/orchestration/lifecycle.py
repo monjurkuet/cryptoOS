@@ -357,7 +357,10 @@ class LifecycleManager:
                         await self._store_trading_signal(event)
 
                     if event.event_type == "trader_positions":
-                        await self._store_trader_positions_state(event)
+                        # Offload to background task to avoid blocking the event loop.
+                        # MongoDB Atlas writes can take 10-150s which causes massive
+                        # event loop lag, making health checks time out.
+                        asyncio.create_task(self._store_trader_positions_state(event))
 
                     if event.event_type == "ohlcv":
                         await self._store_ohlcv_candle(event)
@@ -1005,11 +1008,50 @@ class LifecycleManager:
                 except Exception as e:
                     logger.error("connector_health_task_error", error=str(e))
 
-            self._scheduler.schedule("connector_health", interval, check_connector_health)
+        self._scheduler.schedule("connector_health", interval, check_connector_health)
+        logger.info(
+            "scheduler_task_registered",
+            task="connector_health",
+            interval=connector_health_config.interval_seconds,
+        )
+
+        # Memory guardian task — periodic GC + RSS monitoring for VPS memory pressure
+        if "memory_guardian" in tasks and tasks["memory_guardian"].enabled:
+            mem_config = tasks["memory_guardian"]
+            interval = timedelta(seconds=mem_config.interval_seconds)
+
+        async def run_memory_guardian():
+            import gc as _gc
+
+            try:
+                _gc.collect()
+                rss_mb = 0.0
+                try:
+                    with open("/proc/self/status") as f:
+                        for line in f:
+                            if line.startswith("VmRSS:"):
+                                rss_mb = int(line.split()[1]) / 1024
+                                break
+                except Exception:
+                    pass
+
+                logger.info("memory_guardian", rss_mb=round(rss_mb, 1), gc="collected")
+
+                if rss_mb > 770:
+                    logger.warning(
+                        "memory_guardian_high_rss",
+                        rss_mb=round(rss_mb, 1),
+                        threshold_mb=770,
+                    )
+                    _gc.collect(generation=2)
+            except Exception as e:
+                logger.error("memory_guardian_error", error=str(e))
+
+            self._scheduler.schedule("memory_guardian", interval, run_memory_guardian)
             logger.info(
                 "scheduler_task_registered",
-                task="connector_health",
-                interval=connector_health_config.interval_seconds,
+                task="memory_guardian",
+                interval=mem_config.interval_seconds,
             )
 
         # Start the scheduler

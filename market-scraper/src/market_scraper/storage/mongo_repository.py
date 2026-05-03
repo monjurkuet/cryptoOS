@@ -68,6 +68,10 @@ class MongoRepository(DataRepository):
                 self._connection_string,
                 maxPoolSize=10,
                 minPoolSize=1,
+                serverSelectionTimeoutMS=5000,
+                socketTimeoutMS=30000,
+                waitQueueTimeoutMS=10000,
+                connectTimeoutMS=10000,
             )
             self._db = self._client[self._database_name]
             self._connected = True
