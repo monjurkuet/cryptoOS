@@ -3,9 +3,7 @@
 """Lifecycle manager for orchestrating all system components."""
 
 import asyncio
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -32,9 +30,6 @@ from market_scraper.storage.mongo_repository import MongoRepository
 
 logger = structlog.get_logger(__name__)
 
-# Module-level thread-local used by _thread_write_runner so that each
-# executor thread gets its own persistent event loop for Motor operations.
-_write_thread_local = threading.local()
 
 
 class LifecycleManager:
@@ -79,7 +74,6 @@ class LifecycleManager:
         self._health_monitor: HealthMonitor | None = None
         self._last_event_timestamps: dict[str, datetime] = {}
         self._write_semaphore: asyncio.Semaphore | None = None  # Lazy init
-        self._write_executor: ThreadPoolExecutor | None = None  # Lazy init
 
         RAW_EVENT_ALLOWLIST = {
         "trading_signal",
@@ -235,16 +229,7 @@ class LifecycleManager:
         # Stop health monitor
         if self._health_monitor:
             self._health_monitor = None
-            logger.info("health_monitor_stopped")
-
-        # Shutdown write executor
-        if self._write_executor:
-            try:
-                self._write_executor.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                pass
-            self._write_executor = None
-            logger.info("write_executor_stopped")
+        logger.info("health_monitor_stopped")
 
         # Stop scheduler
         if self._scheduler:
@@ -488,12 +473,14 @@ class LifecycleManager:
                 c=float(payload.get("close", 0) or 0),
                 v=float(payload.get("volume", 0) or 0),
             )
-            await self._retry_repository_op(
-                getattr(self._repository, "store_candle"),
-                candle,
-                symbol,
-                interval,
-                operation_name="store_candle",
+            asyncio.create_task(
+                self._fire_and_forget_write(
+                    getattr(self._repository, "store_candle"),
+                    candle,
+                    symbol,
+                    interval,
+                    operation_name="store_candle",
+                )
             )
         except Exception as e:
             logger.error("ohlcv_store_error", error=str(e), event_id=event.event_id)
@@ -531,10 +518,12 @@ class LifecycleManager:
                 t_flat=payload.get("tradersFlat", 0),
                 price=payload.get("price", 0),
             )
-            await self._retry_repository_op(
-                getattr(repository, "store_signal"),
-                signal,
-                operation_name="store_trading_signal",
+            asyncio.create_task(
+                self._fire_and_forget_write(
+                    getattr(repository, "store_signal"),
+                    signal,
+                    operation_name="store_trading_signal",
+                )
             )
             logger.debug("trading_signal_stored", symbol=signal.symbol, rec=signal.rec)
         except Exception as e:
@@ -588,16 +577,18 @@ class LifecycleManager:
                 logger.debug("trader_positions_timestamp_parse_failed", value=payload_timestamp)
 
         try:
-            await self._retry_repository_op(
-                getattr(repository, "upsert_trader_current_state"),
-                address,
-                symbol,
-                positions,
-                open_orders,
-                margin_summary if isinstance(margin_summary, dict) else {},
-                event_timestamp,
-                event.source,
-                operation_name="upsert_trader_current_state",
+            asyncio.create_task(
+                self._fire_and_forget_write(
+                    getattr(repository, "upsert_trader_current_state"),
+                    address,
+                    symbol,
+                    positions,
+                    open_orders,
+                    margin_summary if isinstance(margin_summary, dict) else {},
+                    event_timestamp,
+                    event.source,
+                    operation_name="upsert_trader_current_state",
+                )
             )
 
             # Keep normalized position history in trader_positions time-series when supported.
@@ -636,18 +627,22 @@ class LifecycleManager:
                 )
 
             if position_models and hasattr(repository, "store_trader_position_bulk"):
-                await self._retry_repository_op(
-                    getattr(repository, "store_trader_position_bulk"),
-                    position_models,
-                    operation_name="store_trader_position_bulk",
+                asyncio.create_task(
+                    self._fire_and_forget_write(
+                        getattr(repository, "store_trader_position_bulk"),
+                        position_models,
+                        operation_name="store_trader_position_bulk",
+                    )
                 )
             elif position_models and hasattr(repository, "store_trader_position"):
                 # Fallback: per-position insert when bulk method unavailable.
                 for position_model in position_models:
-                    await self._retry_repository_op(
-                        getattr(repository, "store_trader_position"),
-                        position_model,
-                        operation_name="store_trader_position",
+                    asyncio.create_task(
+                        self._fire_and_forget_write(
+                            getattr(repository, "store_trader_position"),
+                            position_model,
+                            operation_name="store_trader_position",
+                        )
                     )
 
             store_duration = time.monotonic() - store_start
@@ -667,6 +662,29 @@ class LifecycleManager:
                 error=e,
             )
 
+    async def _fire_and_forget_write(
+        self,
+        operation: Any,
+        *args: Any,
+        operation_name: str,
+    ) -> None:
+        """Fire-and-forget wrapper for repository writes.
+
+        Schedules the write via _retry_repository_op but catches and logs any
+        errors so callers never need to await the result. This keeps the event
+        loop responsive — storage handlers return immediately after scheduling.
+        """
+        try:
+            await self._retry_repository_op(
+                operation, *args, operation_name=operation_name
+            )
+        except Exception as e:
+            logger.error(
+                "fire_and_forget_write_failed",
+                operation=operation_name,
+                error=str(e),
+            )
+
     async def _retry_repository_op(
         self,
         operation: Any,
@@ -674,28 +692,21 @@ class LifecycleManager:
         operation_name: str,
         max_retries: int = 3,
     ) -> Any:
-        """Run repository operation on a dedicated thread via run_coroutine_threadsafe.
+        """Run repository operation with bounded exponential-backoff retries.
 
-        Motor operations are async coroutines that still occupy the event loop
-        during TCP I/O to MongoDB Atlas (which can take 10–150s per write).
-        By submitting the coroutine to asyncio.run_coroutine_threadsafe() on
-        a *separate* thread that runs its own event loop, the main event loop
-        is freed from blocking on Atlas round-trips.
-
-        Concurrency is still bounded by the semaphore (4 slots).
+        Concurrency is bounded by the semaphore (4 slots) to prevent
+        overwhelming MongoDB Atlas with too many simultaneous writes.
+        Callers should use _fire_and_forget_write() to avoid blocking
+        the event loop on slow Atlas round-trips.
         """
         if self._write_semaphore is None:
             self._write_semaphore = asyncio.Semaphore(4)
-        if self._write_executor is None:
-            self._write_executor = ThreadPoolExecutor(max_workers=4)
 
         async with self._write_semaphore:
             delay = 0.1
             for attempt in range(1, max_retries + 1):
                 try:
-                    return await asyncio.shield(
-                        self._run_in_write_thread(operation, *args)
-                    )
+                    return await operation(*args)
                 except Exception as e:
                     if attempt == max_retries:
                         raise
@@ -708,33 +719,6 @@ class LifecycleManager:
                     )
                     await asyncio.sleep(delay)
                     delay *= 2
-
-    async def _run_in_write_thread(self, operation: Any, *args: Any) -> Any:
-        """Submit a Motor coroutine to a background event loop on the write executor.
-
-        Creates a lightweight per-thread event loop so Motor's AsyncIOMotorClient
-        works correctly (Motor is bound to a single event loop per client).
-        The loop is created lazily and reused within each thread so that
-        the Motor client's connection pool remains valid across calls.
-        """
-        executor = self._write_executor
-        loop = asyncio.get_running_loop()
-        future = executor.submit(self._thread_write_runner, operation, args)
-        return await asyncio.wrap_future(future)
-
-    @staticmethod
-    def _thread_write_runner(operation: Any, args: tuple[Any, ...]) -> Any:
-        """Run an async repository operation on a background event loop.
-
-        Each thread gets its own event loop (stored as a thread-local) so
-        that Motor's AsyncIOMotorClient — which is bound to a single loop —
-        works correctly. The loop is reused across calls in the same thread.
-        """
-        loop = getattr(_write_thread_local, "event_loop", None)
-        if loop is None:
-            loop = asyncio.new_event_loop()
-            _write_thread_local.event_loop = loop
-        return loop.run_until_complete(operation(*args))
 
     async def _store_dead_letter(
         self,

@@ -21,6 +21,7 @@ from market_scraper.api.routes import (
 )
 from market_scraper.core.config import get_settings
 from market_scraper.orchestration.lifecycle import LifecycleManager
+from market_scraper.utils.health_server import ThreadHealthServer
 from market_scraper.utils.logging import configure_logging
 from market_scraper.utils.watchdog import WatchdogHeartbeat, notify_ready
 
@@ -42,6 +43,13 @@ async def lifespan(app: FastAPI):
     app.state.lifecycle = lifecycle
     settings = get_settings()
 
+    # Start thread-based liveness server on port 3846.
+    # This is independent of the asyncio event loop and always responds,
+    # even when the main loop is blocked by heavy MongoDB writes or WS processing.
+    # Caddy routes /health/live to this port for reliable health checks.
+    health_server = ThreadHealthServer(host="127.0.0.1", port=3846)
+    health_server.start()
+
     # Start systemd watchdog heartbeat to prevent WatchdogSec kills
     watchdog = WatchdogHeartbeat()
     await watchdog.start()
@@ -62,6 +70,9 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("api_shutting_down")
+
+    # Stop thread-based liveness server
+    health_server.stop()
 
     # Stop watchdog heartbeat
     await watchdog.stop()
