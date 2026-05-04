@@ -327,7 +327,7 @@ class DashboardParamsHistoryResponse(BaseModel):
 
 
 class DashboardDecisionTrace(BaseModel):
-    timestamp: str
+    timestamp: str = ""  # Derived from timestamp_ts if missing
     timestamp_ts: float
     symbol: str
     tracked_traders: int
@@ -335,15 +335,22 @@ class DashboardDecisionTrace(BaseModel):
     weighted_long_score: float
     weighted_short_score: float
     total_weight: float
-    bias_threshold: float
-    conf_scale: float
-    min_confidence: float
+    bias_threshold: float = 0.2  # Default — not stored per-trace
+    conf_scale: float = 1.0  # Default — not stored per-trace
+    min_confidence: float = 0.3  # Default — not stored per-trace
     net_bias: float
     raw_confidence: float
     scaled_confidence: float
     action: str
     result: Literal["emitted", "suppressed"]
     reason_code: str
+
+    def model_post_init(self, __context: Any) -> None:
+        """Derive timestamp string from timestamp_ts if not provided."""
+        if not self.timestamp and self.timestamp_ts:
+            from datetime import UTC, datetime
+
+            self.timestamp = datetime.fromtimestamp(self.timestamp_ts, tz=UTC).isoformat()
 
 
 class DashboardDecisionResponse(BaseModel):

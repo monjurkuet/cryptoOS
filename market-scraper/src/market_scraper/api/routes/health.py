@@ -89,11 +89,23 @@ async def health_status(
     """Detailed health status.
 
     Returns health information for all components.
+    Caches result for 5 seconds to prevent event-loop-blocking health checks
+    from causing cascading timeouts in the dashboard.
     """
+    import asyncio
+    import time
+
+    _HEALTH_STATUS_CACHE_TTL = 5.0
+    _HEALTH_CHECK_TIMEOUT = 3.0
+    cache_key = "_health_status_cache"
+    cached_entry = getattr(health_status, cache_key, None)
+    if cached_entry and (time.monotonic() - cached_entry[0]) <= _HEALTH_STATUS_CACHE_TTL:
+        return cached_entry[1]
+
     # If startup not complete, return startup status
     if not lifecycle.is_ready:
         startup_error = lifecycle.startup_error
-        return HealthResponse(
+        result = HealthResponse(
             status=HealthStatus.DEGRADED if not startup_error else HealthStatus.UNHEALTHY,
             version=__version__,
             components={
@@ -103,8 +115,22 @@ async def health_status(
                 }
             },
         )
+        setattr(health_status, cache_key, (time.monotonic(), result))
+        return result
 
-    components = await lifecycle.get_detailed_health()
+    try:
+        components = await asyncio.wait_for(
+            lifecycle.get_detailed_health(),
+            timeout=_HEALTH_CHECK_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        # Health check timed out — return cached stale data or degraded
+        if cached_entry:
+            return cached_entry[1]
+        components = {
+            "api": {"status": "healthy"},
+            "repository": {"status": "degraded", "error": "health_check_timed_out"},
+        }
 
     overall_status = HealthStatus.HEALTHY
     if any(c.get("status") == "unhealthy" for c in components.values()):
@@ -112,8 +138,10 @@ async def health_status(
     elif any(c.get("status") == "degraded" for c in components.values()):
         overall_status = HealthStatus.DEGRADED
 
-    return HealthResponse(
+    result = HealthResponse(
         status=overall_status,
         version=__version__,
         components=components,
     )
+    setattr(health_status, cache_key, (time.monotonic(), result))
+    return result

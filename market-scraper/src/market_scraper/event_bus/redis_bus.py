@@ -164,6 +164,50 @@ class RedisEventBus(EventBus):
             self._metrics["errors"] += 1
             raise EventBusError(f"Failed to publish bulk events: {e}") from e
 
+    async def _re_subscribe(self) -> None:
+        """Re-establish pubsub connection and re-subscribe all handlers.
+
+        Called when the pubsub connection is lost (e.g. Redis timeout during
+        event loop lag). Without this, the listener spins forever on a dead
+        pubsub and no events get delivered.
+        """
+        if not self._redis:
+            logger.error("redis_listener_resubscribe_no_redis")
+            return
+
+        try:
+            if self._pubsub:
+                try:
+                    await self._pubsub.unsubscribe()
+                    await self._pubsub.punsubscribe()
+                except Exception:
+                    pass
+                try:
+                    await self._pubsub.aclose()
+                except Exception:
+                    pass
+
+            # Create fresh pubsub
+            self._pubsub = self._redis.pubsub()
+
+            # Re-subscribe all registered handlers
+            handler_keys = list(self._handlers.keys())
+            for event_type in handler_keys:
+                if event_type == "*":
+                    await self._pubsub.psubscribe("events:*")
+                else:
+                    channel = f"events:{event_type}"
+                    await self._pubsub.subscribe(channel)
+
+            logger.info(
+                "redis_listener_resubscribed",
+                channels=handler_keys,
+                handler_count=len(handler_keys),
+            )
+        except Exception as e:
+            logger.error("redis_listener_resubscribe_error", error=str(e), exc_info=True)
+            raise
+
     async def _listener(self) -> None:
         """Background listener for incoming messages.
 
@@ -201,6 +245,11 @@ class RedisEventBus(EventBus):
                     # (psubscribe). In that case Redis emits both "message"
                     # and "pmessage" for the same payload.
                     if msg_type == "pmessage":
+                        # For pmessage, the channel name is in message["channel"]
+                        # NOT message["pattern"]. In redis-py's async PubSub,
+                        # message["channel"] contains the actual matched channel
+                        # (e.g. "events:leaderboard"), while message["pattern"]
+                        # contains the glob pattern (e.g. "events:*").
                         channel = str(message.get("channel", ""))
                         if channel.startswith("events:"):
                             channel_event_type = channel.split("events:", 1)[1]
@@ -259,4 +308,23 @@ class RedisEventBus(EventBus):
             except Exception as e:
                 self._metrics["errors"] += 1
                 logger.error("redis_listener_error", error=str(e), exc_info=True)
-                await asyncio.sleep(0.1)  # Brief pause on error
+                # If pubsub connection was lost, attempt to re-subscribe
+                # instead of spinning on a broken connection forever.
+                err_str = str(e).lower()
+                should_resubscribe = (
+                    "pubsub connection not set" in err_str
+                    or "connection lost" in err_str
+                    or "connection closed" in err_str
+                    or "broken pipe" in err_str
+                    or "connectionreset" in err_str
+                    or "eof" in err_str
+                )
+                if should_resubscribe:
+                    try:
+                        logger.info("redis_listener_resubscribe", error=str(e))
+                        await self._re_subscribe()
+                    except Exception as resub_err:
+                        logger.error("redis_listener_resubscribe_failed", error=str(resub_err))
+                    await asyncio.sleep(1.0)  # Longer pause after re-subscribe attempt
+                else:
+                    await asyncio.sleep(0.1)  # Brief pause on other errors

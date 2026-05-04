@@ -16,7 +16,7 @@ from market_scraper.orchestration.lifecycle import LifecycleManager
 
 router = APIRouter()
 _TRADERS_ROUTE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_TRADERS_CACHE_TTL_SECONDS = 10.0
+_TRADERS_CACHE_TTL_SECONDS = 30.0
 _TRADERS_HARD_TIMEOUT_SECONDS = 12.0
 
 
