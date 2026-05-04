@@ -48,7 +48,7 @@ volume_tiers:
 # Filter Criteria - Traders must match ALL filters
 filters:
   min_score: 50              # Minimum score to be tracked (0-100+)
-  max_count: 500             # Maximum traders to track
+  max_count: 200             # Maximum traders to track
   min_account_value: 10000   # Minimum account value ($10K)
 
   # Optional: Require specific performance

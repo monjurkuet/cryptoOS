@@ -57,7 +57,7 @@ class FilterConfig(BaseModel):
     """
 
     min_score: float = 50
-    max_count: int = 500
+    max_count: int = 200
     min_account_value: float = 10000
     require_positive: dict[str, bool] = Field(default_factory=dict)
     exclude: dict[str, list[str]] = Field(default_factory=dict)

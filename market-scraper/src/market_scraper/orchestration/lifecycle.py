@@ -74,6 +74,9 @@ class LifecycleManager:
         self._health_monitor: HealthMonitor | None = None
         self._last_event_timestamps: dict[str, datetime] = {}
         self._write_semaphore: asyncio.Semaphore | None = None  # Lazy init
+        self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
+        self._max_active_writes: int = 8  # Cap total concurrent write tasks
+        self._ws_sync_task: asyncio.Task | None = None  # Background WS collector startup
 
         RAW_EVENT_ALLOWLIST = {
         "trading_signal",
@@ -246,6 +249,14 @@ class LifecycleManager:
             except Exception as e:
                 logger.error("leaderboard_stop_error", error=str(e), exc_info=True)
             self._leaderboard_collector = None
+
+        # Cancel background WS sync task
+        if self._ws_sync_task and not self._ws_sync_task.done():
+            self._ws_sync_task.cancel()
+            try:
+                await self._ws_sync_task
+            except asyncio.CancelledError:
+                logger.debug("ws_sync_task_cancelled")
 
         # Stop trader websocket collector
         if self._trader_ws_collector:
@@ -673,17 +684,36 @@ class LifecycleManager:
         Schedules the write via _retry_repository_op but catches and logs any
         errors so callers never need to await the result. This keeps the event
         loop responsive — storage handlers return immediately after scheduling.
+
+        If too many write tasks are already in-flight (exceeding _max_active_writes),
+        the write is dropped to prevent event loop starvation from too many
+        pending Motor socket callbacks.
         """
-        try:
-            await self._retry_repository_op(
-                operation, *args, operation_name=operation_name
-            )
-        except Exception as e:
-            logger.error(
-                "fire_and_forget_write_failed",
+        if self._active_write_count >= self._max_active_writes:
+            logger.debug(
+                "fire_and_forget_write_dropped",
                 operation=operation_name,
-                error=str(e),
+                active=self._active_write_count,
+                max=self._max_active_writes,
             )
+            return
+
+        async def _guarded_write() -> None:
+            self._active_write_count += 1
+            try:
+                await self._retry_repository_op(
+                    operation, *args, operation_name=operation_name
+                )
+            except Exception as e:
+                logger.error(
+                    "fire_and_forget_write_failed",
+                    operation=operation_name,
+                    error=str(e),
+                )
+            finally:
+                self._active_write_count -= 1
+
+        asyncio.create_task(_guarded_write())
 
     async def _retry_repository_op(
         self,
@@ -691,18 +721,36 @@ class LifecycleManager:
         *args: Any,
         operation_name: str,
         max_retries: int = 3,
+        semaphore_timeout: float = 2.0,
     ) -> Any:
         """Run repository operation with bounded exponential-backoff retries.
 
         Concurrency is bounded by the semaphore (4 slots) to prevent
         overwhelming MongoDB Atlas with too many simultaneous writes.
+        If the semaphore can't be acquired within semaphore_timeout seconds,
+        the write is skipped to avoid blocking the event loop. Data will
+        be refreshed on the next flush cycle.
         Callers should use _fire_and_forget_write() to avoid blocking
         the event loop on slow Atlas round-trips.
         """
         if self._write_semaphore is None:
             self._write_semaphore = asyncio.Semaphore(4)
 
-        async with self._write_semaphore:
+        # Try to acquire semaphore with timeout to prevent event loop blocking
+        try:
+            await asyncio.wait_for(
+                self._write_semaphore.acquire(),
+                timeout=semaphore_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "repository_semaphore_timeout",
+                operation=operation_name,
+                timeout=semaphore_timeout,
+            )
+            return None  # Skip this write — data refreshes on next cycle
+
+        try:
             delay = 0.1
             for attempt in range(1, max_retries + 1):
                 try:
@@ -719,6 +767,8 @@ class LifecycleManager:
                     )
                     await asyncio.sleep(delay)
                     delay *= 2
+        finally:
+            self._write_semaphore.release()
 
     async def _store_dead_letter(
         self,
@@ -899,8 +949,10 @@ class LifecycleManager:
     async def _init_trader_ws_collector(self) -> None:
         """Initialize the trader WebSocket collector for position tracking.
 
-        This collector subscribes to tracked traders and publishes their
-        real-time position data to the event bus.
+        Creates the collector and schedules WS subscription sync as a
+        fire-and-forget background task. The service becomes is_ready
+        immediately — WS connections ramp up in the background via the
+        staggered _ramp_up_clients() method (~50s for 50 clients).
         """
         if not self._event_bus:
             raise RuntimeError("Event bus not initialized")
@@ -963,11 +1015,17 @@ class LifecycleManager:
 
         await self._event_bus.subscribe("leaderboard", leaderboard_sync_handler)
 
-        # Wait a moment for leaderboard to process and store tracked traders
-        # Then get tracked addresses from leaderboard collector
-        await asyncio.sleep(2.0)
+        # Schedule WS sync as a background task (non-blocking).
+        # The collector's start() method launches the staggered ramp-up
+        # internally, so this task returns quickly while WS connections
+        # ramp up over ~50s in the background.
+        async def _deferred_ws_sync() -> None:
+            # Give leaderboard a moment to process and store tracked traders
+            await asyncio.sleep(2.0)
+            await sync_trader_ws_from_repository(reason="startup")
 
-        await sync_trader_ws_from_repository(reason="startup")
+        self._ws_sync_task = asyncio.create_task(_deferred_ws_sync())
+        logger.info("trader_ws_sync_scheduled_background")
 
     async def _init_scheduler(self) -> None:
         """Initialize the scheduler with configured tasks."""
@@ -1214,7 +1272,16 @@ class LifecycleManager:
             result["leaderboard"].update(self._leaderboard_collector.get_stats())
 
         if self._trader_ws_collector:
-            result["trader_ws"].update(self._trader_ws_collector.get_stats())
+            stats = self._trader_ws_collector.get_stats()
+            result["trader_ws"].update(stats)
+            # Expose ramp-up progress as a top-level component for dashboard visibility
+            ramp_up = stats.get("ws_ramp_up", {})
+            result["ws_ramp_up"] = {
+                "status": "ramping" if not ramp_up.get("complete") else "complete",
+                "connected": ramp_up.get("connected", 0),
+                "total": ramp_up.get("total", 0),
+                "progress": f"{ramp_up.get('connected', 0)}/{ramp_up.get('total', 0)}",
+            }
 
         result["data_freshness"] = self._build_freshness_component()
 

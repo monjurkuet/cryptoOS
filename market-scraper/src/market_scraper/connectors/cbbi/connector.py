@@ -59,7 +59,7 @@ class CBBIConnector(DataConnector):
             ConnectionError: If connection fails after retries
         """
         try:
-            await self._client.connect()
+            self._client.connect()  # sync — no await needed
             self._connected = True
             logger.info("cbbi_connector_connected")
         except Exception as e:
@@ -73,7 +73,7 @@ class CBBIConnector(DataConnector):
         """
         self._running = False
         self._connected = False
-        await self._client.close()
+        self._client.close()  # sync — no await needed
         logger.info("cbbi_connector_disconnected")
 
     async def get_historical_data(

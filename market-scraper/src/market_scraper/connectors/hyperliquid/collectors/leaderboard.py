@@ -175,7 +175,7 @@ class LeaderboardCollector:
 
                 # Store derived data via repository if available
                 if self._repository is not None:
-                    await self._store_derived_data(filtered, total_traders)
+                    asyncio.create_task(self._store_derived_data(filtered, total_traders))
 
                 # Emit canonical leaderboard event consumed by processors.
                 event = StandardEvent.create(

@@ -208,6 +208,20 @@ class RedisEventBus(EventBus):
             logger.error("redis_listener_resubscribe_error", error=str(e), exc_info=True)
             raise
 
+    async def _safe_handler_call(self, handler: EventHandler, event: StandardEvent) -> None:
+        """Safely call an event handler, updating metrics on success/failure."""
+        try:
+            await handler(event)
+            self._metrics["delivered"] += 1
+        except Exception as e:
+            self._metrics["errors"] += 1
+            logger.error(
+                "redis_event_handler_error",
+                event_type=event.event_type,
+                error=str(e),
+                exc_info=True,
+            )
+
     async def _listener(self) -> None:
         """Background listener for incoming messages.
 
@@ -273,25 +287,25 @@ class RedisEventBus(EventBus):
                         handlers_count=len(handlers),
                     )
 
-                    # Execute handlers
+                    # Execute handlers non-blocking to prevent slow handlers
+                    # (e.g. MongoDB storage) from blocking the listener loop
                     for _priority, handler in handlers:
                         try:
-                            await handler(event)
-                            self._metrics["delivered"] += 1
+                            asyncio.create_task(
+                                self._safe_handler_call(handler, event)
+                            )
                         except Exception as e:
                             self._metrics["errors"] += 1
-                            # Log error but continue with other handlers
                             logger.error(
-                                "redis_event_handler_error",
+                                "redis_event_handler_dispatch_error",
                                 event_type=event.event_type,
                                 error=str(e),
-                                exc_info=True,
                             )
 
-                        # Yield to event loop after each handler to prevent
-                        # starving HTTP request handling during high-throughput
-                        # bursts (e.g. 37+ trader events/flush)
-                        await asyncio.sleep(0)
+                    # Yield to event loop after dispatching all handlers
+                    # to prevent starving HTTP request handling during
+                    # high-throughput bursts
+                    await asyncio.sleep(0)
 
                 except json.JSONDecodeError as e:
                     self._metrics["errors"] += 1

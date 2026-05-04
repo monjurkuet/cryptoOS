@@ -116,13 +116,15 @@ async def get_onchain_summary() -> dict[str, Any]:
         connectors = await get_all_connectors()
         blockchain, fear_greed, coin_metrics, cbbi, bitview, exchange_flow = connectors
 
-        # Fetch all data in parallel for speed
-        network_task = blockchain.get_current_metrics()
-        sentiment_task = fear_greed.get_current_index()
-        activity_task = coin_metrics.get_latest_metrics()
-        cbbi_task = cbbi.get_current_index()
-        sopr_task = bitview.get_summary()
-        flow_task = exchange_flow.get_current_flows()
+        # Fetch all data in parallel with per-connector timeouts
+        # to prevent one slow API from blocking the entire response
+        CONNECTOR_TIMEOUT = 20  # seconds max per connector
+        network_task = asyncio.wait_for(blockchain.get_current_metrics(), timeout=CONNECTOR_TIMEOUT)
+        sentiment_task = asyncio.wait_for(fear_greed.get_current_index(), timeout=CONNECTOR_TIMEOUT)
+        activity_task = asyncio.wait_for(coin_metrics.get_latest_metrics(), timeout=CONNECTOR_TIMEOUT)
+        cbbi_task = asyncio.wait_for(cbbi.get_current_index(), timeout=CONNECTOR_TIMEOUT)
+        sopr_task = asyncio.wait_for(bitview.get_summary(), timeout=CONNECTOR_TIMEOUT)
+        flow_task = asyncio.wait_for(exchange_flow.get_current_flows(), timeout=CONNECTOR_TIMEOUT)
 
         results = await asyncio.gather(
             network_task,

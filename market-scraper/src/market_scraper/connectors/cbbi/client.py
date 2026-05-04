@@ -1,6 +1,13 @@
 # src/market_scraper/connectors/cbbi/client.py
 
-"""HTTP client for CBBI API interactions."""
+"""HTTP client for CBBI API interactions.
+
+Uses synchronous httpx.Client with asyncio.to_thread() to prevent
+slow remote servers from blocking the event loop. The async httpx
+client's read timeout doesn't protect against servers that slowly
+trickle data (chunked transfer encoding), so a sync client in a
+thread with a hard wait_for timeout is more reliable.
+"""
 
 import asyncio
 import time
@@ -13,19 +20,24 @@ from market_scraper.connectors.cbbi.config import CBBIConfig
 
 logger = structlog.get_logger(__name__)
 
+# Hard timeout for the entire fetch operation (seconds).
+# This is the absolute maximum time we'll wait, regardless
+# of what the remote server does.
+_CBBI_FETCH_TIMEOUT = 20.0
+
 
 class CBBIClient:
     """HTTP client for fetching CBBI data.
 
-    This client handles all HTTP interactions with the CBBI API,
-    including connection management, request retries, and response handling.
+    Uses synchronous httpx.Client with asyncio.to_thread() to prevent
+    slow remote servers from blocking the event loop.
 
     CBBI (Colin Talks Crypto Bitcoin Bull Run Index) provides Bitcoin
     sentiment data that updates approximately once per day.
 
     Attributes:
         config: CBBI configuration
-        _client: HTTP client (initialized on connect)
+        _client: Sync HTTP client (initialized on connect)
     """
 
     def __init__(self, config: CBBIConfig) -> None:
@@ -35,7 +47,7 @@ class CBBIClient:
             config: CBBI connector configuration
         """
         self.config = config
-        self._client: httpx.AsyncClient | None = None
+        self._client: httpx.Client | None = None
         self._rate_limiter = asyncio.Lock()
         self._last_fetch_time: float = 0
 
@@ -43,10 +55,10 @@ class CBBIClient:
         """Build the canonical latest data endpoint from configuration."""
         return f"{str(self.config.base_url).rstrip('/')}/latest.json"
 
-    async def connect(self) -> None:
+    def connect(self) -> None:
         """Establish HTTP connection pool.
 
-        Creates and configures the HTTP session for API requests.
+        Creates and configures the synchronous HTTP session for API requests.
 
         Raises:
             ConnectionError: If connection pool initialization fails
@@ -55,8 +67,8 @@ class CBBIClient:
             return
 
         try:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0, connect=10.0),
+            self._client = httpx.Client(
+                timeout=httpx.Timeout(15.0, connect=5.0, read=15.0, write=5.0),
                 follow_redirects=True,
                 headers={
                     "Accept": "application/json",
@@ -68,20 +80,41 @@ class CBBIClient:
             logger.error("cbbi_client_connect_failed", error=str(e))
             raise ConnectionError(f"Failed to initialize CBBI client: {e}") from e
 
-    async def close(self) -> None:
+    def close(self) -> None:
         """Close HTTP connection pool.
 
         Gracefully closes all connections and releases resources.
         """
         if self._client:
-            await self._client.aclose()
+            self._client.close()
             self._client = None
             logger.info("cbbi_client_closed")
+
+    def _sync_fetch_index_data(self, url: str) -> dict[str, Any]:
+        """Synchronous fetch — runs in thread pool via asyncio.to_thread().
+
+        Args:
+            url: The URL to fetch
+
+        Returns:
+            Parsed JSON data dict
+
+        Raises:
+            httpx.HTTPError: If the request fails
+        """
+        if self._client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+
+        response = self._client.get(url)
+        response.raise_for_status()
+        return response.json()
 
     async def get_index_data(self) -> dict[str, Any]:
         """Fetch current CBBI index data.
 
         Retrieves the current CBBI index value and all component metrics.
+        Uses asyncio.to_thread() to prevent slow servers from blocking
+        the event loop, with a hard wait_for timeout as safety net.
 
         Returns:
             Dictionary containing CBBI index data with the following structure:
@@ -93,6 +126,7 @@ class CBBIClient:
             }
 
         Raises:
+            asyncio.TimeoutError: If fetch exceeds _CBBI_FETCH_TIMEOUT
             httpx.HTTPError: If the API request fails
         """
         if self._client is None:
@@ -101,10 +135,13 @@ class CBBIClient:
         async with self._rate_limiter:
             try:
                 start_time = time.time()
-                response = await self._client.get(self._latest_url())
-                response.raise_for_status()
 
-                data = response.json()
+                # Run sync HTTP fetch in thread pool to avoid blocking event loop
+                data = await asyncio.wait_for(
+                    asyncio.to_thread(self._sync_fetch_index_data, self._latest_url()),
+                    timeout=_CBBI_FETCH_TIMEOUT,
+                )
+
                 self._last_fetch_time = time.time()
 
                 latency_ms = (time.time() - start_time) * 1000
@@ -116,6 +153,12 @@ class CBBIClient:
 
                 return data
 
+            except asyncio.TimeoutError:
+                logger.error(
+                    "cbbi_fetch_timeout",
+                    timeout_s=_CBBI_FETCH_TIMEOUT,
+                )
+                raise
             except httpx.HTTPStatusError as e:
                 logger.error(
                     "cbbi_http_error",
@@ -189,8 +232,8 @@ class CBBIClient:
 
         Args:
             component: Name of the component metric (e.g., "PiCycleTop",
-                      "RUPL", "RHODL", "Puell", "TwoYearMA", "MVRV",
-                      "ReserveRisk", "Woobull")
+                "RUPL", "RHODL", "Puell", "TwoYearMA", "MVRV",
+                "ReserveRisk", "Woobull")
 
         Returns:
             Dictionary containing component data:
@@ -273,6 +316,12 @@ class CBBIClient:
                 "status": "healthy",
                 "latency_ms": round(latency, 2),
                 "message": "API responding normally",
+            }
+        except asyncio.TimeoutError:
+            return {
+                "status": "unhealthy",
+                "latency_ms": 0,
+                "message": f"Fetch timed out after {_CBBI_FETCH_TIMEOUT}s",
             }
         except Exception as e:
             return {

@@ -1,6 +1,11 @@
 # src/market_scraper/connectors/exchange_flow/client.py
 
-"""HTTP client for fetching exchange flow data from Coin Metrics CSV."""
+"""HTTP client for fetching exchange flow data from Coin Metrics CSV.
+
+Uses synchronous httpx.Client with asyncio.to_thread() to prevent
+slow remote servers from blocking the event loop. CSV parsing is
+also done in the thread.
+"""
 
 import asyncio
 import csv
@@ -15,12 +20,17 @@ from market_scraper.connectors.exchange_flow.config import ExchangeFlowConfig
 
 logger = structlog.get_logger(__name__)
 
+# Hard timeout for CSV fetch + parse (seconds)
+_EXCHANGE_FLOW_FETCH_TIMEOUT = 30.0
+
 
 class ExchangeFlowClient:
     """HTTP client for fetching exchange flow data.
 
     Fetches Bitcoin exchange flow data from Coin Metrics Community CSV
     hosted on GitHub. No API key required. No rate limits.
+
+    Uses sync httpx.Client + asyncio.to_thread() to avoid event loop blocking.
 
     Available metrics:
     - FlowInExNtv: Exchange inflow in BTC
@@ -43,19 +53,19 @@ class ExchangeFlowClient:
             config: Exchange Flow connector configuration
         """
         self.config = config
-        self._client: httpx.AsyncClient | None = None
+        self._client: httpx.Client | None = None
         self._rate_limiter = asyncio.Lock()
         self._cache: dict[str, Any] | None = None
         self._cache_time: float = 0
 
-    async def connect(self) -> None:
-        """Establish HTTP connection pool."""
+    def connect(self) -> None:
+        """Establish HTTP connection pool (sync)."""
         if self._client is not None:
             return
 
         try:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(120.0, connect=10.0),  # CSV can be large
+            self._client = httpx.Client(
+                timeout=httpx.Timeout(20.0, connect=5.0, read=20.0, write=5.0),
                 follow_redirects=True,
                 headers={
                     "Accept": "text/csv",
@@ -67,15 +77,36 @@ class ExchangeFlowClient:
             logger.error("exchange_flow_client_connect_failed", error=str(e))
             raise ConnectionError(f"Failed to initialize Exchange Flow client: {e}") from e
 
-    async def close(self) -> None:
-        """Close HTTP connection pool."""
+    def close(self) -> None:
+        """Close HTTP connection pool (sync)."""
         if self._client:
-            await self._client.aclose()
+            self._client.close()
             self._client = None
             logger.info("exchange_flow_client_closed")
 
+    def _sync_fetch_and_parse(self, url: str, use_cache: bool = True) -> dict[str, Any]:
+        """Synchronous fetch + parse — runs in thread pool.
+
+        Args:
+            url: CSV URL to fetch
+            use_cache: Whether to return cached data if fresh
+
+        Returns:
+            Parsed data dict
+        """
+        if self._client is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+
+        response = self._client.get(url)
+        response.raise_for_status()
+        csv_content = response.text
+        return self._parse_csv(csv_content)
+
     async def fetch_csv_data(self, use_cache: bool = True) -> dict[str, Any]:
         """Fetch and parse the Coin Metrics BTC CSV.
+
+        Uses asyncio.to_thread() to prevent slow servers from blocking
+        the event loop, with a hard wait_for timeout as safety net.
 
         Args:
             use_cache: Whether to use cached data if available
@@ -89,6 +120,7 @@ class ExchangeFlowClient:
             - supply_btc: List of exchange supply values
 
         Raises:
+            asyncio.TimeoutError: If fetch exceeds timeout
             httpx.HTTPError: If the HTTP request fails
         """
         # Check cache
@@ -104,19 +136,22 @@ class ExchangeFlowClient:
         async with self._rate_limiter:
             try:
                 start_time = time.time()
-                response = await self._client.get(str(self.config.csv_url))
-                response.raise_for_status()
 
-                csv_content = response.text
-                latency_ms = (time.time() - start_time) * 1000
-
-                # Parse CSV
-                data = self._parse_csv(csv_content)
+                # Run sync HTTP fetch + CSV parse in thread pool
+                data = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._sync_fetch_and_parse,
+                        str(self.config.csv_url),
+                        use_cache,
+                    ),
+                    timeout=_EXCHANGE_FLOW_FETCH_TIMEOUT,
+                )
 
                 # Cache the result
                 self._cache = data
                 self._cache_time = time.time()
 
+                latency_ms = (time.time() - start_time) * 1000
                 logger.info(
                     "exchange_flow_data_fetched",
                     latency_ms=round(latency_ms, 2),
@@ -125,6 +160,12 @@ class ExchangeFlowClient:
 
                 return data
 
+            except asyncio.TimeoutError:
+                logger.error(
+                    "exchange_flow_fetch_timeout",
+                    timeout_s=_EXCHANGE_FLOW_FETCH_TIMEOUT,
+                )
+                raise
             except httpx.HTTPStatusError as e:
                 logger.error(
                     "exchange_flow_http_error",
@@ -266,6 +307,12 @@ class ExchangeFlowClient:
                 "status": "healthy",
                 "latency_ms": round(latency, 2),
                 "message": "Exchange Flow API responding",
+            }
+        except asyncio.TimeoutError:
+            return {
+                "status": "unhealthy",
+                "latency_ms": 0,
+                "message": f"Fetch timed out after {_EXCHANGE_FLOW_FETCH_TIMEOUT}s",
             }
         except Exception as e:
             return {

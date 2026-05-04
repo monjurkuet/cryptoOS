@@ -3,7 +3,10 @@
 from datetime import UTC, datetime
 from typing import Any
 
+import asyncio
+
 import motor.motor_asyncio
+import pymongo
 import structlog
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
@@ -51,8 +54,12 @@ class MongoRepository(DataRepository):
         """
         super().__init__(connection_string)
         self._database_name = database_name
+        # Async Motor client (for reads and index creation)
         self._client: motor.motor_asyncio.AsyncIOMotorClient | None = None
         self._db: motor.motor_asyncio.AsyncIOMotorDatabase | None = None
+        # Sync pymongo client (for writes via asyncio.to_thread — avoids event-loop blocking)
+        self._sync_client: pymongo.MongoClient | None = None
+        self._sync_db: pymongo.database.Database | None = None
 
     async def connect(self) -> None:
         """Connect to MongoDB.
@@ -74,6 +81,19 @@ class MongoRepository(DataRepository):
                 connectTimeoutMS=10000,
             )
             self._db = self._client[self._database_name]
+
+            # Sync pymongo client for writes (runs in thread pool, never blocks event loop)
+            self._sync_client = pymongo.MongoClient(
+                self._connection_string,
+                maxPoolSize=4,
+                minPoolSize=1,
+                serverSelectionTimeoutMS=5000,
+                socketTimeoutMS=15000,
+                waitQueueTimeoutMS=5000,
+                connectTimeoutMS=5000,
+            )
+            self._sync_db = self._sync_client[self._database_name]
+
             self._connected = True
 
             # Create indexes
@@ -87,6 +107,8 @@ class MongoRepository(DataRepository):
 
     async def disconnect(self) -> None:
         """Close MongoDB connection."""
+        if self._sync_client:
+            self._sync_client.close()
         if self._client:
             self._client.close()
             logger.info("mongodb_disconnected")
@@ -305,14 +327,13 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails (excluding duplicates).
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
             doc = event.model_dump()
             doc.pop("payload", None)
-            await self._db.events.insert_one(doc)
-            return True
+            return await asyncio.to_thread(self._sync_store, doc)
         except DuplicateKeyError:
             logger.debug(
                 "event_duplicate_skipped",
@@ -321,6 +342,11 @@ class MongoRepository(DataRepository):
             return False
         except Exception as e:
             raise StorageError(f"Failed to store event: {e}") from e
+
+    def _sync_store(self, doc: dict) -> bool:
+        """Sync implementation of store (runs in thread pool)."""
+        self._sync_db.events.insert_one(doc)
+        return True
 
     async def store_bulk(self, events: list[StandardEvent]) -> int:
         """Store multiple events efficiently.
@@ -337,7 +363,7 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected.
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         if not events:
@@ -345,11 +371,7 @@ class MongoRepository(DataRepository):
 
         try:
             documents = [{k: v for k, v in e.model_dump().items() if k != "payload"} for e in events]
-            result = await self._db.events.insert_many(
-                documents,
-                ordered=False,  # Continue on error
-            )
-            return len(result.inserted_ids)
+            return await asyncio.to_thread(self._sync_store_bulk, documents)
         except BulkWriteError as e:
             # Partial success - some events were inserted, some were duplicates
             n_inserted = e.details.get("nInserted", 0)
@@ -365,6 +387,11 @@ class MongoRepository(DataRepository):
             return n_inserted
         except Exception as e:
             raise StorageError(f"Failed to store bulk events: {e}") from e
+
+    def _sync_store_bulk(self, documents: list[dict]) -> int:
+        """Sync implementation of store_bulk (runs in thread pool)."""
+        result = self._sync_db.events.insert_many(documents, ordered=False)
+        return len(result.inserted_ids)
 
     async def query(
         self,
@@ -769,37 +796,37 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails.
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            collection = self._db[CollectionName.TRADER_POSITIONS]
             normalized = position.model_dump()
             normalized["eth"] = str(normalized.get("eth", "")).lower()
             comparable = self._position_snapshot_payload(normalized)
 
-            latest = await collection.find_one(
-                {"eth": comparable["eth"], "coin": comparable["coin"]},
-                {
-                    "_id": 0,
-                    "eth": 1,
-                    "coin": 1,
-                    "sz": 1,
-                    "ep": 1,
-                    "mp": 1,
-                    "upnl": 1,
-                    "lev": 1,
-                    "liq": 1,
-                },
-                sort=[("t", -1)],
+            return await asyncio.to_thread(
+                self._sync_store_trader_position, normalized, comparable
             )
-            if latest and self._position_snapshot_payload(latest) == comparable:
-                return True
-
-            await collection.insert_one(normalized)
-            return True
         except Exception as e:
             raise StorageError(f"Failed to store position: {e}") from e
+
+    def _sync_store_trader_position(
+        self, normalized: dict, comparable: dict
+    ) -> bool:
+        """Sync implementation of store_trader_position (runs in thread pool)."""
+        collection = self._sync_db[CollectionName.TRADER_POSITIONS]
+        latest = collection.find_one(
+            {"eth": comparable["eth"], "coin": comparable["coin"]},
+            {
+                "_id": 0, "eth": 1, "coin": 1, "sz": 1,
+                "ep": 1, "mp": 1, "upnl": 1, "lev": 1, "liq": 1,
+            },
+            sort=[("t", -1)],
+        )
+        if latest and self._position_snapshot_payload(latest) == comparable:
+            return True
+        collection.insert_one(normalized)
+        return True
 
     async def store_trader_position_bulk(self, positions: list[TraderPosition]) -> int:
         """Bulk-store trader position snapshots with a single insert_many call.
@@ -1466,24 +1493,30 @@ class MongoRepository(DataRepository):
         selected_addresses: list[str],
         updated_at: datetime | None = None,
     ) -> int:
-        """Deactivate active traders not in the selected address set."""
-        if self._db is None:
+        """Deactivate active traders not in the selected address set.
+
+        Uses sync pymongo via asyncio.to_thread() to avoid blocking the
+        event loop with slow MongoDB Atlas round-trips (30s+ timeouts).
+        """
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
             now = updated_at or datetime.now(UTC)
             normalized = [a.lower() for a in selected_addresses if a]
-            collection = self._db[CollectionName.TRACKED_TRADERS]
 
-            query: dict[str, Any] = {"active": True}
-            if normalized:
-                query["eth"] = {"$nin": normalized}
+            def _sync_deactivate() -> int:
+                collection = self._sync_db[CollectionName.TRACKED_TRADERS]
+                query: dict[str, Any] = {"active": True}
+                if normalized:
+                    query["eth"] = {"$nin": normalized}
+                result = collection.update_many(
+                    query,
+                    {"$set": {"active": False, "updated_at": now}},
+                )
+                return int(result.modified_count)
 
-            result = await collection.update_many(
-                query,
-                {"$set": {"active": False, "updated_at": now}},
-            )
-            return int(result.modified_count)
+            return await asyncio.to_thread(_sync_deactivate)
         except Exception as e:
             raise StorageError(f"Failed to deactivate unselected traders: {e}") from e
 
@@ -1511,65 +1544,83 @@ class MongoRepository(DataRepository):
         source: str,
     ) -> bool:
         """Upsert latest trader current state snapshot."""
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            now = datetime.now(UTC)
-            collection = self._db[CollectionName.TRADER_CURRENT_STATE]
-            existing = await collection.find_one(
-                {
-                    "symbol": str(symbol or "").upper(),
-                    "$or": [
-                        {"eth": address.lower()},
-                        {"ethAddress": address.lower()},
-                    ],
-                },
-                {
-                    "eth": 1,
-                    "ethAddress": 1,
-                    "symbol": 1,
-                    "positions": 1,
-                    "open_orders": 1,
-                    "margin_summary": 1,
-                    "last_event_time": 1,
-                    "source": 1,
-                    "btc_trade_meta": 1,
-                },
+            return await asyncio.to_thread(
+                self._sync_upsert_trader_current_state,
+                address, symbol, positions, open_orders,
+                margin_summary, event_timestamp, source,
             )
-
-            doc, closed_trade = self._current_state_payload(
-                address=address,
-                symbol=symbol,
-                positions=positions,
-                open_orders=open_orders,
-                margin_summary=margin_summary,
-                event_timestamp=event_timestamp,
-                source=source,
-                existing_state=existing,
-            )
-
-            if closed_trade:
-                await self.store_trader_closed_trade(closed_trade)
-
-            existing_compare = dict(existing) if existing else None
-            if existing_compare:
-                existing_compare.pop("_id", None)
-            if existing_compare and existing_compare == doc:
-                return True
-
-            doc["updated_at"] = now
-            update_filter: dict[str, Any] = {"eth": doc["eth"], "symbol": doc["symbol"]}
-            if existing and existing.get("_id") is not None:
-                update_filter = {"_id": existing["_id"]}
-            await collection.update_one(
-                update_filter,
-                {"$set": doc},
-                upsert=True,
-            )
-            return True
         except Exception as e:
             raise StorageError(f"Failed to upsert trader current state: {e}") from e
+
+    def _sync_upsert_trader_current_state(
+        self,
+        address: str,
+        symbol: str,
+        positions: list[dict[str, Any]],
+        open_orders: list[dict[str, Any]],
+        margin_summary: dict[str, Any] | None,
+        event_timestamp: datetime,
+        source: str,
+    ) -> bool:
+        """Sync implementation of upsert_trader_current_state (runs in thread pool)."""
+        now = datetime.now(UTC)
+        collection = self._sync_db[CollectionName.TRADER_CURRENT_STATE]
+        existing = collection.find_one(
+            {
+                "symbol": str(symbol or "").upper(),
+                "$or": [
+                    {"eth": address.lower()},
+                    {"ethAddress": address.lower()},
+                ],
+            },
+            {
+                "eth": 1, "ethAddress": 1, "symbol": 1,
+                "positions": 1, "open_orders": 1, "margin_summary": 1,
+                "last_event_time": 1, "source": 1, "btc_trade_meta": 1,
+            },
+        )
+
+        doc, closed_trade = self._current_state_payload(
+            address=address,
+            symbol=symbol,
+            positions=positions,
+            open_orders=open_orders,
+            margin_summary=margin_summary,
+            event_timestamp=event_timestamp,
+            source=source,
+            existing_state=existing,
+        )
+
+        if closed_trade:
+            ct_collection = self._sync_db[CollectionName.TRADER_CLOSED_TRADES]
+            ct_doc = closed_trade.model_dump()
+            ct_doc["eth"] = str(ct_doc.get("eth", "")).lower()
+            ct_collection.update_one(
+                {"eth": ct_doc["eth"], "coin": ct_doc["coin"], "closed_time": ct_doc["closed_time"]},
+                {"$setOnInsert": ct_doc},
+                upsert=True,
+            )
+
+        existing_compare = dict(existing) if existing else None
+        if existing_compare:
+            existing_compare.pop("_id", None)
+        if existing_compare and existing_compare == doc:
+            return True
+
+        doc["updated_at"] = now
+        update_filter: dict[str, Any] = {"eth": doc["eth"], "symbol": doc["symbol"]}
+        if existing and existing.get("_id") is not None:
+            update_filter = {"_id": existing["_id"]}
+        collection.update_one(
+            update_filter,
+            {"$set": doc},
+            upsert=True,
+        )
+        return True
 
     async def store_dead_letter(
         self,

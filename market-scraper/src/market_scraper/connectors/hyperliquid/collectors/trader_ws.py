@@ -105,7 +105,7 @@ class TraderWebSocketCollector:
 
         # Connection management
         self._clients: list[TraderWSClient] = []
-        self._num_clients = 50  # Hyperliquid limits 10 user subscriptions per WS connection
+        self._num_clients = 20  # Hyperliquid limits 10 user subscriptions per WS connection
         self._batch_size = 10  # Must match Hyperliquid's per-connection user limit
 
         # State

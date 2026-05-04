@@ -27,10 +27,14 @@ def configure_logging(
 
     if format == "json":
         # Production: JSON format
+        # NOTE: Uses format_exc_info instead of dict_tracebacks to avoid
+        # massive JSON stack traces (single-line vs multi-KB dicts).
+        # On the budget VPS, dict_tracebacks produced 500+ line JSON blobs
+        # per WS error that quickly filled the 200MB+ log file.
         structlog.configure(
             processors=shared_processors
             + [
-                structlog.processors.dict_tracebacks,
+                structlog.processors.format_exc_info,
                 structlog.processors.JSONRenderer(),
             ],
             wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, level.upper())),
