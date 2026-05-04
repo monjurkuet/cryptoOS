@@ -41,7 +41,13 @@ def check_port_responding():
         sock.settimeout(3)
         sock.connect(("127.0.0.1", MAIN_PORT))
         sock.sendall(b"GET /health/live HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        data = sock.recv(1024)
+        # Read full response - headers may arrive before body in separate recv calls
+        data = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
         sock.close()
         return b"alive" in data
     except Exception:
