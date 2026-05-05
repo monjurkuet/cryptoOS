@@ -194,22 +194,20 @@ class TraderScoringProcessor(Processor):
             logger.warning("trader_scoring_invalid_payload", payload_type=type(payload).__name__)
             return None
 
-        rows = payload.get("rows", [])
-        if not rows:
-            rows = payload.get("traders", [])
+        traders = payload.get("traders", [])
 
-        if rows and not isinstance(rows, list):
-            logger.warning("trader_scoring_invalid_rows_shape", shape=type(rows).__name__)
+        if traders and not isinstance(traders, list):
+            logger.warning("trader_scoring_invalid_traders_shape", shape=type(traders).__name__)
             return None
 
-        if not rows:
-            logger.debug("trader_scoring_no_rows", event_id=event.event_id)
+        if not traders:
+            logger.debug("trader_scoring_no_traders", event_id=event.event_id)
             return None
 
         # Score all traders
         scored_traders = []
 
-        for trader in rows:
+        for trader in traders:
             score = calculate_trader_score(trader)
 
             if score >= self._min_score:

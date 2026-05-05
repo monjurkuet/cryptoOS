@@ -158,8 +158,6 @@ class PositionInferenceProcessor(Processor):
             return None
 
         traders = payload.get("traders", [])
-        if not traders:
-            traders = payload.get("rows", [])
 
         if traders and not isinstance(traders, list):
             logger.warning("position_inference_invalid_traders_shape", shape=type(traders).__name__)

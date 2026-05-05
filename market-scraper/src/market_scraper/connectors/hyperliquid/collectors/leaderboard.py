@@ -178,19 +178,20 @@ class LeaderboardCollector:
                     asyncio.create_task(self._store_derived_data(filtered, total_traders))
 
                 # Emit canonical leaderboard event consumed by processors.
+                # Payload contains only the filtered top traders (not the raw 35K rows),
+                # keeping Redis payload small (~KB instead of ~50MB).
                 event = StandardEvent.create(
-                    event_type="leaderboard",
-                    source="hyperliquid_leaderboard",
-                    payload={
-                        "symbol": self.config.symbol,
-                        "rows": rows,
-                        "traders": rows,
-                        "total_traders": total_traders,
-                        "tracked_count": self._last_tracked_count,
-                        "fetch_time": self._last_fetch.isoformat(),
-                        "min_score": self._market_config.filters.min_score,
-                        "max_count": self._market_config.filters.max_count,
-                    },
+                event_type="leaderboard",
+                source="hyperliquid_leaderboard",
+                payload={
+                    "symbol": self.config.symbol,
+                    "traders": filtered,
+                    "total_traders": total_traders,
+                    "tracked_count": self._last_tracked_count,
+                    "fetch_time": self._last_fetch.isoformat(),
+                    "min_score": self._market_config.filters.min_score,
+                    "max_count": self._market_config.filters.max_count,
+                },
                 )
 
                 await self._publish_with_retry(event)

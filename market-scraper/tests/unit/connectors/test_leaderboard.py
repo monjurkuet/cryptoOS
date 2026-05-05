@@ -252,8 +252,9 @@ class TestLeaderboardCollector:
         mock_event_bus.publish.assert_awaited_once()
         event = mock_event_bus.publish.call_args.args[0]
         assert str(event.event_type) == "leaderboard"
-        assert event.payload["rows"] == sample_rows
-        assert event.payload["traders"] == sample_rows
+        assert "rows" not in event.payload
+        assert event.payload["total_traders"] == 1
+        assert event.payload["tracked_count"] == 1
 
     @pytest.mark.asyncio
     async def test_get_tracked_addresses_uses_repository(

@@ -48,7 +48,7 @@ def check_port_http(port, path="/health/live", expected=b"alive"):
     """Try an HTTP GET on a local port and check if expected string is in response."""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(3)
+        sock.settimeout(5)  # 5s timeout — 3s too short under heavy swap load on 1-core VPS
         sock.connect(("127.0.0.1", port))
         sock.sendall(f"GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode())
         # Read full response - headers may arrive before body in separate recv calls

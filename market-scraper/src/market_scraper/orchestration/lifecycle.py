@@ -74,7 +74,7 @@ class LifecycleManager:
         self._scheduler: Scheduler | None = None
         self._health_monitor: HealthMonitor | None = None
         self._last_event_timestamps: dict[str, datetime] = {}
-        self._write_semaphore: asyncio.Semaphore | None = None  # Lazy init
+        self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(12)
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
         self._write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
         self._max_active_writes: int = 16  # Cap total concurrent write tasks
@@ -173,6 +173,13 @@ class LifecycleManager:
             logger.info("health_monitor_initialized")
 
             self._started = True
+
+            # Set dedicated write executor as default for asyncio.to_thread
+            if self._write_executor is not None:
+                loop = asyncio.get_running_loop()
+                loop.set_default_executor(self._write_executor)
+                logger.info("default_executor_set", max_workers=self._write_executor._max_workers)
+
             self._startup_complete = True
 
             duration_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
@@ -740,15 +747,24 @@ class LifecycleManager:
         Callers should use _fire_and_forget_write() to avoid blocking
         the event loop on slow Atlas round-trips.
         """
-        if self._write_semaphore is None:
-            self._write_semaphore = asyncio.Semaphore(12)
-
-        # Try to acquire semaphore with timeout to prevent event loop blocking
         try:
-            await asyncio.wait_for(
-                self._write_semaphore.acquire(),
-                timeout=semaphore_timeout,
-            )
+            async with asyncio.timeout(semaphore_timeout), self._write_semaphore:
+                delay = 0.1
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        return await operation(*args)
+                    except Exception as e:
+                        if attempt == max_retries:
+                            raise
+                        logger.warning(
+                            "repository_operation_retry",
+                            operation=operation_name,
+                            attempt=attempt,
+                            max_attempts=max_retries,
+                            error=str(e),
+                        )
+                        await asyncio.sleep(delay)
+                        delay *= 2
         except asyncio.TimeoutError:
             logger.warning(
                 "repository_semaphore_timeout",
@@ -756,26 +772,6 @@ class LifecycleManager:
                 timeout=semaphore_timeout,
             )
             return None  # Skip this write — data refreshes on next cycle
-
-        try:
-            delay = 0.1
-            for attempt in range(1, max_retries + 1):
-                try:
-                    return await operation(*args)
-                except Exception as e:
-                    if attempt == max_retries:
-                        raise
-                    logger.warning(
-                        "repository_operation_retry",
-                        operation=operation_name,
-                        attempt=attempt,
-                        max_attempts=max_retries,
-                        error=str(e),
-                    )
-                    await asyncio.sleep(delay)
-                    delay *= 2
-        finally:
-            self._write_semaphore.release()
 
     def _store_dead_letter(
         self,

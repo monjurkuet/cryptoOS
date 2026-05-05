@@ -48,7 +48,7 @@ volume_tiers:
 # Filter Criteria - Traders must match ALL filters
 filters:
   min_score: 50              # Minimum score to be tracked (0-100+)
-  max_count: 100 # Maximum traders to track (reduced from 150 for VPS memory pressure - 10 WS clients instead of 20)
+  max_count: 50 # Maximum traders to track (reduced from 150 for VPS memory pressure - 10 WS clients instead of 20)
   min_account_value: 10000   # Minimum account value ($10K)
 
   # Optional: Require specific performance
@@ -125,7 +125,7 @@ buffer:
   # How often to automatically flush buffered events to database (seconds)
   # Lower values = more frequent writes, lower latency
   # Higher values = fewer writes, better throughput
-  flush_interval: 60.0
+  flush_interval: 120.0
 
   # Maximum number of events to buffer before forced flush
   # Lower values = more frequent writes
