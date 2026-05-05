@@ -1663,25 +1663,36 @@ class MongoRepository(DataRepository):
         reason: str,
         error_message: str,
     ) -> bool:
-        """Store failed events in a dead-letter collection."""
-        if self._db is None:
+        """Store failed events in a dead-letter collection.
+
+        Uses sync pymongo via asyncio.to_thread() to avoid blocking the event loop.
+        """
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            await self._db["dead_letters"].insert_one(
-                {
-                    "event_id": event.event_id,
-                    "event_type": str(event.event_type),
-                    "source": event.source,
-                    "timestamp": datetime.now(UTC),
-                    "reason": reason,
-                    "error": error_message,
-                    "event": event.model_dump(),
-                }
+            return await asyncio.to_thread(
+                self._sync_store_dead_letter, event, reason, error_message
             )
-            return True
         except Exception as e:
             raise StorageError(f"Failed to store dead letter event: {e}") from e
+
+    def _sync_store_dead_letter(
+        self, event: StandardEvent, reason: str, error_message: str
+    ) -> bool:
+        """Sync implementation of store_dead_letter (runs in thread pool)."""
+        self._sync_db["dead_letters"].insert_one(
+            {
+                "event_id": event.event_id,
+                "event_type": str(event.event_type),
+                "source": event.source,
+                "timestamp": datetime.now(UTC),
+                "reason": reason,
+                "error": error_message,
+                "event": event.model_dump(),
+            }
+        )
+        return True
 
     async def get_trader_positions_history(
         self,

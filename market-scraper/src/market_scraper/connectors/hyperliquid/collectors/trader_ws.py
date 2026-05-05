@@ -877,15 +877,9 @@ class TraderWebSocketCollector:
                 # Yield after each normalization sub-chunk
                 await asyncio.sleep(0)
 
-            # Handle non-webData2 messages (if any)
-            for msg in chunk:
-                if msg.get("channel") != "webData2":
-                    event = self._process_webdata2(msg)
-                    if event:
-                        events.append(event)
-
-            # Yield control after each chunk
-            await asyncio.sleep(0)
+        # Non-webData2 messages (error channel, subscription responses)
+        # are already filtered in _handle_message — skip them entirely.
+        await asyncio.sleep(0)
 
         logger.debug(
             "trader_ws_flush_processed",
@@ -914,46 +908,6 @@ class TraderWebSocketCollector:
             duration_ms=round(flush_duration * 1000, 1),
             messages=len(events) + webdata_count,  # approximate since messages is deleted
             events=len(events),
-        )
-
-    def _process_webdata2(self, msg: dict) -> StandardEvent | None:
-        """Process webData2 message and create event.
-
-        Args:
-            msg: WebSocket message
-
-        Returns:
-            StandardEvent or None if filtered
-        """
-        # Safety guard: skip messages where data is not a dict (e.g. error channel messages)
-        data = msg.get("data", {})
-        if not isinstance(data, dict):
-            return None
-        address = str(data.get("user", "")).lower()
-        clearinghouse = data.get("clearinghouseState", {})
-        positions = clearinghouse.get("assetPositions", [])
-        open_orders = data.get("openOrders", [])
-        margin_summary = clearinghouse.get("marginSummary", {})
-
-        if not address:
-            return None
-        if not isinstance(positions, list):
-            positions = []
-
-        # Filter for active positions
-        active_positions = [p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0]
-
-        # BTC-ONLY FILTER: Only process positions for configured symbol
-        symbol_positions = [
-            p for p in active_positions if p.get("position", {}).get("coin") == self.config.symbol
-        ]
-        symbol_open_orders = self._filter_symbol_open_orders(open_orders)
-        return self._create_trader_positions_event(
-            address=address,
-            symbol_positions=symbol_positions,
-            open_orders=symbol_open_orders,
-            margin_summary=margin_summary if isinstance(margin_summary, dict) else {},
-            allow_empty=False,
         )
 
     def _filter_symbol_open_orders(self, open_orders: Any) -> list[dict]:

@@ -375,13 +375,13 @@ class LifecycleManager:
                     )
 
                 if event.event_type == "trading_signal":
-                    await self._store_trading_signal(event)
+                    asyncio.create_task(self._store_trading_signal(event))
 
-                if event.event_type == "trader_positions":
-                    asyncio.create_task(self._store_trader_positions_state(event))
+                    if event.event_type == "trader_positions":
+                        asyncio.create_task(self._store_trader_positions_state(event))
 
-                if event.event_type == "ohlcv":
-                    asyncio.create_task(self._store_ohlcv_candle(event))
+                    if event.event_type == "ohlcv":
+                        asyncio.create_task(self._store_ohlcv_candle(event))
 
             except Exception as e:
                 logger.error(

@@ -1,5 +1,3 @@
-# src/market_scraper/event_bus/redis_bus.py
-
 """Redis Pub/Sub event bus implementation."""
 
 import asyncio
@@ -227,6 +225,14 @@ class RedisEventBus(EventBus):
 
         Handles both regular messages (from subscribe) and pattern messages
         (from psubscribe for wildcard subscriptions).
+
+        Dedup logic: When both concrete (subscribe) and wildcard (psubscribe)
+        are registered for the same event type, Redis emits both "message" and
+        "pmessage". The "message" dispatch covers concrete + wildcard handlers.
+        The "pmessage" only dispatches wildcard handlers that haven't already
+        been called — this prevents the bug where wildcard-only handlers
+        (like the storage handler) were silently dropped for event types that
+        also had concrete subscribers.
         """
         if not self._pubsub:
             return
@@ -248,44 +254,43 @@ class RedisEventBus(EventBus):
                     continue
 
                 try:
-                    # For pmessage, data is in message["data"]
-                    # For message, data is in message["data"]
                     data = json.loads(message["data"])
                     event = StandardEvent.model_validate(data)
                     event_type_str = str(event.event_type)
 
-                    # Avoid duplicate dispatch when we're subscribed both to a
-                    # concrete channel (subscribe) and wildcard pattern
-                    # (psubscribe). In that case Redis emits both "message"
-                    # and "pmessage" for the same payload.
+                    # Collect handlers to dispatch for this event.
+                    # For "message" type: dispatch concrete + wildcard handlers.
+                    # For "pmessage" type: only dispatch wildcard handlers that
+                    # weren't already called by the "message" dispatch.
                     if msg_type == "pmessage":
-                        # For pmessage, the channel name is in message["channel"]
-                        # NOT message["pattern"]. In redis-py's async PubSub,
-                        # message["channel"] contains the actual matched channel
-                        # (e.g. "events:leaderboard"), while message["pattern"]
-                        # contains the glob pattern (e.g. "events:*").
                         channel = str(message.get("channel", ""))
                         if channel.startswith("events:"):
                             channel_event_type = channel.split("events:", 1)[1]
                             if channel_event_type in self._handlers:
-                                logger.debug(
-                                    "redis_listener_pattern_duplicate_skipped",
-                                    event_type=event_type_str,
-                                )
-                                continue
+                                # Concrete subscribers already dispatched via "message".
+                                # Only run wildcard handlers here to avoid dropping them.
+                                if "*" in self._handlers:
+                                    for _priority, handler in self._handlers["*"]:
+                                        try:
+                                            asyncio.create_task(
+                                                self._safe_handler_call(handler, event)
+                                            )
+                                        except Exception as e:
+                                            self._metrics["errors"] += 1
+                                            logger.error(
+                                                "redis_event_handler_dispatch_error",
+                                                event_type=event.event_type,
+                                                error=str(e),
+                                            )
+                                    await asyncio.sleep(0)
+                                continue  # Skip normal dispatch (already handled above)
 
-                    # Get handlers for this event type and wildcard
+                    # Normal dispatch: collect concrete + wildcard handlers
                     handlers: list[tuple[EventPriority, EventHandler]] = []
                     if event_type_str in self._handlers:
                         handlers.extend(self._handlers[event_type_str])
                     if "*" in self._handlers:
                         handlers.extend(self._handlers["*"])
-
-                    logger.debug(
-                        "redis_listener_dispatching",
-                        event_type=event.event_type,
-                        handlers_count=len(handlers),
-                    )
 
                     # Execute handlers non-blocking to prevent slow handlers
                     # (e.g. MongoDB storage) from blocking the listener loop
