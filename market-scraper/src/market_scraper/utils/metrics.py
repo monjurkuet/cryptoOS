@@ -23,13 +23,6 @@ EVENTS_DROPPED = Counter(
     ["event_type", "reason"],
 )
 
-EVENT_PROCESSING_TIME = Histogram(
-    "market_scraper_event_processing_seconds",
-    "Time spent processing events",
-    ["event_type"],
-    buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
-)
-
 # Connector metrics
 CONNECTOR_HEALTH = Gauge(
     "market_scraper_connector_health",
@@ -57,7 +50,6 @@ STORAGE_LATENCY = Histogram(
     buckets=[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
 )
 
-
 def record_event_published(event_type: str, source: str) -> None:
     """Record an event publication.
 
@@ -67,7 +59,6 @@ def record_event_published(event_type: str, source: str) -> None:
     """
     EVENTS_PUBLISHED.labels(event_type=event_type, source=source).inc()
 
-
 def record_event_delivered(event_type: str) -> None:
     """Record an event delivery.
 
@@ -75,7 +66,6 @@ def record_event_delivered(event_type: str) -> None:
         event_type: Type of event
     """
     EVENTS_DELIVERED.labels(event_type=event_type).inc()
-
 
 def record_event_dropped(event_type: str, reason: str) -> None:
     """Record an event drop.
@@ -86,7 +76,6 @@ def record_event_dropped(event_type: str, reason: str) -> None:
     """
     EVENTS_DROPPED.labels(event_type=event_type, reason=reason).inc()
 
-
 def set_connector_health(connector_name: str, healthy: bool) -> None:
     """Set connector health status.
 
@@ -95,7 +84,6 @@ def set_connector_health(connector_name: str, healthy: bool) -> None:
         healthy: Whether the connector is healthy
     """
     CONNECTOR_HEALTH.labels(connector_name=connector_name).set(1 if healthy else 0)
-
 
 def set_connector_connections(connector_name: str, count: int) -> None:
     """Set number of active connections.

@@ -119,7 +119,7 @@ class CandlesCollector(BaseCollector):
             StandardEvent or None if invalid
         """
         try:
-            timestamp = datetime.utcfromtimestamp(candle.get("t", 0) / 1000)
+            timestamp = datetime.fromtimestamp(candle.get("t", 0) / 1000, tz=timezone.utc)
 
             return StandardEvent.create(
                 event_type="ohlcv",

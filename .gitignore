@@ -171,3 +171,6 @@ session-*.md
 !smart-money-signal-system/AGENTS.md
 !smart-money-signal-system/CLAUDE.md
 *.pt
+
+# Added during cleanup
+.uv-cache

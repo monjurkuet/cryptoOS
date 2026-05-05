@@ -239,7 +239,14 @@ class LifecycleManager:
         """Periodically flush the position write buffer to MongoDB."""
         try:
             while self._started:
-                await asyncio.sleep(self._position_buffer_flush_interval)
+                try:
+                    await asyncio.wait_for(
+                        self._position_buffer_flush_event.wait(),
+                        timeout=self._position_buffer_flush_interval,
+                    )
+                    self._position_buffer_flush_event.clear()
+                except asyncio.TimeoutError:
+                    pass  # periodic flush interval
                 if self._position_write_buffer:
                     await self._flush_position_buffer()
         except asyncio.CancelledError:
@@ -296,17 +303,17 @@ class LifecycleManager:
                 )
 
             # Batch insert positions
-            if all_position_models and hasattr(repo, "store_trader_position_bulk_merged"):
+            if all_position_models and hasattr(repo, "store_trader_position_bulk"):
                 await self._retry_repository_op(
-                    repo.store_trader_position_bulk_merged, all_position_models,
-                    operation_name="store_trader_position_bulk_merged",
+                    repo.store_trader_position_bulk, all_position_models,
+                    operation_name="store_trader_position_bulk",
                 )
 
             logger.debug(
                 "position_buffer_flushed",
                 buffer_size=len(buffer),
                 state_count=len(state_items),
-                position_count=len(position_models),
+                position_count=len(all_position_models),
             )
         except Exception as e:
             logger.error("position_buffer_flush_error", error=str(e), buffer_size=len(buffer))
@@ -366,7 +373,7 @@ class LifecycleManager:
         # Phase 2B: Final flush of position write buffer before shutdown
         if self._position_write_buffer:
             logger.info("position_buffer_final_flush", buffer_size=len(self._position_write_buffer))
-            await self._flush_position_buffer()
+            self._position_buffer_flush_event.set()  # signal flush instead of direct call (avoids reentrant lock)
         if self._position_flush_task:
             self._position_flush_task.cancel()
             try:
@@ -529,7 +536,7 @@ class LifecycleManager:
                     asyncio.create_task(self._store_trading_signal(event))
 
                     if event.event_type == "trader_positions":
-                        asyncio.create_task(self._store_trader_positions_state(event))
+                        pass  # handled via subscribe_local
 
                     if event.event_type == "ohlcv":
                         asyncio.create_task(self._store_ohlcv_candle(event))
@@ -784,7 +791,7 @@ class LifecycleManager:
             should_flush = len(self._position_write_buffer) >= self._position_buffer_max_size
 
         if should_flush:
-            await self._flush_position_buffer()
+            self._position_buffer_flush_event.set()  # signal flush instead of direct call (avoids reentrant lock)
 
     async def _fire_and_forget_write(
         self,

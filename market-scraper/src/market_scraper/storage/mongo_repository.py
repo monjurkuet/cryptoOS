@@ -1719,24 +1719,6 @@ class MongoRepository(DataRepository):
     # Bulk upsert: batched trader current-state writes (Phase 2B)
     # ------------------------------------------------------------------
 
-    async def store_trader_position_bulk_merged(
-        self,
-        all_positions: list[TraderPosition],
-    ) -> int:
-        """Bulk-store a merged list of trader position snapshots from the write buffer.
-
-        Identical semantics to ``store_trader_position_bulk`` but accepts a
-        pre-merged list so the caller can accumulate across multiple events
-        before flushing.
-
-        Args:
-            all_positions: Merged list of TraderPosition models from buffer.
-
-        Returns:
-            Count of inserted documents.
-        """
-        return await self.store_trader_position_bulk(all_positions)
-
     async def bulk_upsert_trader_states(
         self,
         state_items: list[tuple[str, str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None, datetime, str]],

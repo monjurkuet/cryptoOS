@@ -928,7 +928,7 @@ class TraderWebSocketCollector:
 
             # Run CPU-bound normalization in thread pool
             raw_items = [(sp, so, ms) for _, sp, so, ms, _ in norm_items]
-            normalized_results = await asyncio.get_event_loop().run_in_executor(
+            normalized_results = await asyncio.get_running_loop().run_in_executor(
                 self._executor, self._normalize_batch, raw_items
             )
 

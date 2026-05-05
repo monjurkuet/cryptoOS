@@ -43,7 +43,7 @@ def parse_cbbi_index_response(data: dict[str, Any], source: str = "cbbi") -> Sta
         event_type="cbbi_index",
         source=source,
         payload={
-            "timestamp": datetime.utcfromtimestamp(latest_ts).isoformat(),
+            "timestamp": datetime.fromtimestamp(latest_ts, tz=timezone.utc).isoformat(),
             "confidence": latest_value,
             "components": components,
             "price": float(price) if price is not None else None,
@@ -86,7 +86,7 @@ def parse_cbbi_historical_response(
                     event_type="cbbi_historical",
                     source=source,
                     payload={
-                        "timestamp": datetime.utcfromtimestamp(ts).isoformat(),
+                        "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
                         "confidence": value,
                         "components": components,
                     },
@@ -138,7 +138,7 @@ def parse_cbbi_component_response(
             if ts >= cutoff:
                 historical.append(
                     {
-                        "timestamp": datetime.utcfromtimestamp(ts).isoformat(),
+                        "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
                         "value": float(value),
                     }
                 )
@@ -175,7 +175,7 @@ def parse_timestamp(timestamp_str: str) -> datetime:
     """
     try:
         ts = int(timestamp_str)
-        return datetime.utcfromtimestamp(ts)
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
     except (ValueError, TypeError, OSError) as e:
         raise ValueError(f"Invalid timestamp format: {timestamp_str}") from e
 
