@@ -28,6 +28,7 @@ class CollectorManager:
     - Auto-reconnect with exponential backoff
     - Configurable subscriptions
     - Health monitoring
+    - Graceful unsubscribe before close to prevent server-side subscription leaks
     """
 
     def __init__(
@@ -98,17 +99,15 @@ class CollectorManager:
         """Stop the collector manager."""
         self._running = False
 
-        # Stop all collectors
+        # Stop all collectors (flushes buffers)
         for collector in self._collectors.values():
-            await collector.stop()
-
-        # Close WebSocket
-        if self._ws:
             try:
-                await self._ws.close()
+                await collector.stop()
             except Exception as e:
-                logger.debug("websocket_close_error", error=str(e))
-            self._ws = None
+                logger.warning("collector_stop_error", collector=collector.name, error=str(e))
+
+        # Unsubscribe then close WebSocket
+        await self._close_ws()
 
         # Cancel message task
         if self._message_task:
@@ -120,6 +119,26 @@ class CollectorManager:
             self._message_task = None
 
         logger.info("collector_manager_stopped")
+
+    async def _close_ws(self) -> None:
+        """Unsubscribe from channels, then close the WebSocket cleanly.
+
+        Sending unsubscribe messages before closing lets the Hyperliquid server
+        release subscription slots immediately, preventing 'Cannot track more
+        than 10' errors on subsequent reconnections.
+        """
+        if not self._ws:
+            return
+
+        # Attempt to send unsubscribe messages if the connection is still alive
+        if not self._ws.closed:
+            await self._unsubscribe()
+            try:
+                await self._ws.close()
+            except Exception as e:
+                logger.debug("websocket_close_error", error=str(e))
+
+        self._ws = None
 
     async def _connect(self) -> None:
         """Connect to WebSocket and subscribe to channels."""
@@ -146,18 +165,26 @@ class CollectorManager:
 
                 # Start collectors
                 for collector in self._collectors.values():
-                    await collector.start()
+                    try:
+                        await collector.start()
+                    except Exception as e:
+                        logger.error(
+                            "collector_start_error",
+                            collector=collector.name,
+                            error=str(e),
+                            exc_info=True,
+                        )
 
-                # Start message loop
+                # Start message loop (blocks until disconnect/error)
                 await self._message_loop()
 
             except ConnectionClosed:
                 logger.warning("websocket_disconnected")
-                self._handle_disconnect()
+                await self._handle_disconnect()
 
             except Exception as e:
                 logger.error("websocket_error", error=str(e), exc_info=True)
-                self._handle_disconnect()
+                await self._handle_disconnect()
 
     async def _subscribe(self) -> None:
         """Subscribe to WebSocket channels."""
@@ -179,6 +206,34 @@ class CollectorManager:
                 )
 
         logger.info("subscriptions_sent", collectors=list(self._collectors.keys()))
+
+    async def _unsubscribe(self) -> None:
+        """Send unsubscribe messages for all active subscriptions.
+
+        This lets Hyperliquid's server release subscription slots immediately
+        instead of waiting for a timeout, preventing 'Cannot track more than 10'
+        type errors on reconnect.
+        """
+        if not self._ws or self._ws.closed:
+            return
+
+        coin = self.config.symbol
+
+        # Unsubscribe from candles for each interval
+        if "candles" in self._collectors:
+            for interval in CandlesCollector.INTERVALS:
+                try:
+                    await self._ws.send(
+                        json.dumps(
+                            {
+                                "method": "unsubscribe",
+                                "subscription": {"type": "candle", "coin": coin, "interval": interval},
+                            }
+                        )
+                    )
+                except Exception:
+                    # Connection is broken — no point continuing
+                    break
 
     async def _message_loop(self) -> None:
         """Process incoming WebSocket messages."""
@@ -214,10 +269,26 @@ class CollectorManager:
         if collector_name and collector_name in self._collectors:
             await self._collectors[collector_name].process_message(data)
 
-    def _handle_disconnect(self) -> None:
-        """Handle WebSocket disconnection."""
+    async def _handle_disconnect(self) -> None:
+        """Handle WebSocket disconnection.
+
+        Unsubscribes, closes the stale connection, stops collectors, then
+        sleeps with exponential backoff before the _connect loop retries.
+        """
         if not self._running:
             return
+
+        # Unsubscribe on the old WS before closing (mirrors the pattern
+        # in TraderWebSocketCollector._handle_error that prevents
+        # "Cannot track more than 10" errors on reconnect).
+        await self._close_ws()
+
+        # Stop collectors (flushes remaining buffered events)
+        for collector in self._collectors.values():
+            try:
+                await collector.stop()
+            except Exception as e:
+                logger.warning("collector_stop_error_on_disconnect", collector=collector.name, error=str(e))
 
         self._reconnect_attempts += 1
 
@@ -227,22 +298,21 @@ class CollectorManager:
             return
 
         # Calculate delay with exponential backoff + jitter
-        delay = min(
-            self.config.reconnect_base_delay * (2**self._reconnect_attempts),
-            self.config.reconnect_max_delay,
-        )
-        delay = delay * (0.5 + random.random())  # Add jitter
+        # Use (reconnect_attempts - 1) as the exponent so the first retry
+        # uses the base delay, not 2× the base delay.
+        raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
+        delay = min(raw_delay, self.config.reconnect_max_delay)
+        # Add random jitter (0-25% of delay) to desynchronize reconnect attempts
+        jitter = delay * random.uniform(0, 0.25)
+        delay = delay + jitter
 
         logger.info(
             "reconnecting",
             attempt=self._reconnect_attempts,
-            delay_seconds=delay,
+            delay_seconds=round(delay, 2),
         )
 
-        # asyncio.sleep will be handled in _connect loop
-        # We need to stop collectors before reconnecting
-        for collector in self._collectors.values():
-            asyncio.create_task(collector.stop())
+        await asyncio.sleep(delay)
 
     def get_status(self) -> dict[str, Any]:
         """Get status of all collectors.
@@ -252,7 +322,7 @@ class CollectorManager:
         """
         return {
             "running": self._running,
-            "websocket_connected": self._ws is not None,
+            "websocket_connected": self._ws is not None and not getattr(self._ws, "closed", True),
             "reconnect_attempts": self._reconnect_attempts,
             "collectors": {
                 name: {

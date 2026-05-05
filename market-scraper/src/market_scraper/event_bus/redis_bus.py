@@ -123,13 +123,13 @@ class RedisEventBus(EventBus):
                 (p, h) for p, h in self._handlers[event_type] if h != handler
             ]
 
-        if not self._handlers[event_type] and self._pubsub:
-            if event_type == "*":
-                await self._pubsub.punsubscribe("events:*")
-            else:
-                channel = f"events:{event_type}"
-                await self._pubsub.unsubscribe(channel)
-            del self._handlers[event_type]
+            if not self._handlers[event_type] and self._pubsub:
+                if event_type == "*":
+                    await self._pubsub.punsubscribe("events:*")
+                else:
+                    channel = f"events:{event_type}"
+                    await self._pubsub.unsubscribe(channel)
+                del self._handlers[event_type]
 
     async def publish_bulk(
         self,
@@ -220,6 +220,18 @@ class RedisEventBus(EventBus):
                 exc_info=True,
             )
 
+    def _should_resubscribe(self, err_str: str) -> bool:
+        """Check if an error indicates the pubsub connection was lost."""
+        err_lower = err_str.lower()
+        return (
+            "pubsub connection not set" in err_lower
+            or "connection lost" in err_lower
+            or "connection closed" in err_lower
+            or "broken pipe" in err_lower
+            or "connectionreset" in err_lower
+            or "eof" in err_lower
+        )
+
     async def _listener(self) -> None:
         """Background listener for incoming messages.
 
@@ -283,7 +295,7 @@ class RedisEventBus(EventBus):
                                                 error=str(e),
                                             )
                                     await asyncio.sleep(0)
-                                continue  # Skip normal dispatch (already handled above)
+                                    continue  # Skip normal dispatch (already handled above)
 
                     # Normal dispatch: collect concrete + wildcard handlers
                     handlers: list[tuple[EventPriority, EventHandler]] = []
@@ -329,21 +341,15 @@ class RedisEventBus(EventBus):
                 logger.error("redis_listener_error", error=str(e), exc_info=True)
                 # If pubsub connection was lost, attempt to re-subscribe
                 # instead of spinning on a broken connection forever.
-                err_str = str(e).lower()
-                should_resubscribe = (
-                    "pubsub connection not set" in err_str
-                    or "connection lost" in err_str
-                    or "connection closed" in err_str
-                    or "broken pipe" in err_str
-                    or "connectionreset" in err_str
-                    or "eof" in err_str
-                )
-                if should_resubscribe:
+                if self._should_resubscribe(str(e)):
                     try:
                         logger.info("redis_listener_resubscribe", error=str(e))
                         await self._re_subscribe()
+                        # Sleep after successful re-subscribe to let
+                        # the new pubsub connection settle before reading
+                        await asyncio.sleep(2.0)
                     except Exception as resub_err:
                         logger.error("redis_listener_resubscribe_failed", error=str(resub_err))
-                    await asyncio.sleep(1.0)  # Longer pause after re-subscribe attempt
+                        await asyncio.sleep(5.0)  # Longer pause after failed re-subscribe
                 else:
                     await asyncio.sleep(0.1)  # Brief pause on other errors

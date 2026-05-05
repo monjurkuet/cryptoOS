@@ -8,6 +8,7 @@ import asyncio
 import motor.motor_asyncio
 import pymongo
 import structlog
+from pymongo import UpdateOne
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from market_scraper.core.events import StandardEvent
@@ -115,6 +116,8 @@ class MongoRepository(DataRepository):
         self._connected = False
         self._client = None
         self._db = None
+        self._sync_client = None
+        self._sync_db = None
 
     async def _create_indexes(self) -> None:
         """Create necessary indexes for optimal query performance."""
@@ -176,7 +179,7 @@ class MongoRepository(DataRepository):
             try:
                 await self._db[collection_name].create_index(
                     [(field, 1)],
-                    name="ttl_retention",
+                    name=f"ttl_retention_{collection_name}",
                     expireAfterSeconds=days * 86400,
                 )
                 logger.info(
@@ -333,20 +336,24 @@ class MongoRepository(DataRepository):
         try:
             doc = event.model_dump()
             doc.pop("payload", None)
-            return await asyncio.to_thread(self._sync_store, doc)
-        except DuplicateKeyError:
-            logger.debug(
-                "event_duplicate_skipped",
-                event_id=event.event_id,
-            )
-            return False
+            result = await asyncio.to_thread(self._sync_store, doc)
+            return result
+        except StorageError:
+            raise
         except Exception as e:
             raise StorageError(f"Failed to store event: {e}") from e
 
     def _sync_store(self, doc: dict) -> bool:
         """Sync implementation of store (runs in thread pool)."""
-        self._sync_db.events.insert_one(doc)
-        return True
+        try:
+            self._sync_db.events.insert_one(doc)
+            return True
+        except DuplicateKeyError:
+            logger.debug(
+                "event_duplicate_skipped",
+                event_id=doc.get("event_id"),
+            )
+            return False
 
     async def store_bulk(self, events: list[StandardEvent]) -> int:
         """Store multiple events efficiently.
@@ -372,11 +379,21 @@ class MongoRepository(DataRepository):
         try:
             documents = [{k: v for k, v in e.model_dump().items() if k != "payload"} for e in events]
             return await asyncio.to_thread(self._sync_store_bulk, documents)
+        except StorageError:
+            raise
+        except Exception as e:
+            raise StorageError(f"Failed to store bulk events: {e}") from e
+
+    def _sync_store_bulk(self, documents: list[dict]) -> int:
+        """Sync implementation of store_bulk (runs in thread pool)."""
+        try:
+            result = self._sync_db.events.insert_many(documents, ordered=False)
+            return len(result.inserted_ids)
         except BulkWriteError as e:
-            # Partial success - some events were inserted, some were duplicates
             n_inserted = e.details.get("nInserted", 0)
             n_duplicates = sum(
-                1 for err in e.details.get("writeErrors", []) if err.get("code") == 11000
+                1 for err in e.details.get("writeErrors", [])
+                if err.get("code") == 11000
             )
             if n_duplicates > 0:
                 logger.debug(
@@ -385,13 +402,6 @@ class MongoRepository(DataRepository):
                     duplicates=n_duplicates,
                 )
             return n_inserted
-        except Exception as e:
-            raise StorageError(f"Failed to store bulk events: {e}") from e
-
-    def _sync_store_bulk(self, documents: list[dict]) -> int:
-        """Sync implementation of store_bulk (runs in thread pool)."""
-        result = self._sync_db.events.insert_many(documents, ordered=False)
-        return len(result.inserted_ids)
 
     async def query(
         self,
@@ -505,22 +515,20 @@ class MongoRepository(DataRepository):
             raise StorageError("Not connected to MongoDB")
 
         # Parse timeframe to milliseconds
-        if timeframe.endswith("m"):
-            minutes = int(timeframe[:-1])
+        if timeframe.endswith("s"):
+            interval_ms = int(timeframe[:-1]) * 1000
+        elif timeframe.endswith("m"):
+            interval_ms = int(timeframe[:-1]) * 60 * 1000
         elif timeframe.endswith("h"):
-            minutes = int(timeframe[:-1]) * 60
+            interval_ms = int(timeframe[:-1]) * 60 * 60 * 1000
         elif timeframe.endswith("d"):
-            minutes = int(timeframe[:-1]) * 60 * 24
+            interval_ms = int(timeframe[:-1]) * 60 * 60 * 24 * 1000
         elif timeframe.endswith("w"):
-            minutes = int(timeframe[:-1]) * 60 * 24 * 7
+            interval_ms = int(timeframe[:-1]) * 60 * 60 * 24 * 7 * 1000
         elif timeframe == "1M":
-            minutes = 30 * 60 * 24  # Approximate month
-        elif timeframe.endswith("s"):
-            minutes = int(timeframe[:-1]) / 60
+            interval_ms = 30 * 24 * 60 * 60 * 1000  # Approximate month
         else:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
-
-        interval_ms = int(minutes * 60 * 1000)
 
         pipeline = [
             {
@@ -1906,6 +1914,9 @@ class MongoRepository(DataRepository):
         """
         if self._db is None:
             raise StorageError("Not connected to MongoDB")
+
+        # Normalize address to lowercase to match unique index
+        address = address.lower()
 
         try:
             collection = self._db[CollectionName.TRACKED_TRADERS]

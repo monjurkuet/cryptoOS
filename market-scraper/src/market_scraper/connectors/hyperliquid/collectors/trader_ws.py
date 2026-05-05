@@ -1219,9 +1219,20 @@ class TraderWSClient:
 
         Args:
             address: Trader's Ethereum address
+
+        Raises:
+            ValueError: If the client already tracks the maximum number of traders.
         """
-        if address not in self.traders:
-            self.traders.append(address)
+        if address in self.traders:
+            return  # Already subscribed
+
+        if len(self.traders) >= 10:
+            raise ValueError(
+                f"Client {self.client_id} already tracks {len(self.traders)} traders "
+                f"(max 10). Cannot add {address[:10]}…"
+            )
+
+        self.traders.append(address)
 
         if self._ws and not self._ws.closed:
             await self._ws.send_json(
@@ -1290,26 +1301,19 @@ class TraderWSClient:
             await self.on_disconnect(self.client_id)
             return
 
-        # Exponential backoff with jitter and a minimum floor of 2s to prevent
-        # thundering-herd reconnection storms that block the event loop.
-        # With 20+ WS clients all reconnecting simultaneously, synchronized
-        # retries create massive event loop pressure.
-        raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
-        # Add random jitter (0-25% of delay) to desynchronize reconnect attempts
-        jitter = raw_delay * random.uniform(0, 0.25)
-        delay = max(2.0, min(raw_delay + jitter, self.config.reconnect_max_delay))
-
-        logger.info(
-            "trader_ws_client_reconnecting",
-            client_id=self.client_id,
-            delay=delay,
-            attempt=self._reconnect_attempts,
-        )
-
-        await asyncio.sleep(delay)
-
-        # Cleanup and restart
-        if self._ws:
+        # Try to send unsubscribe messages on the old WS before closing it.
+        # This lets Hyperliquid's server release the subscription slots
+        # immediately instead of waiting for a timeout, preventing
+        # "Cannot track more than 10 total users" errors on reconnect.
+        if self._ws and not self._ws.closed:
+            for address in list(self.traders):
+                try:
+                    await self._ws.send_json({
+                        "method": "unsubscribe",
+                        "subscription": {"type": "webData2", "user": address},
+                    })
+                except Exception:
+                    break  # WS is broken, no point continuing
             try:
                 await self._ws.close()
             except Exception as e:
@@ -1324,6 +1328,25 @@ class TraderWSClient:
                 logger.debug("trader_ws_session_cleanup_error", client_id=self.client_id, error=str(e))
             finally:
                 self._session = None
+
+        # Exponential backoff with jitter and a minimum floor of 5s to:
+        # 1. Prevent thundering-herd reconnection storms that block the event loop
+        # 2. Give Hyperliquid's server time to release the old subscription slots
+        #    (even when we can't send unsubscribe, the server needs time to detect
+        #    the dead connection and free the 10-user slot)
+        raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
+        # Add random jitter (0-25% of delay) to desynchronize reconnect attempts
+        jitter = raw_delay * random.uniform(0, 0.25)
+        delay = max(5.0, min(raw_delay + jitter, self.config.reconnect_max_delay))
+
+        logger.info(
+            "trader_ws_client_reconnecting",
+            client_id=self.client_id,
+            delay=delay,
+            attempt=self._reconnect_attempts,
+        )
+
+        await asyncio.sleep(delay)
 
         await self.start()
 

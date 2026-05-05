@@ -57,6 +57,7 @@ class LifecycleManager:
         self._settings = settings or get_settings()
         self._started = False
         self._startup_complete = False
+        self._startup_complete = False
         self._startup_error: Exception | None = None
 
         # Core components
@@ -389,7 +390,7 @@ class LifecycleManager:
                     event_id=event.event_id,
                     error=str(e),
                 )
-                await self._store_dead_letter(
+                self._store_dead_letter(
                     event=event,
                     reason="event_storage_failed",
                     error=e,
@@ -495,7 +496,7 @@ class LifecycleManager:
             )
         except Exception as e:
             logger.error("ohlcv_store_error", error=str(e), event_id=event.event_id)
-            await self._store_dead_letter(
+            self._store_dead_letter(
                 event=event,
                 reason="ohlcv_persistence_failed",
                 error=e,
@@ -667,7 +668,7 @@ class LifecycleManager:
 
         except Exception as e:
             logger.error("trader_positions_store_error", error=str(e), event_id=event.event_id)
-            await self._store_dead_letter(
+            self._store_dead_letter(
                 event=event,
                 reason="trader_positions_persistence_failed",
                 error=e,
@@ -721,11 +722,11 @@ class LifecycleManager:
         *args: Any,
         operation_name: str,
         max_retries: int = 3,
-        semaphore_timeout: float = 2.0,
+        semaphore_timeout: float = 5.0,
     ) -> Any:
         """Run repository operation with bounded exponential-backoff retries.
 
-        Concurrency is bounded by the semaphore (4 slots) to prevent
+        Concurrency is bounded by the semaphore (8 slots) to prevent
         overwhelming MongoDB Atlas with too many simultaneous writes.
         If the semaphore can't be acquired within semaphore_timeout seconds,
         the write is skipped to avoid blocking the event loop. Data will
@@ -734,7 +735,7 @@ class LifecycleManager:
         the event loop on slow Atlas round-trips.
         """
         if self._write_semaphore is None:
-            self._write_semaphore = asyncio.Semaphore(4)
+            self._write_semaphore = asyncio.Semaphore(8)
 
         # Try to acquire semaphore with timeout to prevent event loop blocking
         try:
@@ -770,7 +771,7 @@ class LifecycleManager:
         finally:
             self._write_semaphore.release()
 
-    async def _store_dead_letter(
+    def _store_dead_letter(
         self,
         event: StandardEvent,
         reason: str,
@@ -780,6 +781,7 @@ class LifecycleManager:
 
         Uses fire-and-forget (asyncio.create_task) so that a dead-letter
         write failure never blocks or propagates back to the caller.
+        This method is synchronous — it only schedules the task, never awaits.
         """
         if not self._repository or not hasattr(self._repository, "store_dead_letter"):
             return
@@ -1159,7 +1161,7 @@ class LifecycleManager:
                         rss_mb=round(rss_mb, 1),
                         threshold_mb=770,
                     )
-                    _gc.collect(generation=2)
+                    await asyncio.to_thread(_gc.collect, 2)
             except Exception as e:
                 logger.error("memory_guardian_error", error=str(e))
 
