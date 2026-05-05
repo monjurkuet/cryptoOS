@@ -1153,6 +1153,8 @@ class TraderWSClient:
             # Guard against writing to a closing transport — check ws.closed
             # before each send_json. If the WS closes mid-subscription, raise
             # to trigger proper backoff reconnect (instead of a rapid 1s loop).
+            subscribed_ok = 0
+            skipped_stale = 0
             for address in self.traders:
                 if self._ws.closed:
                     raise ConnectionError(
