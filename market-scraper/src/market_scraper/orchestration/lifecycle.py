@@ -3,6 +3,7 @@
 """Lifecycle manager for orchestrating all system components."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -75,7 +76,8 @@ class LifecycleManager:
         self._last_event_timestamps: dict[str, datetime] = {}
         self._write_semaphore: asyncio.Semaphore | None = None  # Lazy init
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
-        self._max_active_writes: int = 8  # Cap total concurrent write tasks
+        self._write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
+        self._max_active_writes: int = 16  # Cap total concurrent write tasks
         self._ws_sync_task: asyncio.Task | None = None  # Background WS collector startup
 
         RAW_EVENT_ALLOWLIST = {
@@ -281,6 +283,11 @@ class LifecycleManager:
             except Exception as e:
                 logger.error("processor_stop_error", error=str(e), exc_info=True)
         self._processors.clear()
+
+        # Shutdown write executor
+        if self._write_executor:
+            self._write_executor.shutdown(wait=False)
+            self._write_executor = None
 
         # Disconnect repository
         if self._repository:
@@ -721,11 +728,11 @@ class LifecycleManager:
         *args: Any,
         operation_name: str,
         max_retries: int = 3,
-        semaphore_timeout: float = 5.0,
+        semaphore_timeout: float = 10.0,
     ) -> Any:
         """Run repository operation with bounded exponential-backoff retries.
 
-        Concurrency is bounded by the semaphore (8 slots) to prevent
+        Concurrency is bounded by the semaphore (12 slots) to prevent
         overwhelming MongoDB Atlas with too many simultaneous writes.
         If the semaphore can't be acquired within semaphore_timeout seconds,
         the write is skipped to avoid blocking the event loop. Data will
@@ -734,7 +741,7 @@ class LifecycleManager:
         the event loop on slow Atlas round-trips.
         """
         if self._write_semaphore is None:
-            self._write_semaphore = asyncio.Semaphore(8)
+            self._write_semaphore = asyncio.Semaphore(12)
 
         # Try to acquire semaphore with timeout to prevent event loop blocking
         try:

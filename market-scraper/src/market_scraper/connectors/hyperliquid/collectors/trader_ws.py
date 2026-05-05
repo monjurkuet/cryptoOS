@@ -632,10 +632,13 @@ class TraderWebSocketCollector:
                 break
 
     async def _flush_loop(self) -> None:
-        """Periodically flush the message buffer."""
+        """Periodically flush the message buffer with safety timeout."""
         while self._running:
             await asyncio.sleep(self._flush_interval)
-            await self._flush_messages()
+            try:
+                await asyncio.wait_for(self._flush_messages(), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("trader_ws_flush_timeout", timeout=15.0)
 
     async def _monitor_loop_lag(self) -> None:
         """Monitor event loop lag and log warnings if excessive."""
