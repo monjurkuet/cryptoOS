@@ -9,6 +9,15 @@ This is needed because the main process can get stuck
 in swap thrashing on the budget VPS (961MB RAM),
 making even its thread-based health server unresponsive
 due to GIL contention.
+
+Health check strategy (primary → fallback):
+1. Check the main API (port 3845) /health/live — this is the real
+   indicator of service health since it serves all API endpoints.
+2. Check the thread health server (port 3846) /health/live — backup
+   check; this thread-based server was meant to be GIL-independent
+   but can still stall under heavy swap thrashing.
+3. Check systemd service status — last resort, only tells us the
+   process exists, not that it's functional.
 """
 import http.server
 import json
@@ -18,7 +27,8 @@ import signal
 import sys
 
 PORT = 3847
-MAIN_PORT = 3846  # Thread health server port
+MAIN_API_PORT = 3845  # Main FastAPI/uvicorn server
+THREAD_HEALTH_PORT = 3846  # Thread-based liveness server
 SERVICE_NAME = "market-scraper"
 
 
@@ -34,13 +44,13 @@ def check_process_alive():
         return False
 
 
-def check_port_responding():
-    """Try to connect to the main health server."""
+def check_port_http(port, path="/health/live", expected=b"alive"):
+    """Try an HTTP GET on a local port and check if expected string is in response."""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(3)
-        sock.connect(("127.0.0.1", MAIN_PORT))
-        sock.sendall(b"GET /health/live HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        sock.connect(("127.0.0.1", port))
+        sock.sendall(f"GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode())
         # Read full response - headers may arrive before body in separate recv calls
         data = b""
         while True:
@@ -49,7 +59,7 @@ def check_port_responding():
                 break
             data += chunk
         sock.close()
-        return b"alive" in data
+        return expected in data
     except Exception:
         return False
 
@@ -57,19 +67,33 @@ def check_port_responding():
 class HealthHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health/live":
-            # Quick check: is the process running?
-            process_alive = check_process_alive()
-            port_responding = check_port_responding()
+            # Primary: check the main API server (port 3845) — the real service
+            main_api_responding = check_port_http(MAIN_API_PORT)
 
-            if port_responding:
+            # Fallback: check the thread health server (port 3846)
+            thread_health_responding = check_port_http(THREAD_HEALTH_PORT)
+
+            # Last resort: check systemd service status
+            process_alive = check_process_alive()
+
+            if main_api_responding:
+                # Main API is healthy — the service is fully functional
                 body = json.dumps({"status": "alive"}).encode()
                 self.send_response(200)
+            elif thread_health_responding:
+                # Thread server responds but main API doesn't — degraded
+                body = json.dumps({
+                    "status": "alive",
+                    "warning": "main_api_unresponsive",
+                    "detail": "Thread health server responding but main API is not"
+                }).encode()
+                self.send_response(200)
             elif process_alive:
-                # Process is running but not responding (stuck in swap)
+                # Process is running but neither health endpoint responds (stuck in swap)
                 body = json.dumps({
                     "status": "alive",
                     "warning": "main_process_unresponsive",
-                    "detail": "Process is active but health endpoint not responding"
+                    "detail": "Process is active but no health endpoints are responding"
                 }).encode()
                 self.send_response(200)  # Still alive, just degraded
             else:
@@ -92,7 +116,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format, *args):
-        pass  # Suppress logs
+        pass # Suppress logs
 
 
 class ThreadedHTTPServer(http.server.ThreadingHTTPServer):
