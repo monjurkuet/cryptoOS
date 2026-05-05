@@ -37,7 +37,8 @@ async def lifespan(app: FastAPI):
     """
     # Configure structured logging with LOG_LEVEL env var (default INFO)
     log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    configure_logging(level=log_level)
+    log_format = os.environ.get("LOG_FORMAT", "json")
+    configure_logging(level=log_level, format=log_format)
 
     lifecycle = LifecycleManager()
     app.state.lifecycle = lifecycle

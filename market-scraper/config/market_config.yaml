@@ -125,12 +125,12 @@ buffer:
   # How often to automatically flush buffered events to database (seconds)
   # Lower values = more frequent writes, lower latency
   # Higher values = fewer writes, better throughput
-  flush_interval: 30.0
+  flush_interval: 60.0
 
   # Maximum number of events to buffer before forced flush
   # Lower values = more frequent writes
   # Higher values = better batching, more memory usage
-  max_size: 100
+  max_size: 500
 
   # Maximum messages to batch for WebSocket broadcasts
   broadcast_batch_size: 100
@@ -161,7 +161,7 @@ candle_backfill:
   rate_limit_delay: 0.5
 
   # Run backfill on every startup (checks for missing data first)
-  run_on_startup: true
+  run_on_startup: false
 
   # Smart backfill: only fetch data that doesn't exist in DB
   # Queries latest candle timestamp and fetches from there to now

@@ -1149,8 +1149,8 @@ class LifecycleManager:
                             if line.startswith("VmRSS:"):
                                 rss_mb = int(line.split()[1]) / 1024
                                 break
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("rss_read_error", error=str(e))
 
                 logger.info("memory_guardian", rss_mb=round(rss_mb, 1), gc="collected")
 

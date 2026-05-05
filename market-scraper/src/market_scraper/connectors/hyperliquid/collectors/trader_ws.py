@@ -273,6 +273,12 @@ class TraderWebSocketCollector:
         await asyncio.gather(*stop_tasks, return_exceptions=True)
 
         self._clients.clear()
+
+        # Shutdown thread pool executor
+        if self._executor:
+            self._executor.shutdown(wait=False)
+            self._executor = None
+
         logger.info("trader_ws_stopped", stats=self.get_stats())
 
     async def add_trader(self, address: str) -> None:

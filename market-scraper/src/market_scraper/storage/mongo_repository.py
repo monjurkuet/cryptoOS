@@ -299,8 +299,9 @@ class MongoRepository(DataRepository):
 
             config = load_market_config()
             return config.storage.retention
-        except Exception:
+        except Exception as e:
             # Return default retention config
+            logger.debug("retention_config_fallback", error=str(e))
             from market_scraper.config.market_config import RetentionConfig
 
             return RetentionConfig()
@@ -661,8 +662,9 @@ class MongoRepository(DataRepository):
                 stats = await self._db.command("collstats", "events")
                 doc_count = stats.get("count", 0)
                 storage_size = stats.get("size", 0) / (1024 * 1024)
-            except Exception:
+            except Exception as e:
                 # Collection might not exist yet
+                logger.debug("health_check_collstats_error", error=str(e))
                 doc_count = 0
                 storage_size = 0.0
 
@@ -769,7 +771,6 @@ class MongoRepository(DataRepository):
         self, candles: list[Candle], symbol: str, interval: str
     ) -> int:
         """Sync implementation of store_candles_bulk (runs in thread pool)."""
-        from pymongo import UpdateOne
 
         collection = self._sync_db[CollectionName.candles(symbol, interval)]
         operations = [
