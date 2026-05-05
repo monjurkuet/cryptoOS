@@ -67,28 +67,18 @@ def check_port_http(port, path="/health/live", expected=b"alive"):
 class HealthHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health/live":
-            # Primary: check the main API server (port 3845) — the real service
+            # Check both health endpoints — either one responding proves the
+            # process is alive and functional. Under heavy swap thrashing on a
+            # 1-core VPS, the main API and thread server alternate responsiveness
+            # depending on which one gets CPU time, so we check both.
             main_api_responding = check_port_http(MAIN_API_PORT)
-
-            # Fallback: check the thread health server (port 3846)
             thread_health_responding = check_port_http(THREAD_HEALTH_PORT)
 
-            # Last resort: check systemd service status
-            process_alive = check_process_alive()
-
-            if main_api_responding:
-                # Main API is healthy — the service is fully functional
+            if main_api_responding or thread_health_responding:
+                # At least one health endpoint is responding — service is alive
                 body = json.dumps({"status": "alive"}).encode()
                 self.send_response(200)
-            elif thread_health_responding:
-                # Thread server responds but main API doesn't — degraded
-                body = json.dumps({
-                    "status": "alive",
-                    "warning": "main_api_unresponsive",
-                    "detail": "Thread health server responding but main API is not"
-                }).encode()
-                self.send_response(200)
-            elif process_alive:
+            elif check_process_alive():
                 # Process is running but neither health endpoint responds (stuck in swap)
                 body = json.dumps({
                     "status": "alive",
