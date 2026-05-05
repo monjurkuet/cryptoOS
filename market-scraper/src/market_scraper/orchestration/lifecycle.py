@@ -79,6 +79,7 @@ class LifecycleManager:
         self._position_buffer_lock = asyncio.Lock()
         self._position_buffer_flush_interval: float = 5.0
         self._position_buffer_max_size: int = 50
+        self._position_buffer_flush_event: asyncio.Event = asyncio.Event()
         self._position_flush_task: asyncio.Task | None = None
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
         self._write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes

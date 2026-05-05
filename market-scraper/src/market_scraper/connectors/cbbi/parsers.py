@@ -2,7 +2,7 @@
 
 """Response parsers for CBBI data."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from market_scraper.core.events import StandardEvent

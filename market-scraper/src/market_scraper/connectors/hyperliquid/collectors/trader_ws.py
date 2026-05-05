@@ -897,22 +897,7 @@ class TraderWebSocketCollector:
                     continue
                 address = str(data.get("user", "")).lower()
 
-                # Phase 2A: Quick hash dedup - fast pre-normalization filter.
-                # Compute a cheap hash of the raw JSON bytes; if it matches the
-                # last quick hash for this trader, the message is an exact
-                # duplicate and we can skip the expensive recursive
-                # normalization entirely.  The quick hash is NOT a replacement
-                # for the full normalized hash - it is a fast-path filter.
-                # False negatives (different quick hash but same normalized
-                # data) are harmless: they just fall through to full check.
-                quick_hash = hashlib.sha256(
-                    json.dumps(data, sort_keys=True).encode()
-                ).hexdigest()
-                if quick_hash == self._quick_hashes.get(address):
-                    self._positions_skipped += 1
-                    self._quick_hash_skips += 1
-                    continue
-
+                # Extract symbol-specific fields BEFORE hash for effective dedup
                 clearinghouse = data.get("clearinghouseState", {})
                 positions = clearinghouse.get("assetPositions", [])
                 open_orders = data.get("openOrders", [])
@@ -924,6 +909,31 @@ class TraderWebSocketCollector:
                 symbol_open_orders = self._filter_symbol_open_orders(open_orders)
                 if not isinstance(margin_summary, dict):
                     margin_summary = {}
+
+                # Phase 2A: Quick hash dedup — hash only symbol-specific data.
+                # Full account state changes frequently (other positions, PnL ticks)
+                # even when the tracked symbol's position is unchanged.
+                # Only hash position state + order details (not margin/PnL which change every tick)
+                _qh_data = {
+                    "sp": [{"coin": p.get("position", {}).get("coin"),
+                            "szi": p.get("position", {}).get("szi"),
+                            "entryPx": p.get("position", {}).get("entryPx"),
+                            "leverage": p.get("position", {}).get("leverage")}
+                           for p in symbol_positions],
+                    "oo": [{"coin": o.get("coin"),
+                            "side": o.get("side"),
+                            "origSz": o.get("origSz"),
+                            "limitPx": o.get("limitPx")}
+                           for o in symbol_open_orders],
+                }
+                quick_hash = hashlib.sha256(
+                    json.dumps(_qh_data, sort_keys=True).encode()
+                ).hexdigest()
+                if quick_hash == self._quick_hashes.get(address):
+                    self._positions_skipped += 1
+                    self._quick_hash_skips += 1
+                    continue
+
                 norm_items.append((address, symbol_positions, symbol_open_orders, margin_summary, quick_hash))
 
             # Run CPU-bound normalization in thread pool
@@ -938,10 +948,10 @@ class TraderWebSocketCollector:
                     address, symbol_positions, symbol_open_orders, margin_summary,
                     norm_pos, norm_ords, norm_margin, allow_empty=False,
                 )
+                self._quick_hashes[address] = quick_hash
                 if event:
                     events.append(event)
-                    # Phase 2A: Update quick hash on successful save
-                    self._quick_hashes[address] = quick_hash
+
 
                 # Yield after each normalization sub-chunk
                 await asyncio.sleep(0)
