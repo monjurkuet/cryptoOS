@@ -321,8 +321,8 @@ class LifecycleManager:
             for item in buffer:
                 try:
                     await self._store_trader_positions_state_single(item)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("individual_write_fallback_error", error=str(e))
 
     async def _store_trader_positions_state_single(self, event_data: dict) -> None:
         """Store a single trader positions event (fallback for batch failures)."""
