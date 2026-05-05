@@ -130,19 +130,19 @@ class CollectorManager:
         if not self._ws:
             return
 
-    # Attempt to send unsubscribe messages if the connection is still alive
-    try:
-        from websockets.protocol import State
-        if self._ws.state == State.OPEN:
-            await self._unsubscribe()
-    except Exception:
-        pass  # If we can't check state, just proceed to close
-    try:
-        await self._ws.close()
-    except Exception as e:
-        logger.debug("websocket_close_error", error=str(e))
+        # Attempt to send unsubscribe messages if the connection is still alive
+        try:
+            from websockets.protocol import State
+            if self._ws.state == State.OPEN:
+                await self._unsubscribe()
+        except Exception:
+            pass  # If we can't check state, just proceed to close
+        try:
+            await self._ws.close()
+        except Exception as e:
+            logger.debug("websocket_close_error", error=str(e))
 
-    self._ws = None
+        self._ws = None
 
     async def _connect(self) -> None:
         """Connect to WebSocket and subscribe to channels."""
