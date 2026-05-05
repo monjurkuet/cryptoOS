@@ -1164,6 +1164,7 @@ class TraderWSClient:
                         "subscription": {"type": "webData2", "user": address},
                     }
                 )
+                subscribed_ok += 1
                 await asyncio.sleep(0.05)  # 50ms delay to reduce server pressure
 
             # Only reset reconnect counter after full subscription success
@@ -1378,5 +1379,8 @@ class TraderWSClient:
 
     @property
     def subscription_count(self) -> int:
+        """Number of traders currently subscribed on this client."""
+        return len(self.traders)
+
         """Number of traders currently subscribed on this client."""
         return len(self.traders)
