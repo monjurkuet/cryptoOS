@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
+from aiohttp.client_exceptions import ClientConnectionResetError
 import structlog
 
 from market_scraper.config.market_config import BufferConfig
@@ -1166,6 +1167,14 @@ class TraderWSClient:
 
             return True
 
+        except ClientConnectionResetError as e:
+            # Common race: WS closed between ws.closed check and send_json.
+            # Log concisely (no traceback) — the reconnect handler will backoff.
+            logger.warning(
+                "trader_ws_client_start_error",
+                client_id=self.client_id,
+                error=str(e),
+            )
         except Exception as e:
             logger.error(
                 "trader_ws_client_start_error",

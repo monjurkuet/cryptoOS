@@ -48,7 +48,7 @@ volume_tiers:
 # Filter Criteria - Traders must match ALL filters
 filters:
   min_score: 50              # Minimum score to be tracked (0-100+)
-  max_count: 150 # Maximum traders to track (reduced for VPS memory pressure)
+  max_count: 100 # Maximum traders to track (reduced from 150 for VPS memory pressure - 10 WS clients instead of 20)
   min_account_value: 10000   # Minimum account value ($10K)
 
   # Optional: Require specific performance
