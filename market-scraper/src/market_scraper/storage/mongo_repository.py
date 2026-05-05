@@ -1632,7 +1632,8 @@ class MongoRepository(DataRepository):
 
         if closed_trade:
             ct_collection = self._sync_db[CollectionName.TRADER_CLOSED_TRADES]
-            ct_doc = closed_trade.model_dump()
+            # closed_trade is a dict (from build_trader_current_state_payload), not a model
+            ct_doc = dict(closed_trade) if not hasattr(closed_trade, "model_dump") else closed_trade.model_dump()
             ct_doc["eth"] = str(ct_doc.get("eth", "")).lower()
             ct_collection.update_one(
                 {"eth": ct_doc["eth"], "coin": ct_doc["coin"], "closed_time": ct_doc["closed_time"]},
