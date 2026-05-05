@@ -641,6 +641,9 @@ class MongoRepository(DataRepository):
     async def store_candle(self, candle: Candle, symbol: str, interval: str) -> bool:
         """Store a candle.
 
+        Uses sync pymongo via asyncio.to_thread() to avoid blocking the event loop
+        on remote Atlas writes.
+
         Args:
             candle: Candle to store.
             symbol: Trading symbol.
@@ -652,19 +655,25 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails.
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            collection = self._db[CollectionName.candles(symbol, interval)]
-            await collection.update_one(
-                {"t": candle.t},
-                {"$set": candle.model_dump()},
-                upsert=True,
+            return await asyncio.to_thread(
+                self._sync_store_candle, candle, symbol, interval
             )
-            return True
         except Exception as e:
             raise StorageError(f"Failed to store candle: {e}") from e
+
+    def _sync_store_candle(self, candle: Candle, symbol: str, interval: str) -> bool:
+        """Sync implementation of store_candle (runs in thread pool)."""
+        collection = self._sync_db[CollectionName.candles(symbol, interval)]
+        collection.update_one(
+            {"t": candle.t},
+            {"$set": candle.model_dump()},
+            upsert=True,
+        )
+        return True
 
     async def store_candles_bulk(
         self,
@@ -673,6 +682,8 @@ class MongoRepository(DataRepository):
         interval: str,
     ) -> int:
         """Store multiple candles efficiently using bulk write with upsert.
+
+        Uses sync pymongo via asyncio.to_thread() to avoid blocking the event loop.
 
         Args:
             candles: List of candles to store
@@ -685,28 +696,36 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         if not candles:
             return 0
 
         try:
-            from pymongo import UpdateOne
-
-            collection = self._db[CollectionName.candles(symbol, interval)]
-            operations = [
-                UpdateOne(
-                    {"t": candle.t},
-                    {"$set": candle.model_dump()},
-                    upsert=True,
-                )
-                for candle in candles
-            ]
-            result = await collection.bulk_write(operations, ordered=False)
-            return result.upserted_count + result.modified_count
+            return await asyncio.to_thread(
+                self._sync_store_candles_bulk, candles, symbol, interval
+            )
         except Exception as e:
             raise StorageError(f"Failed to store candles bulk: {e}") from e
+
+    def _sync_store_candles_bulk(
+        self, candles: list[Candle], symbol: str, interval: str
+    ) -> int:
+        """Sync implementation of store_candles_bulk (runs in thread pool)."""
+        from pymongo import UpdateOne
+
+        collection = self._sync_db[CollectionName.candles(symbol, interval)]
+        operations = [
+            UpdateOne(
+                {"t": candle.t},
+                {"$set": candle.model_dump()},
+                upsert=True,
+            )
+            for candle in candles
+        ]
+        result = collection.bulk_write(operations, ordered=False)
+        return result.upserted_count + result.modified_count
 
     async def get_latest_candle(self, symbol: str, interval: str) -> dict[str, Any] | None:
         """Get the latest candle for a symbol and interval.
@@ -843,28 +862,37 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails.
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         if not positions:
             return 0
 
         try:
-            collection = self._db[CollectionName.TRADER_POSITIONS]
             documents = []
             for position in positions:
                 normalized = position.model_dump()
                 normalized["eth"] = str(normalized.get("eth", "")).lower()
                 documents.append(normalized)
 
-            result = await collection.insert_many(documents, ordered=False)
+            return await asyncio.to_thread(
+                self._sync_store_trader_position_bulk, documents
+            )
+        except Exception as e:
+            raise StorageError(f"Failed to bulk-store positions: {e}") from e
+
+    def _sync_store_trader_position_bulk(self, documents: list[dict]) -> int:
+        """Sync implementation of store_trader_position_bulk (runs in thread pool)."""
+        from pymongo.errors import BulkWriteError as SyncBulkWriteError
+
+        collection = self._sync_db[CollectionName.TRADER_POSITIONS]
+        try:
+            result = collection.insert_many(documents, ordered=False)
             return len(result.inserted_ids)
-        except BulkWriteError:
+        except SyncBulkWriteError:
             # Partial failures (e.g. duplicate _id) are acceptable for
             # time-series data — the TTL index handles cleanup.
             return len(documents)
-        except Exception as e:
-            raise StorageError(f"Failed to bulk-store positions: {e}") from e
 
     async def store_trader_closed_trade(self, trade: TraderClosedTrade | dict[str, Any]) -> bool:
         """Store a closed-trade ledger row idempotently."""
@@ -1013,6 +1041,9 @@ class MongoRepository(DataRepository):
     async def store_signal(self, signal: TradingSignal) -> bool:
         """Store a trading signal.
 
+        Uses sync pymongo via asyncio.to_thread() to avoid blocking the event loop
+        on remote Atlas writes.
+
         Args:
             signal: Signal to store.
 
@@ -1022,15 +1053,19 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails.
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            collection = self._db[CollectionName.SIGNALS]
-            await collection.insert_one(signal.model_dump())
-            return True
+            return await asyncio.to_thread(self._sync_store_signal, signal)
         except Exception as e:
             raise StorageError(f"Failed to store signal: {e}") from e
+
+    def _sync_store_signal(self, signal: TradingSignal) -> bool:
+        """Sync implementation of store_signal (runs in thread pool)."""
+        collection = self._sync_db[CollectionName.SIGNALS]
+        collection.insert_one(signal.model_dump())
+        return True
 
     async def get_signals(
         self,

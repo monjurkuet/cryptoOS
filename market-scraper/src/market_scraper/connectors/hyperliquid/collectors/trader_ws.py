@@ -10,6 +10,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import random
 import time
 from collections import deque
 from collections.abc import Callable
@@ -105,8 +106,9 @@ class TraderWebSocketCollector:
 
         # Connection management
         self._clients: list[TraderWSClient] = []
-        self._num_clients = 20  # Hyperliquid limits 10 user subscriptions per WS connection
+        self._num_clients = 0  # Dynamically computed from trader count (see start())
         self._batch_size = 10  # Must match Hyperliquid's per-connection user limit
+        self._max_clients = 30  # Safety cap to prevent unbounded WS connections
 
         # State
         self._running = False
@@ -180,16 +182,18 @@ class TraderWebSocketCollector:
             logger.warning("no_traders_to_track")
             return
 
-        # Split traders among clients
+        # Split traders among clients (10 per WS connection per Hyperliquid limit)
         trader_batches = [
-            self._tracked_traders[i : i + self._batch_size]
-            for i in range(0, len(self._tracked_traders), self._batch_size)
+          self._tracked_traders[i : i + self._batch_size]
+          for i in range(0, len(self._tracked_traders), self._batch_size)
         ]
 
-        # Determine how many clients we need (limited by _num_clients max)
-        # Each client handles up to _batch_size traders
+        # Dynamically compute client count to cover all traders.
+        # Each WS connection supports exactly 10 user subscriptions.
+        # Cap at _max_clients (30) as a safety limit.
         num_needed_clients = len(trader_batches)
-        num_clients_to_create = min(num_needed_clients, self._num_clients)
+        num_clients_to_create = min(num_needed_clients, self._max_clients)
+        self._num_clients = num_clients_to_create
 
         # Create and start clients
         # If we have more batches than clients, later batches will be assigned
@@ -204,11 +208,22 @@ class TraderWebSocketCollector:
             )
             self._clients.append(client)
 
-        # Start all clients
-        start_tasks = [client.start() for client in self._clients]
-        results = await asyncio.gather(*start_tasks, return_exceptions=True)
-
-        successful = sum(1 for r in results if r is True)
+        # Start clients with staggered delay (0.5s between each)
+        # to avoid overwhelming Hyperliquid with 20+ simultaneous WS connections
+        successful = 0
+        for idx, client in enumerate(self._clients):
+            if idx > 0:
+                await asyncio.sleep(0.5)
+            try:
+                result = await client.start()
+                if result is True:
+                    successful += 1
+            except Exception as e:
+                logger.error(
+                    "trader_ws_client_start_failed",
+                    client_id=client.client_id,
+                    error=str(e),
+                )
         logger.info("trader_ws_clients_started", successful=successful, total=len(self._clients))
         self._schedule_bootstrap(self._tracked_traders)
 
@@ -275,8 +290,8 @@ class TraderWebSocketCollector:
                 await client.subscribe_trader(address)
                 return
 
-        # Need to create new client
-        if len(self._clients) < self._num_clients:
+        # Need to create new client (respect _max_clients cap)
+        if len(self._clients) < self._max_clients:
             client = TraderWSClient(
                 client_id=len(self._clients),
                 traders=[address],
@@ -1312,12 +1327,14 @@ class TraderWSClient:
             await self.on_disconnect(self.client_id)
             return
 
-        # Exponential backoff with a minimum floor of 2s to prevent
-        # rapid reconnection storms that block the event loop.
-        # With 30+ WS clients all reconnecting at 1s, the event loop
-        # gets overwhelmed and HTTP becomes unresponsive.
+        # Exponential backoff with jitter and a minimum floor of 2s to prevent
+        # thundering-herd reconnection storms that block the event loop.
+        # With 20+ WS clients all reconnecting simultaneously, synchronized
+        # retries create massive event loop pressure.
         raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
-        delay = max(2.0, min(raw_delay, self.config.reconnect_max_delay))
+        # Add random jitter (0-25% of delay) to desynchronize reconnect attempts
+        jitter = raw_delay * random.uniform(0, 0.25)
+        delay = max(2.0, min(raw_delay + jitter, self.config.reconnect_max_delay))
 
         logger.info(
             "trader_ws_client_reconnecting",
