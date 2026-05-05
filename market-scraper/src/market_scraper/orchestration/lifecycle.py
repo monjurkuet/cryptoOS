@@ -57,7 +57,6 @@ class LifecycleManager:
         self._settings = settings or get_settings()
         self._started = False
         self._startup_complete = False
-        self._startup_complete = False
         self._startup_error: Exception | None = None
 
         # Core components
@@ -238,7 +237,7 @@ class LifecycleManager:
         # Stop scheduler
         if self._scheduler:
             try:
-                await self._scheduler.stop()
+                await asyncio.wait_for(self._scheduler.stop(), timeout=10.0)
             except Exception as e:
                 logger.error("scheduler_stop_error", error=str(e), exc_info=True)
             self._scheduler = None
@@ -246,7 +245,7 @@ class LifecycleManager:
         # Stop leaderboard collector
         if self._leaderboard_collector:
             try:
-                await self._leaderboard_collector.stop()
+                await asyncio.wait_for(self._leaderboard_collector.stop(), timeout=10.0)
             except Exception as e:
                 logger.error("leaderboard_stop_error", error=str(e), exc_info=True)
             self._leaderboard_collector = None
@@ -255,14 +254,14 @@ class LifecycleManager:
         if self._ws_sync_task and not self._ws_sync_task.done():
             self._ws_sync_task.cancel()
             try:
-                await self._ws_sync_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._ws_sync_task, timeout=10.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 logger.debug("ws_sync_task_cancelled")
 
         # Stop trader websocket collector
         if self._trader_ws_collector:
             try:
-                await self._trader_ws_collector.stop()
+                await asyncio.wait_for(self._trader_ws_collector.stop(), timeout=15.0)
             except Exception as e:
                 logger.error("trader_ws_stop_error", error=str(e), exc_info=True)
             self._trader_ws_collector = None
@@ -270,7 +269,7 @@ class LifecycleManager:
         # Stop collector manager
         if self._collector_manager:
             try:
-                await self._collector_manager.stop()
+                await asyncio.wait_for(self._collector_manager.stop(), timeout=10.0)
             except Exception as e:
                 logger.error("collector_stop_error", error=str(e), exc_info=True)
             self._collector_manager = None
@@ -286,7 +285,7 @@ class LifecycleManager:
         # Disconnect repository
         if self._repository:
             try:
-                await self._repository.disconnect()
+                await asyncio.wait_for(self._repository.disconnect(), timeout=10.0)
             except Exception as e:
                 logger.error("repository_disconnect_error", error=str(e), exc_info=True)
             self._repository = None
@@ -294,7 +293,7 @@ class LifecycleManager:
         # Disconnect event bus
         if self._event_bus:
             try:
-                await self._event_bus.disconnect()
+                await asyncio.wait_for(self._event_bus.disconnect(), timeout=5.0)
             except Exception as e:
                 logger.error("event_bus_disconnect_error", error=str(e), exc_info=True)
             self._event_bus = None

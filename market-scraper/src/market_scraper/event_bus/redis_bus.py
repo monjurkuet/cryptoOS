@@ -38,6 +38,7 @@ class RedisEventBus(EventBus):
         self._pubsub: redis.client.PubSub | None = None
         self._listener_task: asyncio.Task[None] | None = None
         self._running = False
+        self._subscribed = asyncio.Event()
 
     async def connect(self) -> None:
         """Connect to Redis."""
@@ -52,6 +53,7 @@ class RedisEventBus(EventBus):
     async def disconnect(self) -> None:
         """Disconnect from Redis."""
         self._running = False
+        self._subscribed.clear()
 
         if self._listener_task:
             self._listener_task.cancel()
@@ -111,6 +113,10 @@ class RedisEventBus(EventBus):
         self._handlers[event_type].append((priority, handler))
         # Sort by priority
         self._handlers[event_type].sort(key=lambda x: x[0].value)
+
+        # Signal the listener that at least one subscription now exists,
+        # so it can safely start polling get_message().
+        self._subscribed.set()
 
     async def unsubscribe(
         self,
@@ -202,6 +208,11 @@ class RedisEventBus(EventBus):
                 channels=handler_keys,
                 handler_count=len(handler_keys),
             )
+
+            # Re-arm the subscribed event so the listener loop can
+            # resume polling after a reconnection.
+            if handler_keys:
+                self._subscribed.set()
         except Exception as e:
             logger.error("redis_listener_resubscribe_error", error=str(e), exc_info=True)
             raise
@@ -248,6 +259,17 @@ class RedisEventBus(EventBus):
         """
         if not self._pubsub:
             return
+
+        # Wait until at least one subscription is registered before polling.
+        # Without this, get_message() raises RuntimeError because the pubsub
+        # connection is lazily opened on the first subscribe() call.
+        while self._running and not self._subscribed.is_set():
+            try:
+                await asyncio.wait_for(self._subscribed.wait(), timeout=1.0)
+            except TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                return
 
         while self._running:
             try:

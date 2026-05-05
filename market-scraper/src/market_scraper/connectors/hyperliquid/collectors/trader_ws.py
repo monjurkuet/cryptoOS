@@ -237,30 +237,39 @@ class TraderWebSocketCollector:
         if self._flush_task:
             self._flush_task.cancel()
             try:
-                await self._flush_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._flush_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 logger.debug("trader_ws_flush_task_cancelled")
 
         # Stop lag monitor task
         if self._lag_monitor_task:
             self._lag_monitor_task.cancel()
             try:
-                await self._lag_monitor_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._lag_monitor_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 logger.debug("trader_ws_lag_monitor_cancelled")
 
         if self._bootstrap_task:
             self._bootstrap_task.cancel()
             try:
-                await self._bootstrap_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._bootstrap_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 logger.debug("trader_ws_bootstrap_task_cancelled")
 
-        # Flush remaining messages
-        await self._flush_messages()
+        # Flush remaining messages (bounded timeout)
+        try:
+            await asyncio.wait_for(self._flush_messages(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("trader_ws_flush_timeout")
 
-        # Stop all clients
-        stop_tasks = [client.stop() for client in self._clients]
+        # Stop all clients with per-client timeout via gather
+        async def _stop_with_timeout(client):
+            try:
+                await asyncio.wait_for(client.stop(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("trader_ws_client_stop_timeout", client_id=client.client_id)
+
+        stop_tasks = [_stop_with_timeout(client) for client in self._clients]
         await asyncio.gather(*stop_tasks, return_exceptions=True)
 
         self._clients.clear()
@@ -1192,22 +1201,22 @@ class TraderWSClient:
         if self._listen_task:
             self._listen_task.cancel()
             try:
-                await self._listen_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._listen_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 logger.debug("trader_ws_listen_task_cancelled", client_id=self.client_id)
 
         if self._ws:
             try:
-                await self._ws.close()
-            except Exception as e:
+                await asyncio.wait_for(self._ws.close(), timeout=3.0)
+            except (asyncio.TimeoutError, Exception) as e:
                 logger.debug("trader_ws_close_error", client_id=self.client_id, error=str(e))
 
         # Close session with proper error handling
         if self._session and not self._session_closed:
             try:
-                await self._session.close()
+                await asyncio.wait_for(self._session.close(), timeout=3.0)
                 self._session_closed = True
-            except Exception as e:
+            except (asyncio.TimeoutError, Exception) as e:
                 logger.error("trader_ws_session_close_error", client_id=self.client_id, error=str(e))
             finally:
                 self._session = None

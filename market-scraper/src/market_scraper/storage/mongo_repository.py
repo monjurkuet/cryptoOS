@@ -9,7 +9,7 @@ import motor.motor_asyncio
 import pymongo
 import structlog
 from pymongo import UpdateOne
-from pymongo.errors import BulkWriteError, DuplicateKeyError
+from pymongo.errors import BulkWriteError, DuplicateKeyError, OperationFailure
 
 from market_scraper.core.events import StandardEvent
 from market_scraper.core.exceptions import StorageError
@@ -156,7 +156,12 @@ class MongoRepository(DataRepository):
         await self._create_model_indexes()
 
     async def _create_ttl_indexes(self) -> None:
-        """Create TTL indexes for automatic data retention."""
+        """Create TTL indexes for automatic data retention.
+
+        Handles IndexOptionsConflict (code 85) by dropping conflicting
+        old indexes (e.g. legacy 'ttl_retention' without collection suffix)
+        and retrying creation.
+        """
         if self._db is None:
             return
 
@@ -176,24 +181,67 @@ class MongoRepository(DataRepository):
         ]
 
         for collection_name, field, days in ttl_collections:
-            try:
-                await self._db[collection_name].create_index(
-                    [(field, 1)],
-                    name=f"ttl_retention_{collection_name}",
-                    expireAfterSeconds=days * 86400,
-                )
-                logger.info(
-                    "ttl_index_created",
-                    collection=collection_name,
-                    retention_days=days,
-                )
-            except Exception as e:
-                # Index might already exist with different options
-                logger.warning(
-                    "ttl_index_creation_failed",
-                    collection=collection_name,
-                    error=str(e),
-                )
+            target_name = f"ttl_retention_{collection_name}"
+            for attempt in range(2):  # max 2 attempts (initial + retry after drop)
+                try:
+                    await self._db[collection_name].create_index(
+                        [(field, 1)],
+                        name=target_name,
+                        expireAfterSeconds=days * 86400,
+                    )
+                    logger.info(
+                        "ttl_index_created",
+                        collection=collection_name,
+                        retention_days=days,
+                    )
+                    break  # success, move to next collection
+                except OperationFailure as e:
+                    # In pymongo 4.x, IndexOptionsConflict is now OperationFailure(code=85)
+                    if e.code != 85:
+                        raise  # Not an index conflict, re-raise to outer handler
+                    # An old index with a different name/options exists on the same key.
+                    # Drop the conflicting index and retry.
+                    logger.warning(
+                        "ttl_index_conflict_dropping_old",
+                        collection=collection_name,
+                        error=str(e),
+                    )
+                    try:
+                        # List indexes to find the conflicting one
+                        async for idx in self._db[collection_name].list_indexes():
+                            idx_name = idx.get("name", "")
+                            idx_key = idx.get("key", {})
+                            # Drop old 'ttl_retention' index (without collection suffix)
+                            # or any TTL index on the same field that isn't our target
+                            if (
+                                idx_name != target_name
+                                and idx.get("expireAfterSeconds") is not None
+                            ):
+                                # Check if it's on the same key field
+                                if field in idx_key:
+                                    await self._db[collection_name].drop_index(
+                                        idx_name
+                                    )
+                                    logger.info(
+                                        "ttl_index_dropped_old",
+                                        collection=collection_name,
+                                        dropped_index=idx_name,
+                                    )
+                    except Exception as drop_err:
+                        logger.error(
+                            "ttl_index_drop_failed",
+                            collection=collection_name,
+                            error=str(drop_err),
+                        )
+                    # Retry index creation on next loop iteration
+                    continue
+                except Exception as e:
+                    logger.warning(
+                        "ttl_index_creation_failed",
+                        collection=collection_name,
+                        error=str(e),
+                    )
+                    break  # non-retryable error, move on
 
     async def _create_model_indexes(self) -> None:
         """Create query performance indexes for model-specific collections."""
