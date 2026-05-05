@@ -1164,7 +1164,7 @@ class TraderWSClient:
                         "subscription": {"type": "webData2", "user": address},
                     }
                 )
-                await asyncio.sleep(0.01)  # Small delay between subscriptions
+                await asyncio.sleep(0.05)  # 50ms delay to reduce server pressure
 
             # Only reset reconnect counter after full subscription success
             # Previously this was set right after ws_connect, which caused
@@ -1175,6 +1175,8 @@ class TraderWSClient:
                 "trader_ws_client_subscribed",
                 client_id=self.client_id,
                 traders=len(self.traders),
+                subscribed_ok=subscribed_ok,
+                skipped_stale=skipped_stale,
             )
 
             # Start listening
@@ -1344,15 +1346,19 @@ class TraderWSClient:
             finally:
                 self._session = None
 
-        # Exponential backoff with jitter and a minimum floor of 5s to:
+        # Exponential backoff with jitter and a minimum floor of 15s to:
         # 1. Prevent thundering-herd reconnection storms that block the event loop
         # 2. Give Hyperliquid's server time to release the old subscription slots
-        #    (even when we can't send unsubscribe, the server needs time to detect
-        #    the dead connection and free the 10-user slot)
+        #    (server takes ~30s to detect dead connection and free 10-user slot;
+        #     15s floor + jitter gives 15-19s before first reconnect attempt)
+        # 3. Per-client stagger prevents all clients reconnecting simultaneously
         raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
         # Add random jitter (0-25% of delay) to desynchronize reconnect attempts
         jitter = raw_delay * random.uniform(0, 0.25)
-        delay = max(5.0, min(raw_delay + jitter, self.config.reconnect_max_delay))
+        # Per-client stagger: add client_id * 2s so clients don't all reconnect
+        # simultaneously after a shared network disruption
+        stagger = self.client_id * 2.0
+        delay = max(15.0, min(raw_delay + jitter + stagger, self.config.reconnect_max_delay))
 
         logger.info(
             "trader_ws_client_reconnecting",
@@ -1369,3 +1375,8 @@ class TraderWSClient:
     def is_connected(self) -> bool:
         """Check if client is connected."""
         return self._ws is not None and not self._ws.closed
+
+    @property
+    def subscription_count(self) -> int:
+        """Number of traders currently subscribed on this client."""
+        return len(self.traders)
