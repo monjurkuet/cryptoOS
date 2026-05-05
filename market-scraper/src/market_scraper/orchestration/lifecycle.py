@@ -75,6 +75,11 @@ class LifecycleManager:
         self._health_monitor: HealthMonitor | None = None
         self._last_event_timestamps: dict[str, datetime] = {}
         self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(12)
+        self._position_write_buffer: list[dict] = []
+        self._position_buffer_lock = asyncio.Lock()
+        self._position_buffer_flush_interval: float = 5.0
+        self._position_buffer_max_size: int = 50
+        self._position_flush_task: asyncio.Task | None = None
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
         self._write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
         self._max_active_writes: int = 16  # Cap total concurrent write tasks
@@ -182,6 +187,13 @@ class LifecycleManager:
 
             self._startup_complete = True
 
+            # Phase 2B: Start periodic position buffer flush task
+            if hasattr(self._repository, "bulk_upsert_trader_states"):
+                self._position_flush_task = asyncio.create_task(
+                    self._position_buffer_flush_loop()
+                )
+                logger.info("position_buffer_flush_task_started")
+
             duration_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info("lifecycle_startup_complete", duration_ms=round(duration_ms, 2))
 
@@ -223,6 +235,119 @@ class LifecycleManager:
             await asyncio.sleep(0.1)
         return True
 
+    async def _position_buffer_flush_loop(self) -> None:
+        """Periodically flush the position write buffer to MongoDB."""
+        try:
+            while self._started:
+                await asyncio.sleep(self._position_buffer_flush_interval)
+                if self._position_write_buffer:
+                    await self._flush_position_buffer()
+        except asyncio.CancelledError:
+            # Final flush on cancellation
+            if self._position_write_buffer:
+                await self._flush_position_buffer()
+            raise
+        except Exception as e:
+            logger.error("position_buffer_flush_loop_error", error=str(e), exc_info=True)
+
+    async def _flush_position_buffer(self) -> None:
+        """Flush accumulated position writes to MongoDB in batch."""
+        if not self._position_write_buffer:
+            return
+
+        async with self._position_buffer_lock:
+            buffer = self._position_write_buffer
+            self._position_write_buffer = []
+
+        if not buffer:
+            return
+
+        try:
+            repo = self._repository
+            if not hasattr(repo, "bulk_upsert_trader_states"):
+                # Fallback: individual writes
+                for item in buffer:
+                    await self._store_trader_positions_state_single(item)
+                return
+
+            # Collect state items and position models from buffer
+            state_items = []
+            all_position_models = []
+            for item in buffer:
+                addr = item.get("address")
+                sym = item.get("symbol")
+                positions = item.get("positions", [])
+                open_orders = item.get("open_orders", [])
+                margin_summary = item.get("margin_summary")
+                event_ts = item.get("event_timestamp")
+                source = item.get("source", "hyperliquid")
+
+                state_items.append((addr, sym, positions, open_orders, margin_summary, event_ts, source))
+                
+                # Use pre-built position models from buffer item
+                item_models = item.get("position_models", [])
+                all_position_models.extend(item_models)
+
+            # Batch upsert states
+            if state_items:
+                await self._retry_repository_op(
+                    repo.bulk_upsert_trader_states, state_items,
+                    operation_name="bulk_upsert_trader_states",
+                )
+
+            # Batch insert positions
+            if all_position_models and hasattr(repo, "store_trader_position_bulk_merged"):
+                await self._retry_repository_op(
+                    repo.store_trader_position_bulk_merged, all_position_models,
+                    operation_name="store_trader_position_bulk_merged",
+                )
+
+            logger.debug(
+                "position_buffer_flushed",
+                buffer_size=len(buffer),
+                state_count=len(state_items),
+                position_count=len(position_models),
+            )
+        except Exception as e:
+            logger.error("position_buffer_flush_error", error=str(e), buffer_size=len(buffer))
+            # Fallback: individual writes
+            for item in buffer:
+                try:
+                    await self._store_trader_positions_state_single(item)
+                except Exception:
+                    pass
+
+    async def _store_trader_positions_state_single(self, event_data: dict) -> None:
+        """Store a single trader positions event (fallback for batch failures)."""
+        if not self._repository:
+            return
+
+        addr = event_data.get("address", "")
+        sym = event_data.get("symbol", "")
+        positions = event_data.get("positions", [])
+        open_orders = event_data.get("open_orders", [])
+        margin_summary = event_data.get("margin_summary", {})
+        event_ts = event_data.get("event_timestamp")
+        source = event_data.get("source", "hyperliquid")
+
+        try:
+            await self._retry_repository_op(
+                self._repository.upsert_trader_current_state,
+                addr, sym, positions, open_orders, margin_summary, event_ts, source,
+                operation_name="upsert_trader_current_state",
+            )
+
+            position_models = event_data.get("position_models", [])
+            if position_models and hasattr(self._repository, "store_trader_position_bulk"):
+                await self._retry_repository_op(
+                    self._repository.store_trader_position_bulk,
+                    position_models,
+                    operation_name="store_trader_position_bulk",
+                )
+        except Exception as e:
+            logger.debug("single_write_fallback_error", address=addr[:16], error=str(e))
+
+
     async def shutdown(self) -> None:
         """Graceful shutdown of all components.
 
@@ -237,6 +362,18 @@ class LifecycleManager:
         """
         start_time = datetime.now(UTC)
         logger.info("lifecycle_shutdown_begin")
+
+        # Phase 2B: Final flush of position write buffer before shutdown
+        if self._position_write_buffer:
+            logger.info("position_buffer_final_flush", buffer_size=len(self._position_write_buffer))
+            await self._flush_position_buffer()
+        if self._position_flush_task:
+            self._position_flush_task.cancel()
+            try:
+                await self._position_flush_task
+            except asyncio.CancelledError:
+                pass
+            self._position_flush_task = None
 
         # Stop health monitor
         if self._health_monitor:
@@ -410,7 +547,7 @@ class LifecycleManager:
                 )
 
         # Subscribe to all events
-        await self._event_bus.subscribe("*", storage_handler)
+        await self._event_bus.subscribe_local("*", storage_handler)
 
     def _record_event_freshness(self, event_type: Any, timestamp: datetime) -> None:
         """Track latest timestamps for key event types used by health checks."""
@@ -555,9 +692,12 @@ class LifecycleManager:
             logger.error("trading_signal_store_error", error=str(e))
 
     async def _store_trader_positions_state(self, event: StandardEvent) -> None:
-        """Persist trader position event into current-state and history collections."""
-        store_start = time.monotonic()
+        """Buffer trader position event for batch MongoDB write.
 
+        Events are accumulated in _position_write_buffer and flushed
+        periodically (every 5s) or when the buffer reaches max_size (50).
+        This reduces MongoDB Atlas round-trips from ~160/flush to ~2/flush.
+        """
         logger.debug(
             "trader_positions_handler_called",
             event_id=event.event_id,
@@ -565,10 +705,9 @@ class LifecycleManager:
             source=event.source,
         )
 
-        if not self._repository or not hasattr(self._repository, "upsert_trader_current_state"):
+        if not self._repository:
             logger.warning("trader_positions_handler_no_repository")
             return
-        repository = self._repository
 
         payload = event.payload
         if not isinstance(payload, dict):
@@ -585,13 +724,6 @@ class LifecycleManager:
             logger.warning("trader_positions_invalid_payload", event_id=event.event_id)
             return
 
-        logger.debug(
-            "trader_positions_handler_processing",
-            address=address[:16],
-            symbol=symbol,
-            position_count=len(positions),
-        )
-
         # Parse event-specific timestamp, fallback to event envelope timestamp.
         event_timestamp = event.timestamp
         payload_timestamp = payload.get("timestamp")
@@ -601,34 +733,16 @@ class LifecycleManager:
             except ValueError:
                 logger.debug("trader_positions_timestamp_parse_failed", value=payload_timestamp)
 
-        try:
-            asyncio.create_task(
-                self._fire_and_forget_write(
-                    getattr(repository, "upsert_trader_current_state"),
-                    address,
-                    symbol,
-                    positions,
-                    open_orders,
-                    margin_summary if isinstance(margin_summary, dict) else {},
-                    event_timestamp,
-                    event.source,
-                    operation_name="upsert_trader_current_state",
-                )
-            )
-
-            # Keep normalized position history in trader_positions time-series when supported.
-            # Only store positions for the configured symbol to reduce storage volume.
-            # Collect all matching position models first, then bulk-insert in one call.
-            position_models: list[TraderPosition] = []
-            for pos in positions:
-                p = pos.get("position", pos) if isinstance(pos, dict) else {}
-                coin = p.get("coin")
-                if not coin:
-                    continue
-                # Skip non-target coin positions (signal system only uses BTC)
-                if str(coin).upper() != str(symbol).upper():
-                    continue
-
+        # Build position models for history
+        position_models: list[TraderPosition] = []
+        for pos in positions:
+            p = pos.get("position", pos) if isinstance(pos, dict) else {}
+            coin = p.get("coin")
+            if not coin:
+                continue
+            if str(coin).upper() != str(symbol).upper():
+                continue
+            try:
                 position_models.append(
                     TraderPosition(
                         eth=address,
@@ -650,42 +764,27 @@ class LifecycleManager:
                         ),
                     )
                 )
+            except (ValueError, TypeError) as e:
+                logger.debug("position_model_parse_error", address=address[:16], error=str(e))
 
-            if position_models and hasattr(repository, "store_trader_position_bulk"):
-                asyncio.create_task(
-                    self._fire_and_forget_write(
-                        getattr(repository, "store_trader_position_bulk"),
-                        position_models,
-                        operation_name="store_trader_position_bulk",
-                    )
-                )
-            elif position_models and hasattr(repository, "store_trader_position"):
-                # Fallback: per-position insert when bulk method unavailable.
-                for position_model in position_models:
-                    asyncio.create_task(
-                        self._fire_and_forget_write(
-                            getattr(repository, "store_trader_position"),
-                            position_model,
-                            operation_name="store_trader_position",
-                        )
-                    )
+        # Buffer the event data for batch write
+        buffer_item = {
+            "address": address,
+            "symbol": symbol,
+            "positions": positions,
+            "open_orders": open_orders,
+            "margin_summary": margin_summary if isinstance(margin_summary, dict) else {},
+            "event_timestamp": event_timestamp,
+            "source": event.source,
+            "position_models": position_models,
+        }
 
-            store_duration = time.monotonic() - store_start
-            logger.info(
-                "trader_positions_stored",
-                address=address[:16],
-                duration_ms=round(store_duration * 1000, 1),
-                position_count=len(position_models),
-            )
+        async with self._position_buffer_lock:
+            self._position_write_buffer.append(buffer_item)
+            should_flush = len(self._position_write_buffer) >= self._position_buffer_max_size
 
-
-        except Exception as e:
-            logger.error("trader_positions_store_error", error=str(e), event_id=event.event_id)
-            self._store_dead_letter(
-                event=event,
-                reason="trader_positions_persistence_failed",
-                error=e,
-            )
+        if should_flush:
+            await self._flush_position_buffer()
 
     async def _fire_and_forget_write(
         self,
@@ -901,9 +1000,9 @@ class LifecycleManager:
                 if result and self._event_bus:
                     await self._event_bus.publish(result)
 
-        await self._event_bus.subscribe("trader_positions", signal_handler)
-        await self._event_bus.subscribe("scored_traders", signal_handler)
-        await self._event_bus.subscribe("mark_price", signal_handler)
+        await self._event_bus.subscribe_local("trader_positions", signal_handler)
+        await self._event_bus.subscribe_local("scored_traders", signal_handler)
+        await self._event_bus.subscribe_local("mark_price", signal_handler)
 
     async def _init_collector_manager(self) -> None:
         """Initialize the Hyperliquid collector manager."""
@@ -1017,7 +1116,7 @@ class LifecycleManager:
             if event.event_type == "leaderboard":
                 await sync_trader_ws_from_repository(reason="leaderboard_event")
 
-        await self._event_bus.subscribe("leaderboard", leaderboard_sync_handler)
+        await self._event_bus.subscribe_local("leaderboard", leaderboard_sync_handler)
 
         # Schedule WS sync as a background task (non-blocking).
         # The collector's start() method launches the staggered ramp-up

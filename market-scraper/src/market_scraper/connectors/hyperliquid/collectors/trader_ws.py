@@ -120,6 +120,13 @@ class TraderWebSocketCollector:
         self._last_positions: dict[str, dict] = {}
         self._position_max_interval = config.position_max_interval
 
+        # Phase 2A: Quick hash dedup - fast pre-normalization filter
+        # Stores last quick hash per trader address to skip expensive
+        # recursive normalization for exact-duplicate WS messages (~65% of traffic).
+        # address -> quick_hash_hex
+        self._quick_hashes: dict[str, str] = {}
+        self._QUICK_HASH_MAX = 100  # Bound to prevent unbounded memory growth
+
         # Buffer configuration
         buffer_config = buffer_config or BufferConfig()
         self._flush_interval: float = buffer_config.flush_interval
@@ -141,6 +148,7 @@ class TraderWebSocketCollector:
         self._messages_received = 0
         self._positions_saved = 0
         self._positions_skipped = 0
+        self._quick_hash_skips = 0  # Phase 2A: messages skipped by quick hash
 
         # Error channel rate-limiting — prevents log flooding from Hyperliquid
         # "Cannot track more than 10 total users" errors which can arrive at
@@ -808,6 +816,8 @@ class TraderWebSocketCollector:
 
         for addr in stale_addresses:
             del self._last_positions[addr]
+            # Phase 2A: also clean up quick hash for stale addresses
+            self._quick_hashes.pop(addr, None)
 
         # Enforce max size
         if len(self._last_positions) > self.MAX_TRACKED_POSITIONS:
@@ -817,6 +827,27 @@ class TraderWebSocketCollector:
             )
             for addr, _ in sorted_items[:len(self._last_positions) - self.MAX_TRACKED_POSITIONS]:
                 del self._last_positions[addr]
+                self._quick_hashes.pop(addr, None)
+
+        # Phase 2A: Bound quick hash dict independently
+        if len(self._quick_hashes) > self._QUICK_HASH_MAX:
+            # Evict entries not present in _last_positions (oldest first)
+            excess = len(self._quick_hashes) - self._QUICK_HASH_MAX
+            keys_to_evict = [
+                k for k in self._quick_hashes
+                if k not in self._last_positions
+            ][:excess]
+            for k in keys_to_evict:
+                del self._quick_hashes[k]
+            # If still over limit, evict oldest by _last_positions timestamp
+            if len(self._quick_hashes) > self._QUICK_HASH_MAX:
+                sorted_by_time = sorted(
+                    self._quick_hashes.keys(),
+                    key=lambda k: self._last_positions.get(k, {}).get("timestamp", 0),
+                )
+                remaining_excess = len(self._quick_hashes) - self._QUICK_HASH_MAX
+                for k in sorted_by_time[:remaining_excess]:
+                    del self._quick_hashes[k]
 
         if stale_addresses:
             logger.debug(
@@ -858,40 +889,59 @@ class TraderWebSocketCollector:
             NORM_CHUNK = 50
             for norm_start in range(0, len(webdata_msgs), NORM_CHUNK):
                 norm_chunk = webdata_msgs[norm_start : norm_start + NORM_CHUNK]
-                norm_items = []
-                for msg in norm_chunk:
-                    data = msg.get("data", {})
-                    # Safety guard: skip messages where data is not a dict (e.g. error channel)
-                    if not isinstance(data, dict):
-                        continue
-                    address = str(data.get("user", "")).lower()
-                    clearinghouse = data.get("clearinghouseState", {})
-                    positions = clearinghouse.get("assetPositions", [])
-                    open_orders = data.get("openOrders", [])
-                    margin_summary = clearinghouse.get("marginSummary", {})
-                    if not isinstance(positions, list):
-                        positions = []
-                    active_positions = [p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0]
-                    symbol_positions = [p for p in active_positions if p.get("position", {}).get("coin") == self.config.symbol]
-                    symbol_open_orders = self._filter_symbol_open_orders(open_orders)
-                    if not isinstance(margin_summary, dict):
-                        margin_summary = {}
-                    norm_items.append((address, symbol_positions, symbol_open_orders, margin_summary))
+            norm_items = []
+            for msg in norm_chunk:
+                data = msg.get("data", {})
+                # Safety guard: skip messages where data is not a dict (e.g. error channel)
+                if not isinstance(data, dict):
+                    continue
+                address = str(data.get("user", "")).lower()
 
-                # Run CPU-bound normalization in thread pool
-                raw_items = [(sp, so, ms) for _, sp, so, ms in norm_items]
-                normalized_results = await asyncio.get_event_loop().run_in_executor(
-                    self._executor, self._normalize_batch, raw_items
+                # Phase 2A: Quick hash dedup - fast pre-normalization filter.
+                # Compute a cheap hash of the raw JSON bytes; if it matches the
+                # last quick hash for this trader, the message is an exact
+                # duplicate and we can skip the expensive recursive
+                # normalization entirely.  The quick hash is NOT a replacement
+                # for the full normalized hash - it is a fast-path filter.
+                # False negatives (different quick hash but same normalized
+                # data) are harmless: they just fall through to full check.
+                quick_hash = hashlib.sha256(
+                    json.dumps(data, sort_keys=True).encode()
+                ).hexdigest()
+                if quick_hash == self._quick_hashes.get(address):
+                    self._positions_skipped += 1
+                    self._quick_hash_skips += 1
+                    continue
+
+                clearinghouse = data.get("clearinghouseState", {})
+                positions = clearinghouse.get("assetPositions", [])
+                open_orders = data.get("openOrders", [])
+                margin_summary = clearinghouse.get("marginSummary", {})
+                if not isinstance(positions, list):
+                    positions = []
+                active_positions = [p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0]
+                symbol_positions = [p for p in active_positions if p.get("position", {}).get("coin") == self.config.symbol]
+                symbol_open_orders = self._filter_symbol_open_orders(open_orders)
+                if not isinstance(margin_summary, dict):
+                    margin_summary = {}
+                norm_items.append((address, symbol_positions, symbol_open_orders, margin_summary, quick_hash))
+
+            # Run CPU-bound normalization in thread pool
+            raw_items = [(sp, so, ms) for _, sp, so, ms, _ in norm_items]
+            normalized_results = await asyncio.get_event_loop().run_in_executor(
+                self._executor, self._normalize_batch, raw_items
+            )
+
+            # Now do the async-side comparison and event creation with pre-computed norms
+            for (address, symbol_positions, symbol_open_orders, margin_summary, quick_hash), (norm_pos, norm_ords, norm_margin) in zip(norm_items, normalized_results):
+                event = self._create_trader_positions_event_normalized(
+                    address, symbol_positions, symbol_open_orders, margin_summary,
+                    norm_pos, norm_ords, norm_margin, allow_empty=False,
                 )
-
-                # Now do the async-side comparison and event creation with pre-computed norms
-                for (address, symbol_positions, symbol_open_orders, margin_summary), (norm_pos, norm_ords, norm_margin) in zip(norm_items, normalized_results):
-                    event = self._create_trader_positions_event_normalized(
-                        address, symbol_positions, symbol_open_orders, margin_summary,
-                        norm_pos, norm_ords, norm_margin, allow_empty=False,
-                    )
-                    if event:
-                        events.append(event)
+                if event:
+                    events.append(event)
+                    # Phase 2A: Update quick hash on successful save
+                    self._quick_hashes[address] = quick_hash
 
                 # Yield after each normalization sub-chunk
                 await asyncio.sleep(0)
@@ -907,6 +957,7 @@ class TraderWebSocketCollector:
             events_created=len(events),
             positions_saved=self._positions_saved,
             positions_skipped=self._positions_skipped,
+            quick_hash_skips=self._quick_hash_skips,
         )
 
         # Publish events in chunks
@@ -1096,6 +1147,7 @@ class TraderWebSocketCollector:
             "messages_received": self._messages_received,
             "positions_saved": self._positions_saved,
             "positions_skipped": self._positions_skipped,
+            "quick_hash_skips": self._quick_hash_skips,
             "error_channel_count": self._error_channel_count,
             "buffer_size": len(self._message_buffer),
         }

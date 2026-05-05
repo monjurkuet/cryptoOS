@@ -112,6 +112,29 @@ class EventBus(ABC):
         """
         pass
 
+    async def subscribe_local(
+        self,
+        event_type: str,
+        handler: EventHandler,
+        priority: EventPriority = EventPriority.NORMAL,
+    ) -> None:
+        """Subscribe a handler for direct in-process dispatch (bypasses backend).
+
+        Local subscribers are invoked directly by publish() / publish_bulk()
+        before the event is sent to the backend (e.g. Redis). This avoids the
+        round-trip latency of backend pub/sub for handlers that live in the
+        same process.
+
+        The default implementation falls back to subscribe() so that
+        backends without a direct-dispatch optimisation still work correctly.
+
+        Args:
+            event_type: Event type to subscribe to (or "*" for all)
+            handler: Async callback function
+            priority: Handler execution priority
+        """
+        await self.subscribe(event_type, handler, priority)
+
     def get_metrics(self) -> dict[str, int]:
         """Get event bus metrics.
 

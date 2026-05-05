@@ -1715,6 +1715,173 @@ class MongoRepository(DataRepository):
         )
         return True
 
+    # ------------------------------------------------------------------
+    # Bulk upsert: batched trader current-state writes (Phase 2B)
+    # ------------------------------------------------------------------
+
+    async def store_trader_position_bulk_merged(
+        self,
+        all_positions: list[TraderPosition],
+    ) -> int:
+        """Bulk-store a merged list of trader position snapshots from the write buffer.
+
+        Identical semantics to ``store_trader_position_bulk`` but accepts a
+        pre-merged list so the caller can accumulate across multiple events
+        before flushing.
+
+        Args:
+            all_positions: Merged list of TraderPosition models from buffer.
+
+        Returns:
+            Count of inserted documents.
+        """
+        return await self.store_trader_position_bulk(all_positions)
+
+    async def bulk_upsert_trader_states(
+        self,
+        state_items: list[tuple[str, str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None, datetime, str]],
+    ) -> int:
+        """Bulk upsert multiple trader current-state documents in one bulk_write call.
+
+        Each item is a tuple of:
+            (address, symbol, positions, open_orders, margin_summary, event_timestamp, source)
+
+        Uses pymongo ``bulk_write`` with ``UpdateOne`` operations filtered on
+        ``(eth, symbol)`` and upsert=True.  Closed-trade detection is performed
+        per-item by reading existing state first (batched find), then emitting
+        any closed trades as a secondary ``insert_many`` with ``ordered=False``.
+
+        Returns the number of upserted/modified state documents.
+        """
+        if self._sync_db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        if not state_items:
+            return 0
+
+        try:
+            return await asyncio.to_thread(
+                self._sync_bulk_upsert_trader_states, state_items
+            )
+        except Exception as e:
+            raise StorageError(f"Failed to bulk upsert trader states: {e}") from e
+
+    def _sync_bulk_upsert_trader_states(
+        self,
+        state_items: list[tuple[str, str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None, datetime, str]],
+    ) -> int:
+        """Sync implementation of bulk_upsert_trader_states (runs in thread pool)."""
+        from pymongo import UpdateOne as SyncUpdateOne
+
+        now = datetime.now(UTC)
+        state_collection = self._sync_db[CollectionName.TRADER_CURRENT_STATE]
+        closed_trade_collection = self._sync_db[CollectionName.TRADER_CLOSED_TRADES]
+
+        # 1. Batch-fetch existing states for all addresses in one round-trip.
+        #    We group by (eth, symbol) pairs and query with $or.
+        filter_conditions: list[dict[str, Any]] = []
+        for address, symbol, *_ in state_items:
+            filter_conditions.append(
+                {
+                    "symbol": str(symbol or "").upper(),
+                    "$or": [
+                        {"eth": address.lower()},
+                        {"ethAddress": address.lower()},
+                    ],
+                }
+            )
+
+        existing_states: dict[tuple[str, str], dict[str, Any]] = {}
+        if filter_conditions:
+            projection = {
+                "eth": 1, "ethAddress": 1, "symbol": 1,
+                "positions": 1, "open_orders": 1, "margin_summary": 1,
+                "last_event_time": 1, "source": 1, "btc_trade_meta": 1,
+            }
+            try:
+                cursor = state_collection.find(
+                    {"$or": filter_conditions}, projection
+                )
+                for doc in cursor:
+                    key = (doc.get("eth", "").lower(), doc.get("symbol", "").upper())
+                    existing_states[key] = doc
+            except Exception as e:
+                logger.warning("bulk_upsert_batch_find_failed", error=str(e))
+                # Fall through — missing existing_states means fresh upsert
+
+        # 2. Build UpdateOne operations and collect closed trades.
+        update_ops: list[SyncUpdateOne] = []
+        closed_trade_docs: list[dict[str, Any]] = []
+        processed_count = 0
+
+        for address, symbol, positions, open_orders, margin_summary, event_timestamp, source in state_items:
+            key = (address.lower(), str(symbol or "").upper())
+            existing = existing_states.get(key)
+
+            doc, closed_trade = self._current_state_payload(
+                address=address,
+                symbol=symbol,
+                positions=positions,
+                open_orders=open_orders,
+                margin_summary=margin_summary,
+                event_timestamp=event_timestamp,
+                source=source,
+                existing_state=existing,
+            )
+
+            # Collect closed trades for batch insert
+            if closed_trade:
+                ct_doc = dict(closed_trade) if not hasattr(closed_trade, "model_dump") else closed_trade.model_dump()
+                ct_doc["eth"] = str(ct_doc.get("eth", "")).lower()
+                closed_trade_docs.append(ct_doc)
+
+            # Skip unchanged state documents
+            existing_compare = dict(existing) if existing else None
+            if existing_compare:
+                existing_compare.pop("_id", None)
+            if existing_compare and existing_compare == doc:
+                processed_count += 1
+                continue
+
+            doc["updated_at"] = now
+            update_filter = {"eth": doc["eth"], "symbol": doc["symbol"]}
+            if existing and existing.get("_id") is not None:
+                update_filter = {"_id": existing["_id"]}
+
+            update_ops.append(
+                SyncUpdateOne(update_filter, {"$set": doc}, upsert=True)
+            )
+            processed_count += 1
+
+        # 3. Execute bulk_write for state upserts
+        if update_ops:
+            try:
+                result = state_collection.bulk_write(update_ops, ordered=False)
+                logger.debug(
+                    "bulk_upsert_states_result",
+                    matched=result.matched_count,
+                    modified=result.modified_count,
+                    upserted=result.upserted_count,
+                )
+            except BulkWriteError as e:
+                logger.warning(
+                    "bulk_upsert_states_partial_failure",
+                    error=str(e),
+                    details=e.details,
+                )
+
+        # 4. Batch insert closed trades (best-effort, ordered=False)
+        if closed_trade_docs:
+            try:
+                closed_trade_collection.insert_many(
+                    closed_trade_docs, ordered=False
+                )
+            except BulkWriteError:
+                # Duplicate closed trades are acceptable
+                logger.debug("bulk_upsert_closed_trades_duplicates_skipped")
+
+        return processed_count
+
     async def store_dead_letter(
         self,
         event: StandardEvent,

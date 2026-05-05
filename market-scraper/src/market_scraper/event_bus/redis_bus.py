@@ -19,6 +19,12 @@ class RedisEventBus(EventBus):
 
     Uses Redis Pub/Sub for real-time messaging.
     Note: Redis Pub/Sub is at-most-once delivery.
+
+    Supports local (in-process) subscribers that bypass Redis entirely,
+    avoiding the publish/subscribe round-trip for handlers in the same
+    process. This is critical for high-volume channels like
+    ``trader_positions`` (~190 events per flush) where the Redis
+    round-trip adds ~1–2 ms of event-loop blocking per event.
     """
 
     def __init__(
@@ -39,6 +45,186 @@ class RedisEventBus(EventBus):
         self._listener_task: asyncio.Task[None] | None = None
         self._running = False
         self._subscribed = asyncio.Event()
+
+        # Local (in-process) subscribers — dispatched directly, bypassing Redis.
+        # Key is event_type (or "*"), value is list of (priority, handler) tuples.
+        self._local_subscribers: dict[str, list[tuple[EventPriority, EventHandler]]] = {}
+
+        # Toggle for direct dispatch. When True (default), publish() and
+        # publish_bulk() dispatch to local subscribers first, then publish
+        # to Redis for any external consumers. When False, all events go
+        # through Redis only (behaviour identical to pre-2C).
+        self._direct_dispatch: bool = True
+
+    # -- Local subscriber management ----------------------------------------
+
+    async def subscribe_local(
+        self,
+        event_type: str,
+        handler: EventHandler,
+        priority: EventPriority = EventPriority.NORMAL,
+    ) -> None:
+        """Subscribe a handler for direct in-process dispatch.
+
+        Local subscribers are invoked directly by publish() / publish_bulk()
+        *before* the event is published to Redis. This avoids the Redis
+        round-trip for handlers that live in the same process.
+
+        Local subscribers are completely separate from Redis subscribers.
+        They do NOT cause a Redis SUBSCRIBE command and they are NOT
+        dispatched from the _listener loop (which would be redundant).
+
+        Args:
+            event_type: Event type to subscribe to (or "*" for all)
+            handler: Async callback function
+            priority: Handler execution priority
+        """
+        if event_type not in self._local_subscribers:
+            self._local_subscribers[event_type] = []
+        self._local_subscribers[event_type].append((priority, handler))
+        # Sort by priority (lower value = higher priority)
+        self._local_subscribers[event_type].sort(key=lambda x: x[0].value)
+        logger.debug(
+            "local_subscriber_registered",
+            event_type=event_type,
+            handler=handler.__qualname__,
+        )
+
+    async def unsubscribe_local(
+        self,
+        event_type: str,
+        handler: EventHandler,
+    ) -> None:
+        """Unsubscribe a local handler from an event type.
+
+        Args:
+            event_type: Event type to unsubscribe from
+            handler: Handler to remove
+        """
+        if event_type in self._local_subscribers:
+            self._local_subscribers[event_type] = [
+                (p, h)
+                for p, h in self._local_subscribers[event_type]
+                if h != handler
+            ]
+            if not self._local_subscribers[event_type]:
+                del self._local_subscribers[event_type]
+
+    def set_direct_dispatch(self, enabled: bool) -> None:
+        """Enable or disable direct dispatch to local subscribers.
+
+        When disabled, all events go through Redis even if local
+        subscribers are registered. This is useful for debugging or
+        for temporarily reverting to pure-Redis behaviour.
+
+        Args:
+            enabled: True to enable direct dispatch (default), False to disable
+        """
+        self._direct_dispatch = enabled
+        logger.info("direct_dispatch_toggled", enabled=enabled)
+
+    # -- Direct dispatch helpers -------------------------------------------
+
+    def _get_local_handlers(
+        self, event_type: str
+    ) -> list[tuple[EventPriority, EventHandler]]:
+        """Collect local handlers for a given event type.
+
+        Merges concrete handlers (exact event_type match) and wildcard
+        handlers ("*"), sorted by priority.
+
+        Args:
+            event_type: The event type string
+
+        Returns:
+            Merged list of (priority, handler) tuples
+        """
+        handlers: list[tuple[EventPriority, EventHandler]] = []
+        if event_type in self._local_subscribers:
+            handlers.extend(self._local_subscribers[event_type])
+        if "*" in self._local_subscribers:
+            handlers.extend(self._local_subscribers["*"])
+        # Re-sort by priority after merging
+        handlers.sort(key=lambda x: x[0].value)
+        return handlers
+
+    def _has_local_subscribers(self, event_type: str) -> bool:
+        """Check if any local subscribers exist for an event type.
+
+        Args:
+            event_type: The event type string
+
+        Returns:
+            True if at least one local subscriber (concrete or wildcard) exists
+        """
+        return (
+            event_type in self._local_subscribers or "*" in self._local_subscribers
+        )
+
+    async def _dispatch_local(
+        self, event: StandardEvent, event_type: str
+    ) -> None:
+        """Dispatch an event to all matching local subscribers.
+
+        Exceptions in individual handlers are caught and logged so that
+        one failing handler cannot crash the entire flush.
+
+        Args:
+            event: The event to dispatch
+            event_type: The event type string (from event.event_type)
+        """
+        handlers = self._get_local_handlers(event_type)
+        if not handlers:
+            return
+
+        for _priority, handler in handlers:
+            try:
+                await handler(event)
+                self._metrics["delivered"] += 1
+            except Exception as e:
+                self._metrics["errors"] += 1
+                logger.error(
+                    "local_dispatch_handler_error",
+                    event_type=event.event_type,
+                    handler=handler.__qualname__,
+                    error=str(e),
+                    exc_info=True,
+                )
+
+    async def _dispatch_local_bulk(
+        self, events: list[StandardEvent]
+    ) -> None:
+        """Dispatch a batch of events to local subscribers.
+
+        Groups events by type for efficient wildcard handler dispatch
+        (wildcard handlers are called once per event, not once per batch).
+
+        Exceptions in individual handlers are caught and logged.
+
+        Args:
+            events: List of events to dispatch
+        """
+        if not self._local_subscribers:
+            return
+
+        for event in events:
+            event_type_str = str(event.event_type)
+            handlers = self._get_local_handlers(event_type_str)
+            for _priority, handler in handlers:
+                try:
+                    await handler(event)
+                    self._metrics["delivered"] += 1
+                except Exception as e:
+                    self._metrics["errors"] += 1
+                    logger.error(
+                        "local_dispatch_handler_error",
+                        event_type=event.event_type,
+                        handler=handler.__qualname__,
+                        error=str(e),
+                        exc_info=True,
+                    )
+
+    # -- Connection management ---------------------------------------------
 
     async def connect(self) -> None:
         """Connect to Redis."""
@@ -68,15 +254,36 @@ class RedisEventBus(EventBus):
             with suppress(Exception):
                 await self._redis.aclose()
 
+        # Clear local subscribers on disconnect
+        self._local_subscribers.clear()
+
+    # -- Publishing --------------------------------------------------------
+
     async def publish(
         self,
         event: StandardEvent,
         priority: EventPriority = EventPriority.NORMAL,
     ) -> bool:
-        """Publish event to Redis channel."""
+        """Publish event to Redis channel.
+
+        If direct dispatch is enabled and local subscribers exist for
+        this event type, they are invoked first (awaited directly).
+        The event is then published to Redis for any external consumers
+        (e.g. API server, WebSocket streaming).
+
+        If no local subscribers exist, or if direct dispatch is disabled,
+        the event is published to Redis only (backward-compatible).
+        """
         if not self._redis:
             raise EventBusError("Not connected to Redis")
 
+        event_type_str = str(event.event_type)
+
+        # 1. Direct dispatch to local subscribers (bypasses Redis)
+        if self._direct_dispatch and self._has_local_subscribers(event_type_str):
+            await self._dispatch_local(event, event_type_str)
+
+        # 2. Publish to Redis for external consumers
         try:
             channel = f"events:{event.event_type}"
             message = event.model_dump_json()
@@ -129,13 +336,13 @@ class RedisEventBus(EventBus):
                 (p, h) for p, h in self._handlers[event_type] if h != handler
             ]
 
-            if not self._handlers[event_type] and self._pubsub:
-                if event_type == "*":
-                    await self._pubsub.punsubscribe("events:*")
-                else:
-                    channel = f"events:{event_type}"
-                    await self._pubsub.unsubscribe(channel)
-                del self._handlers[event_type]
+        if not self._handlers[event_type] and self._pubsub:
+            if event_type == "*":
+                await self._pubsub.punsubscribe("events:*")
+            else:
+                channel = f"events:{event_type}"
+                await self._pubsub.unsubscribe(channel)
+            del self._handlers[event_type]
 
     async def publish_bulk(
         self,
@@ -144,6 +351,14 @@ class RedisEventBus(EventBus):
     ) -> int:
         """Publish multiple events using pipeline.
 
+        If direct dispatch is enabled and local subscribers exist, all
+        events are dispatched to local subscribers first (awaited in
+        sequence), then the batch is published to Redis via pipeline.
+
+        This is the hot path for trader_positions (~190 events/flush).
+        Direct dispatch eliminates ~190 Redis round-trips per flush,
+        saving ~190–380 ms of event-loop blocking.
+
         Note: Redis PUBLISH returns the number of subscribers that received
         the message, not a boolean. We count events as published even if
         there are no subscribers (the publish was still successful).
@@ -151,6 +366,11 @@ class RedisEventBus(EventBus):
         if not self._redis:
             raise EventBusError("Not connected to Redis")
 
+        # 1. Direct dispatch to local subscribers (bypasses Redis)
+        if self._direct_dispatch and self._local_subscribers:
+            await self._dispatch_local_bulk(events)
+
+        # 2. Pipeline publish to Redis for external consumers
         pipe = self._redis.pipeline()
 
         for event in events:
@@ -167,6 +387,8 @@ class RedisEventBus(EventBus):
         except Exception as e:
             self._metrics["errors"] += 1
             raise EventBusError(f"Failed to publish bulk events: {e}") from e
+
+    # -- Internal reconnection ---------------------------------------------
 
     async def _re_subscribe(self) -> None:
         """Re-establish pubsub connection and re-subscribe all handlers.
@@ -217,6 +439,8 @@ class RedisEventBus(EventBus):
             logger.error("redis_listener_resubscribe_error", error=str(e), exc_info=True)
             raise
 
+    # -- Handler safety ----------------------------------------------------
+
     async def _safe_handler_call(self, handler: EventHandler, event: StandardEvent) -> None:
         """Safely call an event handler, updating metrics on success/failure."""
         try:
@@ -242,6 +466,8 @@ class RedisEventBus(EventBus):
             or "connectionreset" in err_lower
             or "eof" in err_lower
         )
+
+    # -- Listener loop -----------------------------------------------------
 
     async def _listener(self) -> None:
         """Background listener for incoming messages.
@@ -317,7 +543,7 @@ class RedisEventBus(EventBus):
                                                 error=str(e),
                                             )
                                     await asyncio.sleep(0)
-                                    continue  # Skip normal dispatch (already handled above)
+                                continue  # Skip normal dispatch (already handled above)
 
                     # Normal dispatch: collect concrete + wildcard handlers
                     handlers: list[tuple[EventPriority, EventHandler]] = []
