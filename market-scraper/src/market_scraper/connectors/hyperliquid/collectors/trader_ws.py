@@ -859,6 +859,9 @@ class TraderWebSocketCollector:
     async def _flush_messages(self) -> None:
         """Flush buffered messages and emit events."""
         flush_start = time.monotonic()
+        t_hash_ms = 0.0
+        t_norm_ms = 0.0
+        t_pub_ms = 0.0
 
         async with self._buffer_lock:
             if not self._message_buffer:
@@ -887,6 +890,7 @@ class TraderWebSocketCollector:
 
             # Offload CPU-heavy normalization to thread pool in sub-chunks
             NORM_CHUNK = 50
+            t_hash_start = time.monotonic()
             for norm_start in range(0, len(webdata_msgs), NORM_CHUNK):
                 norm_chunk = webdata_msgs[norm_start : norm_start + NORM_CHUNK]
             norm_items = []
@@ -910,9 +914,7 @@ class TraderWebSocketCollector:
                 if not isinstance(margin_summary, dict):
                     margin_summary = {}
 
-                t_hash_start = time.monotonic()
-
-        # Phase 2A: Quick hash dedup — hash only symbol-specific data.
+                # Phase 2A: Quick hash dedup— hash only symbol-specific data.
                 # Full account state changes frequently (other positions, PnL ticks)
                 # even when the tracked symbol's position is unchanged.
                 # Only hash position state + order details (not margin/PnL which change every tick)
@@ -938,11 +940,16 @@ class TraderWebSocketCollector:
 
                 norm_items.append((address, symbol_positions, symbol_open_orders, margin_summary, quick_hash))
 
+            t_hash_ms += (time.monotonic() - t_hash_start) * 1000
+            t_norm_start = time.monotonic()
+
             # Run CPU-bound normalization in thread pool
             raw_items = [(sp, so, ms) for _, sp, so, ms, _ in norm_items]
             normalized_results = await asyncio.get_running_loop().run_in_executor(
                 self._executor, self._normalize_batch, raw_items
             )
+            t_norm_ms += (time.monotonic() - t_norm_start) * 1000
+            t_pub_start = time.monotonic()
 
             # Now do the async-side comparison and event creation with pre-computed norms
             for (address, symbol_positions, symbol_open_orders, margin_summary, quick_hash), (norm_pos, norm_ords, norm_margin) in zip(norm_items, normalized_results):
