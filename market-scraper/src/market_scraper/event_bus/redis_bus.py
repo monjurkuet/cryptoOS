@@ -269,16 +269,19 @@ class RedisEventBus(EventBus):
         self,
         event: StandardEvent,
         priority: EventPriority = EventPriority.NORMAL,
+        local_only: bool = False,
     ) -> bool:
-        """Publish event to Redis channel.
+        """Publish event to local subscribers and/or Redis channel.
 
         If direct dispatch is enabled and local subscribers exist for
         this event type, they are invoked first (awaited directly).
-        The event is then published to Redis for any external consumers
-        (e.g. API server, WebSocket streaming).
 
-        If no local subscribers exist, or if direct dispatch is disabled,
-        the event is published to Redis only (backward-compatible).
+        If local_only=True, the event is dispatched to local subscribers
+        only and NOT published to Redis. This is ideal for events that
+        are consumed entirely in-process (e.g. trader_positions).
+
+        If local_only=False (default), the event is also published to
+        Redis for any external consumers (e.g. API server, WebSocket).
         """
         if not self._redis:
             raise EventBusError("Not connected to Redis")
@@ -289,7 +292,10 @@ class RedisEventBus(EventBus):
         if self._direct_dispatch and self._has_local_subscribers(event_type_str):
             await self._dispatch_local(event, event_type_str)
 
-        # 2. Publish to Redis for external consumers
+        # 2. Publish to Redis for external consumers (unless local_only)
+        if local_only:
+            return True
+
         try:
             channel = f"events:{event.event_type}"
             message = event.model_dump_json()
@@ -354,6 +360,7 @@ class RedisEventBus(EventBus):
         self,
         events: list[StandardEvent],
         priority: EventPriority = EventPriority.NORMAL,
+        local_only: bool = False,
     ) -> int:
         """Publish multiple events using pipeline.
 
@@ -376,7 +383,10 @@ class RedisEventBus(EventBus):
         if self._direct_dispatch and self._local_subscribers:
             await self._dispatch_local_bulk(events)
 
-        # 2. Pipeline publish to Redis for external consumers
+        # 2. Pipeline publish to Redis for external consumers (unless local_only)
+        if local_only:
+            return len(events)
+
         pipe = self._redis.pipeline()
 
         for event in events:

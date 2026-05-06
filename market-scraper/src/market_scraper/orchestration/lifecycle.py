@@ -969,7 +969,7 @@ class LifecycleManager:
             if event.event_type == "leaderboard":
                 result = await position_inference.process(event)
                 if result and self._event_bus:
-                    await self._event_bus.publish(result)
+                    await self._event_bus.publish(result, local_only=True)
 
         await self._event_bus.subscribe("leaderboard", position_inference_handler)
 
@@ -989,7 +989,7 @@ class LifecycleManager:
             if event.event_type == "leaderboard":
                 result = await trader_scoring.process(event)
                 if result and self._event_bus:
-                    await self._event_bus.publish(result)
+                    await self._event_bus.publish(result, local_only=True)
 
         await self._event_bus.subscribe("leaderboard", trader_scoring_handler)
 
@@ -1006,7 +1006,7 @@ class LifecycleManager:
             if event.event_type in ["trader_positions", "scored_traders", "mark_price"]:
                 result = await signal_generation.process(event)
                 if result and self._event_bus:
-                    await self._event_bus.publish(result)
+                    await self._event_bus.publish(result, local_only=True)
 
         await self._event_bus.subscribe_local("trader_positions", signal_handler)
         await self._event_bus.subscribe_local("scored_traders", signal_handler)

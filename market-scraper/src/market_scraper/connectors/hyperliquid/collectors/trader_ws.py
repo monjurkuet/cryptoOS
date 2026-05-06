@@ -973,7 +973,7 @@ class TraderWebSocketCollector:
         # Publish events in chunks
         for pub_start in range(0, len(events), CHUNK_SIZE):
             chunk_events = events[pub_start : pub_start + CHUNK_SIZE]
-            await self.event_bus.publish_bulk(chunk_events)
+            await self.event_bus.publish_bulk(chunk_events, local_only=True)
             await asyncio.sleep(0)
 
         if events:
