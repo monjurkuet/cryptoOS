@@ -910,7 +910,9 @@ class TraderWebSocketCollector:
                 if not isinstance(margin_summary, dict):
                     margin_summary = {}
 
-                # Phase 2A: Quick hash dedup — hash only symbol-specific data.
+                t_hash_start = time.monotonic()
+
+        # Phase 2A: Quick hash dedup — hash only symbol-specific data.
                 # Full account state changes frequently (other positions, PnL ticks)
                 # even when the tracked symbol's position is unchanged.
                 # Only hash position state + order details (not margin/PnL which change every tick)
