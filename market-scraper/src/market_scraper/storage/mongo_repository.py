@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 import motor.motor_asyncio
 import pymongo
@@ -55,12 +56,25 @@ class MongoRepository(DataRepository):
         """
         super().__init__(connection_string)
         self._database_name = database_name
+        # Dedicated thread pool for MongoDB writes (isolated from default executor)
+        # Prevents slow Atlas writes from starving CBBI fetches, GC, etc.
+        self._write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mongowrite")
         # Async Motor client (for reads and index creation)
         self._client: motor.motor_asyncio.AsyncIOMotorClient | None = None
         self._db: motor.motor_asyncio.AsyncIOMotorDatabase | None = None
-        # Sync pymongo client (for writes via asyncio.to_thread — avoids event-loop blocking)
+        # Sync pymongo client (for writes via dedicated executor — avoids event-loop blocking)
         self._sync_client: pymongo.MongoClient | None = None
         self._sync_db: pymongo.database.Database | None = None
+
+
+    async def _db_to_thread(self, func, *args):
+        """Run a sync function in the dedicated MongoDB write executor.
+
+        This isolates MongoDB writes from the default event loop executor,
+        preventing slow Atlas writes from blocking other to_thread callers.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._write_executor, func, *args)
 
     async def connect(self) -> None:
         """Connect to MongoDB.
@@ -385,7 +399,7 @@ class MongoRepository(DataRepository):
         try:
             doc = event.model_dump()
             doc.pop("payload", None)
-            result = await asyncio.to_thread(self._sync_store, doc)
+            result = await self._db_to_thread(self._sync_store, doc)
             return result
         except StorageError:
             raise
@@ -427,7 +441,7 @@ class MongoRepository(DataRepository):
 
         try:
             documents = [{k: v for k, v in e.model_dump().items() if k != "payload"} for e in events]
-            return await asyncio.to_thread(self._sync_store_bulk, documents)
+            return await self._db_to_thread(self._sync_store_bulk, documents)
         except StorageError:
             raise
         except Exception as e:
@@ -699,7 +713,7 @@ class MongoRepository(DataRepository):
     async def store_candle(self, candle: Candle, symbol: str, interval: str) -> bool:
         """Store a candle.
 
-        Uses sync pymongo via asyncio.to_thread() to avoid blocking the event loop
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking the event loop
         on remote Atlas writes.
 
         Args:
@@ -717,7 +731,7 @@ class MongoRepository(DataRepository):
             raise StorageError("Not connected to MongoDB")
 
         try:
-            return await asyncio.to_thread(
+            return await self._db_to_thread(
                 self._sync_store_candle, candle, symbol, interval
             )
         except Exception as e:
@@ -741,7 +755,7 @@ class MongoRepository(DataRepository):
     ) -> int:
         """Store multiple candles efficiently using bulk write with upsert.
 
-        Uses sync pymongo via asyncio.to_thread() to avoid blocking the event loop.
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking the event loop.
 
         Args:
             candles: List of candles to store
@@ -761,7 +775,7 @@ class MongoRepository(DataRepository):
             return 0
 
         try:
-            return await asyncio.to_thread(
+            return await self._db_to_thread(
                 self._sync_store_candles_bulk, candles, symbol, interval
             )
         except Exception as e:
@@ -880,7 +894,7 @@ class MongoRepository(DataRepository):
             normalized["eth"] = str(normalized.get("eth", "")).lower()
             comparable = self._position_snapshot_payload(normalized)
 
-            return await asyncio.to_thread(
+            return await self._db_to_thread(
                 self._sync_store_trader_position, normalized, comparable
             )
         except Exception as e:
@@ -932,7 +946,7 @@ class MongoRepository(DataRepository):
                 normalized["eth"] = str(normalized.get("eth", "")).lower()
                 documents.append(normalized)
 
-            return await asyncio.to_thread(
+            return await self._db_to_thread(
                 self._sync_store_trader_position_bulk, documents
             )
         except Exception as e:
@@ -1098,7 +1112,7 @@ class MongoRepository(DataRepository):
     async def store_signal(self, signal: TradingSignal) -> bool:
         """Store a trading signal.
 
-        Uses sync pymongo via asyncio.to_thread() to avoid blocking the event loop
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking the event loop
         on remote Atlas writes.
 
         Args:
@@ -1114,7 +1128,7 @@ class MongoRepository(DataRepository):
             raise StorageError("Not connected to MongoDB")
 
         try:
-            return await asyncio.to_thread(self._sync_store_signal, signal)
+            return await self._db_to_thread(self._sync_store_signal, signal)
         except Exception as e:
             raise StorageError(f"Failed to store signal: {e}") from e
 
@@ -1608,7 +1622,7 @@ class MongoRepository(DataRepository):
                 )
                 return int(result.modified_count)
 
-            return await asyncio.to_thread(_sync_deactivate)
+            return await self._db_to_thread(_sync_deactivate)
         except Exception as e:
             raise StorageError(f"Failed to deactivate unselected traders: {e}") from e
 
@@ -1640,7 +1654,7 @@ class MongoRepository(DataRepository):
             raise StorageError("Not connected to MongoDB")
 
         try:
-            return await asyncio.to_thread(
+            return await self._db_to_thread(
                 self._sync_upsert_trader_current_state,
                 address, symbol, positions, open_orders,
                 margin_summary, event_timestamp, source,
@@ -1742,7 +1756,7 @@ class MongoRepository(DataRepository):
             return 0
 
         try:
-            return await asyncio.to_thread(
+            return await self._db_to_thread(
                 self._sync_bulk_upsert_trader_states, state_items
             )
         except Exception as e:
@@ -1872,13 +1886,13 @@ class MongoRepository(DataRepository):
     ) -> bool:
         """Store failed events in a dead-letter collection.
 
-        Uses sync pymongo via asyncio.to_thread() to avoid blocking the event loop.
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking the event loop.
         """
         if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            return await asyncio.to_thread(
+            return await self._db_to_thread(
                 self._sync_store_dead_letter, event, reason, error_message
             )
         except Exception as e:

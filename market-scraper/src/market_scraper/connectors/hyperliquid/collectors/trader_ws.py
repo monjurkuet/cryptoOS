@@ -606,39 +606,52 @@ class TraderWebSocketCollector:
     async def _handle_disconnect(self, client_id: int) -> None:
         """Handle client disconnection.
 
+        Schedules replacement as a background task to avoid blocking the event loop.
+        The 5s sleep + start() I/O would otherwise cause multi-second lag spikes.
+
         Args:
             client_id: ID of disconnected client
         """
         logger.warning("trader_ws_client_disconnected", client_id=client_id)
 
-        # Find and recreate the client
-        for i, client in enumerate(self._clients):
-            if client.client_id == client_id:
-                # Stop old client
-                try:
-                    await client.stop()
-                except Exception as e:
-                    logger.debug("trader_ws_client_stop_error", client_id=client_id, error=str(e))
+        # Schedule replacement as background task — non-blocking
+        asyncio.create_task(self._replace_disconnected_client(client_id))
 
-                # Get traders for this client
-                traders = client.traders
+    async def _replace_disconnected_client(self, client_id: int) -> None:
+        """Replace a disconnected client with a fresh one (background task)."""
+        try:
+            # Find the client in our list
+            for i, client in enumerate(self._clients):
+                if client.client_id == client_id:
+                    # Stop old client (best-effort, don't block)
+                    try:
+                        await asyncio.wait_for(client.stop(), timeout=5.0)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
 
-                if traders and self._running:
-                    # Wait before reconnecting
-                    await asyncio.sleep(5)
+                    # Get traders for this client
+                    traders = client.traders
 
-                    # Create new client
-                    new_client = TraderWSClient(
-                        client_id=client_id,
-                        traders=traders,
-                        on_message=self._handle_message,
-                        on_disconnect=self._handle_disconnect,
-                        config=self.config,
-                    )
-                    self._clients[i] = new_client
-                    await new_client.start()
+                    if traders and self._running:
+                        # Wait before reconnecting
+                        await asyncio.sleep(5)
 
-                break
+                        # Create new client
+                        new_client = TraderWSClient(
+                            client_id=client_id,
+                            traders=traders,
+                            on_message=self._handle_message,
+                            on_disconnect=self._handle_disconnect,
+                            config=self.config,
+                        )
+                        self._clients[i] = new_client
+                        await new_client.start()
+
+                    break
+        except asyncio.CancelledError:
+            logger.info("trader_ws_client_replace_cancelled", client_id=client_id)
+        except Exception as e:
+            logger.error("trader_ws_client_replace_failed", client_id=client_id, error=str(e))
 
     async def _flush_loop(self) -> None:
         """Periodically flush the message buffer with safety timeout."""
@@ -657,9 +670,23 @@ class TraderWebSocketCollector:
             lag = time.monotonic() - start - 1.0
 
             if lag > 2.0:
+                # Collect running task names for diagnosis
+                task_names = []
+                for task in asyncio.all_tasks():
+                    coro = task.get_coro()
+                    if coro and not task.done():
+                        name = getattr(coro, '__qualname__', getattr(coro, '__name__', str(coro)))
+                        task_names.append(name)
+                # Deduplicate and sort
+                task_summary = dict(sorted(
+                    ((n, task_names.count(n)) for n in set(task_names)),
+                    key=lambda x: -x[1],
+                )[:15])  # Top 15 most frequent
+
                 logger.error(
                     "event_loop_lag_critical",
                     lag_ms=round(lag * 1000, 1),
+                    running_tasks=task_summary,
                 )
             elif lag > 0.5:
                 logger.warning(

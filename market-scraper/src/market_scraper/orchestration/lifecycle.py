@@ -85,7 +85,8 @@ class LifecycleManager:
         self._position_buffer_flush_event: asyncio.Event = asyncio.Event()
         self._position_flush_task: asyncio.Task | None = None
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
-        self._write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
+        self._db_write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
+        self._general_executor: ThreadPoolExecutor | None = None  # General pool for non-DB to_thread calls
         self._max_active_writes: int = 16  # Cap total concurrent write tasks
         self._ws_sync_task: asyncio.Task | None = None  # Background WS collector startup
         self._signal_gen_task: asyncio.Task | None = None  # Batched signal generation loop
@@ -184,11 +185,16 @@ class LifecycleManager:
 
             self._started = True
 
-            # Create and set dedicated write executor for MongoDB writes
-            self._write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mongowrite")
+            # Create dedicated thread pools:
+            # 1. MongoDB writes (4 threads) — isolated to prevent slow Atlas writes
+            #    from starving other to_thread callers (CBBI fetch, GC, Motor reads)
+            self._db_write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mongowrite")
+            # 2. General-purpose (8 threads) — for asyncio.to_thread() calls that
+            #    don't specify an explicit executor (CBBI, GC, normalization, etc.)
+            self._general_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="general")
             loop = asyncio.get_running_loop()
-            loop.set_default_executor(self._write_executor)
-            logger.info("default_executor_set", max_workers=self._write_executor._max_workers)
+            loop.set_default_executor(self._general_executor)
+            logger.info("executors_configured", db_write_workers=self._db_write_executor._max_workers, general_workers=self._general_executor._max_workers)
 
             self._startup_complete = True
 
@@ -449,10 +455,13 @@ class LifecycleManager:
                 logger.error("processor_stop_error", error=str(e), exc_info=True)
         self._processors.clear()
 
-        # Shutdown write executor
-        if self._write_executor:
-            self._write_executor.shutdown(wait=False)
-            self._write_executor = None
+        # Shutdown executors
+        if self._general_executor:
+            self._general_executor.shutdown(wait=False)
+            self._general_executor = None
+        if self._db_write_executor:
+            self._db_write_executor.shutdown(wait=False)
+            self._db_write_executor = None
 
         # Disconnect repository
         if self._repository:
@@ -1277,7 +1286,7 @@ class LifecycleManager:
             import gc as _gc
 
             try:
-                _gc.collect()
+                await asyncio.to_thread(_gc.collect)
                 rss_mb = 0.0
                 try:
                     with open("/proc/self/status") as f:

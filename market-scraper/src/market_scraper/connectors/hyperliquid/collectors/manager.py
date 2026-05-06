@@ -276,8 +276,9 @@ class CollectorManager:
     async def _handle_disconnect(self) -> None:
         """Handle WebSocket disconnection.
 
-        Unsubscribes, closes the stale connection, stops collectors, then
-        sleeps with exponential backoff before the _connect loop retries.
+        Closes stale connection, stops collectors, then schedules reconnection
+        as a background task to avoid blocking the event loop during the backoff
+        sleep and _connect I/O.
         """
         if not self._running:
             return
@@ -285,14 +286,17 @@ class CollectorManager:
         # Unsubscribe on the old WS before closing (mirrors the pattern
         # in TraderWebSocketCollector._handle_error that prevents
         # "Cannot track more than 10" errors on reconnect).
-        await self._close_ws()
+        try:
+            await asyncio.wait_for(self._close_ws(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            pass  # Best-effort close — don't block reconnection
 
         # Stop collectors (flushes remaining buffered events)
         for collector in self._collectors.values():
             try:
-                await collector.stop()
-            except Exception as e:
-                logger.warning("collector_stop_error_on_disconnect", collector=collector.name, error=str(e))
+                await asyncio.wait_for(collector.stop(), timeout=5.0)
+            except (asyncio.TimeoutError, Exception):
+                logger.warning("collector_stop_timeout_on_disconnect", collector=collector.name)
 
         self._reconnect_attempts += 1
 
@@ -303,7 +307,7 @@ class CollectorManager:
 
         # Calculate delay with exponential backoff + jitter
         # Use (reconnect_attempts - 1) as the exponent so the first retry
-        # uses the base delay, not 2× the base delay.
+        # uses the base delay, not 2x the base delay.
         raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
         delay = min(raw_delay, self.config.reconnect_max_delay)
         # Add random jitter (0-25% of delay) to desynchronize reconnect attempts
@@ -316,7 +320,31 @@ class CollectorManager:
             delay_seconds=round(delay, 2),
         )
 
-        await asyncio.sleep(delay)
+        # Schedule reconnection as background task — the sleep + _connect
+        # would otherwise block the event loop and cause lag spikes.
+        asyncio.create_task(self._reconnect_after(delay))
+
+    async def _reconnect_after(self, delay: float) -> None:
+        """Reconnect after exponential backoff delay (background task)."""
+        try:
+            await asyncio.sleep(delay)
+            await self._connect()
+            self._reconnect_attempts = 0
+        except asyncio.CancelledError:
+            logger.info("manager_reconnect_cancelled")
+        except Exception as e:
+            logger.error("manager_reconnect_failed", error=str(e), exc_info=True)
+            # Increment attempt counter and schedule another reconnect
+            self._reconnect_attempts += 1
+            if self._reconnect_attempts <= self.config.reconnect_max_attempts:
+                raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
+                new_delay = min(raw_delay, self.config.reconnect_max_delay)
+                jitter = new_delay * random.uniform(0, 0.25)
+                new_delay = new_delay + jitter
+                asyncio.create_task(self._reconnect_after(new_delay))
+            else:
+                logger.error("max_reconnect_attempts_exceeded")
+                self._running = False
 
     def get_status(self) -> dict[str, Any]:
         """Get status of all collectors.
