@@ -1228,7 +1228,7 @@ class TraderWSClient:
             # before each send_json. If the WS closes mid-subscription, raise
             # to trigger proper backoff reconnect (instead of a rapid 1s loop).
             subscribed_ok = 0
-            for address in self.traders:
+            for i, address in enumerate(self.traders):
                 if self._ws.closed:
                     raise ConnectionError(
                         "WebSocket closed before subscription completed"
@@ -1240,7 +1240,11 @@ class TraderWSClient:
                     }
                 )
                 subscribed_ok += 1
-                await asyncio.sleep(0.05)  # 50ms delay to reduce server pressure
+                # Yield to event loop every 5 subs to prevent blocking
+                if i > 0 and i % 5 == 0:
+                    await asyncio.sleep(0)
+                else:
+                    await asyncio.sleep(0.05)  # 50ms delay to reduce server pressure
 
             # Only reset reconnect counter after full subscription success
             # Previously this was set right after ws_connect, which caused
@@ -1379,7 +1383,13 @@ class TraderWSClient:
                 break
 
     async def _handle_error(self) -> None:
-        """Handle connection errors with reconnection."""
+        """Handle connection errors with non-blocking reconnection.
+
+        The reconnection is scheduled as a background task to prevent
+        blocking the event loop during ws_connect + subscription I/O
+        (which can take 1-5s per client and causes lag spikes when
+        multiple clients reconnect simultaneously).
+        """
         if not self._running:
             return
 
@@ -1393,31 +1403,23 @@ class TraderWSClient:
             await self.on_disconnect(self.client_id)
             return
 
-        # Try to send unsubscribe messages on the old WS before closing it.
-        # This lets Hyperliquid's server release the subscription slots
-        # immediately instead of waiting for a timeout, preventing
-        # "Cannot track more than 10 total users" errors on reconnect.
+        # Non-blocking cleanup: close the old WS/session without waiting
+        # for individual unsubscribe sends (the server will time out the
+        # dead connection in ~30s regardless). This avoids 500ms-1s of
+        # blocking I/O on a broken connection.
         if self._ws and not self._ws.closed:
-            for address in list(self.traders):
-                try:
-                    await self._ws.send_json({
-                        "method": "unsubscribe",
-                        "subscription": {"type": "webData2", "user": address},
-                    })
-                except Exception:
-                    break  # WS is broken, no point continuing
             try:
-                await self._ws.close()
-            except Exception as e:
-                logger.debug("trader_ws_close_error", client_id=self.client_id, error=str(e))
+                await asyncio.wait_for(self._ws.close(), timeout=1.0)
+            except Exception:
+                pass  # WS is broken, best-effort close
+        self._ws = None
 
-        # Close session before reconnecting
         if self._session and not self._session_closed:
             try:
-                await self._session.close()
+                await asyncio.wait_for(self._session.close(), timeout=1.0)
                 self._session_closed = True
-            except Exception as e:
-                logger.debug("trader_ws_session_cleanup_error", client_id=self.client_id, error=str(e))
+            except Exception:
+                pass
             finally:
                 self._session = None
 
@@ -1425,7 +1427,7 @@ class TraderWSClient:
         # 1. Prevent thundering-herd reconnection storms that block the event loop
         # 2. Give Hyperliquid's server time to release the old subscription slots
         #    (server takes ~30s to detect dead connection and free 10-user slot;
-        #     15s floor + jitter gives 15-19s before first reconnect attempt)
+        #    15s floor + jitter gives 15-19s before first reconnect attempt)
         # 3. Per-client stagger prevents all clients reconnecting simultaneously
         raw_delay = self.config.reconnect_base_delay * (2 ** (self._reconnect_attempts - 1))
         # Add random jitter (0-25% of delay) to desynchronize reconnect attempts
@@ -1442,9 +1444,31 @@ class TraderWSClient:
             attempt=self._reconnect_attempts,
         )
 
-        await asyncio.sleep(delay)
+        # Schedule reconnection as a background task so the event loop
+        # is NOT blocked during the sleep + ws_connect + subscribe I/O.
+        # This prevents 7-32s lag spikes when multiple clients reconnect.
+        if self._running:
+            asyncio.create_task(self._reconnect_after(delay))
 
-        await self.start()
+    async def _reconnect_after(self, delay: float) -> None:
+        """Background task: wait for backoff delay then reconnect.
+
+        Runs as a separate asyncio task so the event loop stays responsive
+        during the sleep + ws_connect + subscription I/O (1-5s per client).
+        """
+        try:
+            await asyncio.sleep(delay)
+            if self._running:
+                await self.start()
+        except asyncio.CancelledError:
+            pass  # Shutdown — don't reconnect
+        except Exception as e:
+            logger.error(
+                "trader_ws_reconnect_failed",
+                client_id=self.client_id,
+                error=str(e),
+                exc_info=True,
+            )
 
     @property
     def is_connected(self) -> bool:
@@ -1453,8 +1477,5 @@ class TraderWSClient:
 
     @property
     def subscription_count(self) -> int:
-        """Number of traders currently subscribed on this client."""
-        return len(self.traders)
-
         """Number of traders currently subscribed on this client."""
         return len(self.traders)
