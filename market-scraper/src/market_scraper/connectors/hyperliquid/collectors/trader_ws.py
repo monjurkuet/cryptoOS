@@ -988,7 +988,7 @@ class TraderWebSocketCollector:
             duration_ms=round(flush_duration * 1000, 1),
             messages=len(events) + webdata_count,
             quick_hash_skips=self._quick_hash_skips,
-            client_id=self._ws_id,
+            active_clients=sum(1 for c in self._clients if c.connected),
             events=len(events),
         )
 
