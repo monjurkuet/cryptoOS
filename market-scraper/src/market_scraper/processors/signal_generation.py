@@ -119,6 +119,8 @@ class SignalGenerationProcessor(Processor):
 
         # Stats
         self._signals_generated = 0
+        self._dirty = False
+        self._last_cleanup = 0.0
 
     @property
     def name(self) -> str:
@@ -166,7 +168,7 @@ class SignalGenerationProcessor(Processor):
 
         # Cleanup stale traders only every 60s (not per-event)
         now = time.time()
-        if not hasattr(self, '_last_cleanup') or now - self._last_cleanup >= 60:
+        if now - self._last_cleanup >= 60:
             self._last_cleanup = now
             self._cleanup_stale_traders()
 
