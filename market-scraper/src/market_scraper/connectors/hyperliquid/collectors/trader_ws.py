@@ -452,8 +452,8 @@ class TraderWebSocketCollector:
                             )
 
                 await asyncio.gather(*(handle_direct(event) for event in events))
-            await self.event_bus.publish_bulk(events)
-            logger.info("trader_ws_bootstrap_published", events=len(events), errors=total_errors)
+                await self.event_bus.publish_bulk(events, local_only=True)
+                logger.info("trader_ws_bootstrap_published", events=len(events), errors=total_errors)
         else:
             logger.info("trader_ws_bootstrap_no_events", errors=total_errors)
 
