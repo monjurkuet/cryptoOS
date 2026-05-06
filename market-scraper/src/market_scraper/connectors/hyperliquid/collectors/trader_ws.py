@@ -986,7 +986,9 @@ class TraderWebSocketCollector:
         logger.info(
             "trader_ws_flush_complete",
             duration_ms=round(flush_duration * 1000, 1),
-            messages=len(events) + webdata_count,  # approximate since messages is deleted
+            messages=len(events) + webdata_count,
+            quick_hash_skips=self._quick_hash_skips,
+            client_id=self._ws_id,
             events=len(events),
         )
 
