@@ -31,6 +31,9 @@ from market_scraper.storage.mongo_repository import MongoRepository
 
 logger = structlog.get_logger(__name__)
 
+# Memory guardian RSS threshold (MB) — trigger GC when exceeded
+_MEMORY_GUARDIAN_RSS_THRESHOLD_MB = 770
+
 
 
 class LifecycleManager:
@@ -1287,7 +1290,7 @@ class LifecycleManager:
 
                 logger.info("memory_guardian", rss_mb=round(rss_mb, 1), gc="collected")
 
-                if rss_mb > 770:
+                if rss_mb > _MEMORY_GUARDIAN_RSS_THRESHOLD_MB:
                     logger.warning(
                         "memory_guardian_high_rss",
                         rss_mb=round(rss_mb, 1),

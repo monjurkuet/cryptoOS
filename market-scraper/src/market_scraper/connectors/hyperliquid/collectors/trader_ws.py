@@ -28,6 +28,9 @@ from market_scraper.event_bus.base import EventBus
 
 logger = structlog.get_logger(__name__)
 
+# Hyperliquid per-connection subscription limit
+HL_SUBSCRIPTIONS_PER_CONNECTION = 10
+
 class _RateLimiter:
     """Simple sliding-window rate limiter (token-bucket style).
 
@@ -56,7 +59,6 @@ class _RateLimiter:
                 # Compute how long to wait for the oldest timestamp to expire
                 wait = self._timestamps[0] - cutoff
             await asyncio.sleep(wait)
-
 
 class TraderWebSocketCollector:
     """Collects real-time trader data via WebSocket.
@@ -108,7 +110,7 @@ class TraderWebSocketCollector:
         # Connection management
         self._clients: list[TraderWSClient] = []
         self._num_clients = 0  # Dynamically computed from trader count (see start())
-        self._batch_size = 10  # Must match Hyperliquid's per-connection user limit
+        self._batch_size = HL_SUBSCRIPTIONS_PER_CONNECTION
         self._max_clients = 30  # Safety cap to prevent unbounded WS connections
 
         # State
@@ -118,7 +120,6 @@ class TraderWebSocketCollector:
         # Event-driven optimization: Track last saved state per trader with TTL
         # address -> {hash, timestamp}
         self._last_positions: dict[str, dict] = {}
-        self._position_max_interval = config.position_max_interval
 
         # Phase 2A: Quick hash dedup - fast pre-normalization filter
         # Stores last quick hash per trader address to skip expensive
@@ -763,9 +764,6 @@ class TraderWebSocketCollector:
 
         last_saved = self._last_positions.get(address, {})
 
-        # Check time since last save (safety interval)
-        last_time = last_saved.get("timestamp", 0)
-        time_since_save = time.time() - last_time
 
         # Compute SHA-256 hash once for both comparison and storage
         current_hash = hashlib.sha256(
@@ -789,7 +787,6 @@ class TraderWebSocketCollector:
             return True, computed
 
         return False, {}
-
 
     def _normalize_batch(self, items: list[tuple[list, list, dict]]) -> list[tuple[str, str, str]]:
         """Normalize a batch of (positions, open_orders, margin_summary) tuples.
@@ -963,7 +960,6 @@ class TraderWebSocketCollector:
                 if event:
                     events.append(event)
 
-
                 # Yield after each normalization sub-chunk
                 await asyncio.sleep(0)
 
@@ -987,11 +983,12 @@ class TraderWebSocketCollector:
             await self.event_bus.publish_bulk(chunk_events, local_only=True)
             await asyncio.sleep(0)
 
+        t_pub_ms = (time.monotonic() - t_pub_start) * 1000
+
         if events:
             logger.info("trader_ws_events_published", count=len(events))
 
         # Clear buffer references for GC before method returns
-        del messages
 
         flush_duration = time.monotonic() - flush_start
         logger.info(
@@ -1086,8 +1083,6 @@ class TraderWebSocketCollector:
     ) -> tuple[bool, dict[str, str]]:
         """Check for significant change using pre-computed normalized strings."""
         last_saved = self._last_positions.get(address, {})
-        last_time = last_saved.get("timestamp", 0)
-        time_since_save = time.time() - last_time
 
         current_hash = hashlib.sha256(
             (norm_positions + norm_open_orders).encode()  # margin excluded — PnL changes every tick
@@ -1137,10 +1132,7 @@ class TraderWebSocketCollector:
             position_count=len(symbol_positions),
         )
 
-        # Store only the SHA-256 hash instead of raw data + normalized strings
-        normalized = computed.get("normalized", "")
-        open_orders_str = computed.get("open_orders", "")
-        margin_summary_str = computed.get("margin_summary", "")
+        # Store only the SHA-256 hash (no longer storing full normalized strings)
         combined_hash = computed.get("hash", "")
 
         self._last_positions[address] = {
@@ -1179,7 +1171,6 @@ class TraderWebSocketCollector:
             "error_channel_count": self._error_channel_count,
             "buffer_size": len(self._message_buffer),
         }
-
 
 class TraderWSClient:
     """Single WebSocket client for a batch of traders."""
@@ -1237,7 +1228,6 @@ class TraderWSClient:
             # before each send_json. If the WS closes mid-subscription, raise
             # to trigger proper backoff reconnect (instead of a rapid 1s loop).
             subscribed_ok = 0
-            skipped_stale = 0
             for address in self.traders:
                 if self._ws.closed:
                     raise ConnectionError(
@@ -1262,7 +1252,6 @@ class TraderWSClient:
                 client_id=self.client_id,
                 traders=len(self.traders),
                 subscribed_ok=subscribed_ok,
-                skipped_stale=skipped_stale,
             )
 
             # Start listening
@@ -1329,7 +1318,7 @@ class TraderWSClient:
         if address in self.traders:
             return  # Already subscribed
 
-        if len(self.traders) >= 10:
+        if len(self.traders) >= HL_SUBSCRIPTIONS_PER_CONNECTION:
             raise ValueError(
                 f"Client {self.client_id} already tracks {len(self.traders)} traders "
                 f"(max 10). Cannot add {address[:10]}…"

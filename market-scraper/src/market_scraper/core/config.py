@@ -60,11 +60,6 @@ class HyperliquidSettings(BaseModel):
         default="BTC", description="Symbol to track (only this symbol's data is saved)"
     )
 
-    # Collector settings
-    position_max_interval: int = Field(
-        default=600, description="Max interval in seconds between position saves"
-    )
-
     # WebSocket settings
     reconnect_max_attempts: int = Field(default=10, description="Max reconnection attempts")
     reconnect_base_delay: float = Field(

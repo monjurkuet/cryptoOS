@@ -227,8 +227,11 @@ class RedisEventBus(EventBus):
         for event in events:
             event_type_str = str(event.event_type)
             handlers = self._get_local_handlers(event_type_str)
+            dispatch_tasks = []
             for _priority, handler in handlers:
-                asyncio.create_task(_safe_dispatch(handler, event))
+                dispatch_tasks.append(asyncio.create_task(_safe_dispatch(handler, event)))
+            if dispatch_tasks:
+                await asyncio.gather(*dispatch_tasks, return_exceptions=True)
 
     # -- Connection management ---------------------------------------------
 

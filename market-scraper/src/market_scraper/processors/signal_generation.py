@@ -367,6 +367,7 @@ class SignalGenerationProcessor(Processor):
             return True
 
         # Emit if confidence is very high
+        # High-confidence signals auto-emit regardless of bias delta
         return signal["confidence"] >= 0.7
 
     def get_stats(self) -> dict[str, Any]:
