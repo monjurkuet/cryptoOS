@@ -136,6 +136,14 @@ class LifecycleManager:
             logger.warning("lifecycle_already_started")
             return
 
+        # Enable asyncio slow callback detection (logs callbacks > 100ms)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.slow_callback_duration = 0.1
+            logger.info("slow_callback_detection_enabled", threshold_ms=100)
+        except RuntimeError:
+            pass
+
         start_time = datetime.now(UTC)
         logger.info(
             "lifecycle_startup_begin",

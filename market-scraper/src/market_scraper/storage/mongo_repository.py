@@ -966,30 +966,39 @@ class MongoRepository(DataRepository):
             return len(documents)
 
     async def store_trader_closed_trade(self, trade: TraderClosedTrade | dict[str, Any]) -> bool:
-        """Store a closed-trade ledger row idempotently."""
-        if self._db is None:
+        """Store a closed-trade ledger row idempotently.
+
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking
+        the event loop on remote Atlas round-trips.
+        """
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            collection = self._db[CollectionName.TRADER_CLOSED_TRADES]
-            normalized = (
-                trade.model_dump()
-                if hasattr(trade, "model_dump")
-                else TraderClosedTrade.model_validate(trade).model_dump()
-            )
-            normalized["eth"] = str(normalized.get("eth", "")).lower()
-            normalized["symbol"] = str(normalized.get("symbol", "")).upper()
+            return await self._db_to_thread(self._sync_store_trader_closed_trade, trade)
+        except Exception as e:
+            raise StorageError(f"Failed to store closed trade: {e}") from e
 
-            await collection.update_one(
+    def _sync_store_trader_closed_trade(self, trade: TraderClosedTrade | dict[str, Any]) -> bool:
+        """Sync implementation of store_trader_closed_trade for thread pool execution."""
+        collection = self._sync_db[CollectionName.TRADER_CLOSED_TRADES]
+        normalized = (
+            trade.model_dump()
+            if hasattr(trade, "model_dump")
+            else TraderClosedTrade.model_validate(trade).model_dump()
+        )
+        normalized["eth"] = str(normalized.get("eth", "")).lower()
+        normalized["symbol"] = str(normalized.get("symbol", "")).upper()
+
+        try:
+            collection.update_one(
                 {"trade_id": normalized["trade_id"]},
                 {"$setOnInsert": normalized},
                 upsert=True,
             )
-            return True
-        except DuplicateKeyError:
-            return True
-        except Exception as e:
-            raise StorageError(f"Failed to store closed trade: {e}") from e
+        except SyncDuplicateKeyError:
+            pass
+        return True
 
     async def get_trader_positions(
         self,
@@ -1042,6 +1051,9 @@ class MongoRepository(DataRepository):
     async def store_trader_score(self, score: TraderScore) -> bool:
         """Store a trader score snapshot.
 
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking
+        the event loop on remote Atlas round-trips (find_one + insert_one = 2 RTTs).
+
         Args:
             score: Score to store.
 
@@ -1051,40 +1063,47 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails.
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            collection = self._db[CollectionName.TRADER_SCORES]
-            normalized = score.model_dump()
-            normalized["eth"] = str(normalized.get("eth", "")).lower()
-            normalized["tags"] = self._normalize_tags(normalized.get("tags"))
-            comparable = self._score_snapshot_payload(normalized)
-
-            latest = await collection.find_one(
-                {"eth": comparable["eth"]},
-                {
-                    "_id": 0,
-                    "eth": 1,
-                    "score": 1,
-                    "tags": 1,
-                    "acct_val": 1,
-                    "all_roi": 1,
-                    "month_roi": 1,
-                    "week_roi": 1,
-                },
-                sort=[("t", -1)],
-            )
-            if latest and self._score_snapshot_payload(latest) == comparable:
-                return True
-
-            await collection.insert_one(normalized)
-            return True
+            return await self._db_to_thread(self._sync_store_trader_score, score)
         except Exception as e:
             raise StorageError(f"Failed to store trader score: {e}") from e
 
+    def _sync_store_trader_score(self, score: TraderScore) -> bool:
+        """Sync implementation of store_trader_score for thread pool execution."""
+        collection = self._sync_db[CollectionName.TRADER_SCORES]
+        normalized = score.model_dump()
+        normalized["eth"] = str(normalized.get("eth", "")).lower()
+        normalized["tags"] = self._normalize_tags(normalized.get("tags"))
+        comparable = self._score_snapshot_payload(normalized)
+
+        latest = collection.find_one(
+            {"eth": comparable["eth"]},
+            {
+                "_id": 0,
+                "eth": 1,
+                "score": 1,
+                "tags": 1,
+                "acct_val": 1,
+                "all_roi": 1,
+                "month_roi": 1,
+                "week_roi": 1,
+            },
+            sort=[("t", -1)],
+        )
+        if latest and self._score_snapshot_payload(latest) == comparable:
+            return True
+
+        collection.insert_one(normalized)
+        return True
+
     async def upsert_tracked_trader(self, trader: TrackedTrader) -> bool:
         """Upsert a tracked trader.
+
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking
+        the event loop on remote Atlas round-trips.
 
         Args:
             trader: Trader to upsert.
@@ -1095,19 +1114,23 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails.
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            collection = self._db[CollectionName.TRACKED_TRADERS]
-            await collection.update_one(
-                {"eth": trader.eth},
-                {"$set": trader.model_dump()},
-                upsert=True,
-            )
-            return True
+            return await self._db_to_thread(self._sync_upsert_tracked_trader, trader)
         except Exception as e:
             raise StorageError(f"Failed to upsert tracked trader: {e}") from e
+
+    def _sync_upsert_tracked_trader(self, trader: TrackedTrader) -> bool:
+        """Sync implementation of upsert_tracked_trader for thread pool execution."""
+        collection = self._sync_db[CollectionName.TRACKED_TRADERS]
+        collection.update_one(
+            {"eth": trader.eth},
+            {"$set": trader.model_dump()},
+            upsert=True,
+        )
+        return True
 
     async def store_signal(self, signal: TradingSignal) -> bool:
         """Store a trading signal.
@@ -1214,6 +1237,9 @@ class MongoRepository(DataRepository):
     async def store_trader_signal(self, signal: TraderSignal) -> bool:
         """Store a trader signal.
 
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking
+        the event loop on remote Atlas round-trips.
+
         Args:
             signal: Signal to store.
 
@@ -1223,15 +1249,19 @@ class MongoRepository(DataRepository):
         Raises:
             StorageError: If not connected or storage fails.
         """
-        if self._db is None:
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            collection = self._db[CollectionName.TRADER_SIGNALS]
-            await collection.insert_one(signal.model_dump())
-            return True
+            return await self._db_to_thread(self._sync_store_trader_signal_impl, signal)
         except Exception as e:
             raise StorageError(f"Failed to store trader signal: {e}") from e
+
+    def _sync_store_trader_signal_impl(self, signal: TraderSignal) -> bool:
+        """Sync implementation of store_trader_signal for thread pool execution."""
+        collection = self._sync_db[CollectionName.TRADER_SIGNALS]
+        collection.insert_one(signal.model_dump())
+        return True
 
     async def get_trader_signals(
         self,
@@ -1522,77 +1552,110 @@ class MongoRepository(DataRepository):
         tracked_count: int,
         timestamp: datetime | None = None,
     ) -> bool:
-        """Store a lightweight leaderboard snapshot."""
-        if self._db is None:
+        """Store a lightweight leaderboard snapshot.
+
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking
+        the event loop on remote Atlas round-trips.
+        """
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            now = timestamp or datetime.now(UTC)
-            collection = self._db[CollectionName.LEADERBOARD_HISTORY]
-            await collection.insert_one(
-                {
-                    "t": now,
-                    "symbol": symbol,
-                    "traderCount": total_count,
-                    "trackedCount": tracked_count,
-                }
+            return await self._db_to_thread(
+                self._sync_store_leaderboard_snapshot,
+                symbol, total_count, tracked_count, timestamp,
             )
-            return True
         except Exception as e:
             raise StorageError(f"Failed to store leaderboard snapshot: {e}") from e
+
+    def _sync_store_leaderboard_snapshot(
+        self,
+        symbol: str,
+        total_count: int,
+        tracked_count: int,
+        timestamp: datetime | None = None,
+    ) -> bool:
+        """Sync implementation of store_leaderboard_snapshot for thread pool execution."""
+        now = timestamp or datetime.now(UTC)
+        collection = self._sync_db[CollectionName.LEADERBOARD_HISTORY]
+        collection.insert_one(
+            {
+                "t": now,
+                "symbol": symbol,
+                "traderCount": total_count,
+                "trackedCount": tracked_count,
+            }
+        )
+        return True
 
     async def upsert_tracked_trader_data(
         self,
         trader: dict[str, Any],
         updated_at: datetime | None = None,
     ) -> bool:
-        """Upsert normalized tracked trader data."""
-        if self._db is None:
+        """Upsert normalized tracked trader data.
+
+        Uses sync pymongo via dedicated thread pool executor to avoid blocking
+        the event loop on remote Atlas round-trips (find_one + update_one = 2 RTTs).
+        Called in per-trader loops (~50 traders) during leaderboard refresh, so
+        offloading is critical to prevent multi-second lag spikes.
+        """
+        if self._sync_db is None:
             raise StorageError("Not connected to MongoDB")
 
         try:
-            address = str(trader.get("eth", "")).lower()
-            if not address:
-                return False
-
-            now = updated_at or datetime.now(UTC)
-            collection = self._db[CollectionName.TRACKED_TRADERS]
-            doc = {
-                "eth": address,
-                "name": trader.get("name"),
-                "score": float(trader.get("score", 0)),
-                "acct_val": float(trader.get("acct_val", 0)),
-                "tags": self._normalize_tags(trader.get("tags")),
-                "performances": self._normalize_mapping(trader.get("performances")),
-                "active": bool(trader.get("active", True)),
-            }
-
-            existing = await collection.find_one(
-                {"eth": address},
-                {
-                    "_id": 0,
-                    "eth": 1,
-                    "name": 1,
-                    "score": 1,
-                    "acct_val": 1,
-                    "tags": 1,
-                    "performances": 1,
-                    "active": 1,
-                },
+            return await self._db_to_thread(
+                self._sync_upsert_tracked_trader_data, trader, updated_at,
             )
-            if existing and all(existing.get(key) == value for key, value in doc.items()):
-                return True
-
-            doc["updated_at"] = now
-
-            await collection.update_one(
-                {"eth": address},
-                {"$set": doc, "$setOnInsert": {"added_at": now}},
-                upsert=True,
-            )
-            return True
         except Exception as e:
             raise StorageError(f"Failed to upsert tracked trader data: {e}") from e
+
+    def _sync_upsert_tracked_trader_data(
+        self,
+        trader: dict[str, Any],
+        updated_at: datetime | None = None,
+    ) -> bool:
+        """Sync implementation of upsert_tracked_trader_data for thread pool execution."""
+        address = str(trader.get("eth", "")).lower()
+        if not address:
+            return False
+
+        now = updated_at or datetime.now(UTC)
+        collection = self._sync_db[CollectionName.TRACKED_TRADERS]
+        doc = {
+            "eth": address,
+            "name": trader.get("name"),
+            "score": float(trader.get("score", 0)),
+            "acct_val": float(trader.get("acct_val", 0)),
+            "tags": self._normalize_tags(trader.get("tags")),
+            "performances": self._normalize_mapping(trader.get("performances")),
+            "active": bool(trader.get("active", True)),
+        }
+
+        existing = collection.find_one(
+            {"eth": address},
+            {
+                "_id": 0,
+                "eth": 1,
+                "name": 1,
+                "score": 1,
+                "acct_val": 1,
+                "tags": 1,
+                "performances": 1,
+                "active": 1,
+            },
+        )
+        if existing and all(existing.get(key) == value for key, value in doc.items()):
+            return True
+
+        doc["updated_at"] = now
+
+        collection.update_one(
+            {"eth": address},
+            {"$set": doc, "$setOnInsert": {"added_at": now}},
+            upsert=True,
+        )
+        return True
 
     async def deactivate_unselected_traders(
         self,

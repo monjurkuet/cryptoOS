@@ -165,11 +165,11 @@ class LeaderboardCollector:
                 rows = leaderboard.get("leaderboardRows", [])
                 total_traders = len(rows)
 
-                # Score traders with configurable weights
-                scored = self._score_traders(rows)
+                # Score traders with configurable weights (CPU-heavy: 35K items)
+                scored = await asyncio.to_thread(self._score_traders, rows)
 
-                # Apply configurable filters
-                filtered = self._apply_filters(scored)
+                # Apply configurable filters (CPU-heavy on large datasets)
+                filtered = await asyncio.to_thread(self._apply_filters, scored)
 
                 self._last_tracked_count = len(filtered)
 

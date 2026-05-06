@@ -670,23 +670,35 @@ class TraderWebSocketCollector:
             lag = time.monotonic() - start - 1.0
 
             if lag > 2.0:
-                # Collect running task names for diagnosis
-                task_names = []
+                # Collect running task details for diagnosis
+                task_info = []
                 for task in asyncio.all_tasks():
                     coro = task.get_coro()
                     if coro and not task.done():
                         name = getattr(coro, '__qualname__', getattr(coro, '__name__', str(coro)))
-                        task_names.append(name)
-                # Deduplicate and sort
+                        # Check if the task is currently suspended (waiting) or has a ready callback
+                        task_info.append(name)
+
+                # Deduplicate and sort by frequency
                 task_summary = dict(sorted(
-                    ((n, task_names.count(n)) for n in set(task_names)),
+                    ((n, task_info.count(n)) for n in set(task_info)),
                     key=lambda x: -x[1],
                 )[:15])  # Top 15 most frequent
+
+                # Check thread pool saturation
+                db_exec = getattr(self, '_lifecycle', None)
+                gen_exec_info = ""
+                if db_exec:
+                    gen_exec = getattr(db_exec, '_general_executor', None)
+                    if gen_exec:
+                        gen_exec_info = f" gen_queue={len(gen_exec._threads)}"
 
                 logger.error(
                     "event_loop_lag_critical",
                     lag_ms=round(lag * 1000, 1),
                     running_tasks=task_summary,
+                    norm_executor_threads=len(self._executor._threads) if self._executor else 0,
+                    norm_executor_queue=self._executor._work_queue.qsize() if self._executor and hasattr(self._executor, '_work_queue') else -1,
                 )
             elif lag > 0.5:
                 logger.warning(
