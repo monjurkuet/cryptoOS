@@ -125,7 +125,7 @@ class TraderWebSocketCollector:
         # recursive normalization for exact-duplicate WS messages (~65% of traffic).
         # address -> quick_hash_hex
         self._quick_hashes: dict[str, str] = {}
-        self._QUICK_HASH_MAX = 100  # Bound to prevent unbounded memory growth
+        self._QUICK_HASH_MAX = 300  # Match MAX_TRACKED_TRADERS + buffer for churn  # Bound to prevent unbounded memory growth
 
         # Buffer configuration
         buffer_config = buffer_config or BufferConfig()
@@ -769,7 +769,7 @@ class TraderWebSocketCollector:
 
         # Compute SHA-256 hash once for both comparison and storage
         current_hash = hashlib.sha256(
-            (current_normalized + current_open_orders + current_margin_summary).encode()
+            (current_normalized + current_open_orders).encode()  # margin excluded — PnL changes every tick
         ).hexdigest()
         last_hash = last_saved.get("hash", "")
 
@@ -780,8 +780,10 @@ class TraderWebSocketCollector:
             "margin_summary": current_margin_summary,
         }
 
-        if time_since_save >= self._position_max_interval:
-            return True, computed
+        # Removed forced re-save: signal generation maintains its own state with TTL.
+    # Periodic resave only needed for bootstrap/MongoDB storage path.
+    # if time_since_save >= self._position_max_interval:
+    #     return True, computed
 
         if last_hash != current_hash:
             return True, computed
@@ -995,6 +997,9 @@ class TraderWebSocketCollector:
         logger.info(
             "trader_ws_flush_complete",
             duration_ms=round(flush_duration * 1000, 1),
+            hash_ms=round(t_hash_ms, 1),
+            norm_ms=round(t_norm_ms, 1),
+            pub_ms=round(t_pub_ms, 1),
             messages=len(events) + webdata_count,
             quick_hash_skips=self._quick_hash_skips,
             clients=len(self._clients),
@@ -1085,7 +1090,7 @@ class TraderWebSocketCollector:
         time_since_save = time.time() - last_time
 
         current_hash = hashlib.sha256(
-            (norm_positions + norm_open_orders + norm_margin).encode()
+            (norm_positions + norm_open_orders).encode()  # margin excluded — PnL changes every tick
         ).hexdigest()
         last_hash = last_saved.get("hash", "")
 
@@ -1096,8 +1101,10 @@ class TraderWebSocketCollector:
             "margin_summary": norm_margin,
         }
 
-        if time_since_save >= self._position_max_interval:
-            return True, computed
+        # Removed forced re-save: signal generation maintains its own state with TTL.
+    # Periodic resave only needed for bootstrap/MongoDB storage path.
+    # if time_since_save >= self._position_max_interval:
+    #     return True, computed
 
         if last_hash != current_hash:
             return True, computed

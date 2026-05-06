@@ -85,6 +85,7 @@ class LifecycleManager:
         self._write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
         self._max_active_writes: int = 16  # Cap total concurrent write tasks
         self._ws_sync_task: asyncio.Task | None = None  # Background WS collector startup
+        self._signal_gen_task: asyncio.Task | None = None  # Batched signal generation loop
 
         RAW_EVENT_ALLOWLIST = {
         "trading_signal",
@@ -411,6 +412,15 @@ class LifecycleManager:
                 await asyncio.wait_for(self._ws_sync_task, timeout=10.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 logger.debug("ws_sync_task_cancelled")
+
+        # Cancel signal gen loop
+        if self._signal_gen_task and not self._signal_gen_task.done():
+            self._signal_gen_task.cancel()
+            try:
+                await asyncio.wait_for(self._signal_gen_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            logger.debug("signal_gen_task_cancelled")
 
         # Stop trader websocket collector
         if self._trader_ws_collector:
@@ -1004,13 +1014,26 @@ class LifecycleManager:
         # Subscribe processor to position and score events
         async def signal_handler(event: StandardEvent) -> None:
             if event.event_type in ["trader_positions", "scored_traders", "mark_price"]:
-                result = await signal_generation.process(event)
-                if result and self._event_bus:
-                    await self._event_bus.publish(result, local_only=True)
+                await signal_generation.process(event)
+                # Signal generation is now batched — process() sets dirty flag
+                # generate_signal_if_dirty() called by _signal_gen_loop
 
         await self._event_bus.subscribe_local("trader_positions", signal_handler)
         await self._event_bus.subscribe_local("scored_traders", signal_handler)
         await self._event_bus.subscribe_local("mark_price", signal_handler)
+
+        # Start batched signal generation loop (every 10s instead of per-event)
+        async def _signal_gen_loop():
+            while True:
+                await asyncio.sleep(10)
+                try:
+                    result = signal_generation.generate_signal_if_dirty()
+                    if result and self._event_bus:
+                        await self._event_bus.publish(result, local_only=True)
+                except Exception as e:
+                    logger.error("signal_gen_loop_error", error=str(e))
+
+        self._signal_gen_task = asyncio.create_task(_signal_gen_loop())
 
     async def _init_collector_manager(self) -> None:
         """Initialize the Hyperliquid collector manager."""

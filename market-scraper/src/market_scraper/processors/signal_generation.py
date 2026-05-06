@@ -142,8 +142,10 @@ class SignalGenerationProcessor(Processor):
         elif event.event_type == "mark_price":
             await self._update_price(event)
 
-        # Generate signal from current state
-        return self._generate_signal()
+        # Mark dirty for batch signal generation
+        # Don't recalculate signal on every event — too expensive
+        self._dirty = True
+        return None
 
     async def _update_trader_positions(self, event: StandardEvent) -> None:
         """Update trader position state.
@@ -162,8 +164,11 @@ class SignalGenerationProcessor(Processor):
         # Store with timestamp for TTL tracking
         self._trader_states[address] = (payload, time.time())
 
-        # Cleanup stale traders periodically
-        self._cleanup_stale_traders()
+        # Cleanup stale traders only every 60s (not per-event)
+        now = time.time()
+        if not hasattr(self, '_last_cleanup') or now - self._last_cleanup >= 60:
+            self._last_cleanup = now
+            self._cleanup_stale_traders()
 
     async def _update_trader_scores(self, event: StandardEvent) -> None:
         """Update trader scores.
@@ -326,6 +331,17 @@ class SignalGenerationProcessor(Processor):
             )
 
         return None
+
+    def generate_signal_if_dirty(self) -> StandardEvent | None:
+        """Generate signal only if state has changed since last generation.
+        
+        Called periodically by lifecycle instead of per-event.
+        Returns signal event or None.
+        """
+        if not self._dirty:
+            return None
+        self._dirty = False
+        return self._generate_signal()
 
     def _should_emit_signal(self, signal: dict[str, Any]) -> bool:
         """Check if signal should be emitted.
