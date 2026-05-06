@@ -180,11 +180,11 @@ class LifecycleManager:
 
             self._started = True
 
-            # Set dedicated write executor as default for asyncio.to_thread
-            if self._write_executor is not None:
-                loop = asyncio.get_running_loop()
-                loop.set_default_executor(self._write_executor)
-                logger.info("default_executor_set", max_workers=self._write_executor._max_workers)
+            # Create and set dedicated write executor for MongoDB writes
+            self._write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mongowrite")
+            loop = asyncio.get_running_loop()
+            loop.set_default_executor(self._write_executor)
+            logger.info("default_executor_set", max_workers=self._write_executor._max_workers)
 
             self._startup_complete = True
 
