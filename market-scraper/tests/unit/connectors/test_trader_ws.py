@@ -271,22 +271,22 @@ class TestTraderWebSocketCollector:
             config=mock_config,
         )
 
-    # Add stale entry
-    collector._last_positions["stale_address"] = {
-        "hash": "",
-        "timestamp": time.time() - 86400 - 1,
-    }
+        # Add stale entry
+        collector._last_positions["stale_address"] = {
+            "hash": "",
+            "timestamp": time.time() - 86400 - 1,
+        }
 
-    # Add fresh entry
-    collector._last_positions["fresh_address"] = {
-        "hash": "",
-        "timestamp": time.time(),
-    }
+        # Add fresh entry
+        collector._last_positions["fresh_address"] = {
+            "hash": "",
+            "timestamp": time.time(),
+        }
 
-    collector._cleanup_stale_positions()
+        collector._cleanup_stale_positions()
 
-    assert "stale_address" not in collector._last_positions
-    assert "fresh_address" in collector._last_positions
+        assert "stale_address" not in collector._last_positions
+        assert "fresh_address" in collector._last_positions
 
     @pytest.mark.asyncio
     async def test_process_webdata2(

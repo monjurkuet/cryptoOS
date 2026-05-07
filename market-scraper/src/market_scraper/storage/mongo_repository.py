@@ -954,7 +954,10 @@ class MongoRepository(DataRepository):
 
     def _sync_store_trader_position_bulk(self, documents: list[dict]) -> int:
         """Sync implementation of store_trader_position_bulk (runs in thread pool)."""
-        from pymongo.errors import BulkWriteError as SyncBulkWriteError
+        from pymongo.errors import (
+            BulkWriteError as SyncBulkWriteError,
+            DuplicateKeyError as SyncDuplicateKeyError,
+        )
 
         collection = self._sync_db[CollectionName.TRADER_POSITIONS]
         try:

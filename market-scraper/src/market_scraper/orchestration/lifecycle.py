@@ -34,6 +34,26 @@ logger = structlog.get_logger(__name__)
 # Memory guardian RSS threshold (MB) — trigger GC when exceeded
 _MEMORY_GUARDIAN_RSS_THRESHOLD_MB = 770
 
+_RAW_EVENT_ALLOWLIST = {
+    "trading_signal",
+    "coin_metrics",
+    "coin_metrics_historical",
+    "coin_metrics_single",
+    "blockchain_chart",
+    "blockchain_chart_historical",
+    "blockchain_metric",
+    "blockchain_network_summary",
+    "blockchain_current_metrics",
+    "fear_greed_index",
+    "fear_greed_historical",
+    "fear_greed_summary",
+    "exchange_flow",
+    "cbbi_index",
+    "cbbi_historical",
+    "cbbi_component",
+    "onchain_metric",
+}
+
 
 
 class LifecycleManager:
@@ -90,26 +110,7 @@ class LifecycleManager:
         self._max_active_writes: int = 16  # Cap total concurrent write tasks
         self._ws_sync_task: asyncio.Task | None = None  # Background WS collector startup
         self._signal_gen_task: asyncio.Task | None = None  # Batched signal generation loop
-
-        RAW_EVENT_ALLOWLIST = {
-        "trading_signal",
-        "coin_metrics",
-        "coin_metrics_historical",
-        "coin_metrics_single",
-        "blockchain_chart",
-        "blockchain_chart_historical",
-        "blockchain_metric",
-        "blockchain_network_summary",
-        "blockchain_current_metrics",
-        "fear_greed_index",
-        "fear_greed_historical",
-        "fear_greed_summary",
-        "exchange_flow",
-        "cbbi_index",
-        "cbbi_historical",
-        "cbbi_component",
-        "onchain_metric",
-    }
+        self._raw_event_allowlist: set[str] = set(_RAW_EVENT_ALLOWLIST)
 
     @property
     def is_ready(self) -> bool:
@@ -542,15 +543,15 @@ class LifecycleManager:
         if not self._event_bus:
             raise RuntimeError("Event bus not initialized")
 
-    async def storage_handler(event: StandardEvent) -> None:
-        """Handle events by storing them in the repository.
+        async def storage_handler(event: StandardEvent) -> None:
+            """Handle events by storing them in the repository.
 
-        All MongoDB Atlas writes are offloaded to background tasks (asyncio.create_task)
-        to prevent blocking the event loop. Remote Atlas writes can take 10-150s,
-        which causes massive event loop lag, making health checks time out.
-        Each background task handles its own errors and dead-letter routing.
-        """
-        if self._repository:
+            All MongoDB Atlas writes are offloaded to background tasks
+            (asyncio.create_task) to keep the event loop responsive.
+            """
+            if self._repository is None:
+                return
+
             try:
                 self._record_event_freshness(event.event_type, event.timestamp)
 
@@ -566,11 +567,8 @@ class LifecycleManager:
                 if event.event_type == "trading_signal":
                     asyncio.create_task(self._store_trading_signal(event))
 
-                    if event.event_type == "trader_positions":
-                        pass  # handled via subscribe_local
-
-                    if event.event_type == "ohlcv":
-                        asyncio.create_task(self._store_ohlcv_candle(event))
+                if event.event_type == "ohlcv":
+                    asyncio.create_task(self._store_ohlcv_candle(event))
 
             except Exception as e:
                 logger.error(
@@ -639,7 +637,7 @@ class LifecycleManager:
     def _should_store_raw_event(self, event: StandardEvent) -> bool:
         """Decide whether an event should be persisted to the raw audit log."""
         event_type = str(event.event_type)
-        return event_type in self.RAW_EVENT_ALLOWLIST
+        return event_type in self._raw_event_allowlist
 
     async def _store_ohlcv_candle(self, event: StandardEvent) -> None:
         """Persist live OHLCV events into canonical candle collections."""
@@ -1278,44 +1276,44 @@ class LifecycleManager:
                 except Exception as e:
                     logger.error("connector_health_task_error", error=str(e))
 
-        self._scheduler.schedule("connector_health", interval, check_connector_health)
-        logger.info(
-            "scheduler_task_registered",
-            task="connector_health",
-            interval=connector_health_config.interval_seconds,
-        )
+            self._scheduler.schedule("connector_health", interval, check_connector_health)
+            logger.info(
+                "scheduler_task_registered",
+                task="connector_health",
+                interval=connector_health_config.interval_seconds,
+            )
 
         # Memory guardian task — periodic GC + RSS monitoring for VPS memory pressure
         if "memory_guardian" in tasks and tasks["memory_guardian"].enabled:
             mem_config = tasks["memory_guardian"]
             interval = timedelta(seconds=mem_config.interval_seconds)
 
-        async def run_memory_guardian():
-            import gc as _gc
+            async def run_memory_guardian():
+                import gc as _gc
 
-            try:
-                await asyncio.to_thread(_gc.collect)
-                rss_mb = 0.0
                 try:
-                    with open("/proc/self/status") as f:
-                        for line in f:
-                            if line.startswith("VmRSS:"):
-                                rss_mb = int(line.split()[1]) / 1024
-                                break
+                    await asyncio.to_thread(_gc.collect)
+                    rss_mb = 0.0
+                    try:
+                        with open("/proc/self/status") as f:
+                            for line in f:
+                                if line.startswith("VmRSS:"):
+                                    rss_mb = int(line.split()[1]) / 1024
+                                    break
+                    except Exception as e:
+                        logger.debug("rss_read_error", error=str(e))
+
+                    logger.info("memory_guardian", rss_mb=round(rss_mb, 1), gc="collected")
+
+                    if rss_mb > _MEMORY_GUARDIAN_RSS_THRESHOLD_MB:
+                        logger.warning(
+                            "memory_guardian_high_rss",
+                            rss_mb=round(rss_mb, 1),
+                            threshold_mb=770,
+                        )
+                        await asyncio.to_thread(_gc.collect, 2)
                 except Exception as e:
-                    logger.debug("rss_read_error", error=str(e))
-
-                logger.info("memory_guardian", rss_mb=round(rss_mb, 1), gc="collected")
-
-                if rss_mb > _MEMORY_GUARDIAN_RSS_THRESHOLD_MB:
-                    logger.warning(
-                        "memory_guardian_high_rss",
-                        rss_mb=round(rss_mb, 1),
-                        threshold_mb=770,
-                    )
-                    await asyncio.to_thread(_gc.collect, 2)
-            except Exception as e:
-                logger.error("memory_guardian_error", error=str(e))
+                    logger.error("memory_guardian_error", error=str(e))
 
             self._scheduler.schedule("memory_guardian", interval, run_memory_guardian)
             logger.info(
