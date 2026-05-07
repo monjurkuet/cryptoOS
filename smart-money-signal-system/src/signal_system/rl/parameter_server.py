@@ -25,7 +25,7 @@ DEFAULT_MIN_CONFIDENCE = 0.3
 logger = structlog.get_logger(__name__)
 
 # Valid parameter ranges
-PARAM_RANGES = {
+PARAM_RANGES: dict[str, tuple[float, float]] = {
     "bias_threshold": (0.05, 0.8),
     "conf_scale": (0.1, 3.0),
     "min_confidence": (0.05, 0.9),
@@ -46,6 +46,7 @@ class RLParameterServer:
         conf_scale: float = DEFAULT_CONF_SCALE,
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
         checkpoint_dir: Path | str | None = None,
+        param_ranges: dict[str, tuple[float, float]] | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._params: dict[str, float] = {
@@ -53,6 +54,7 @@ class RLParameterServer:
             "conf_scale": conf_scale,
             "min_confidence": min_confidence,
         }
+        self._param_ranges = param_ranges or dict(PARAM_RANGES)
         self._last_updated: float = time.time()
         self._checkpoint_path: str | None = None
         self._checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else None
@@ -79,8 +81,8 @@ class RLParameterServer:
         """
         with self._lock:
             for key, value in kwargs.items():
-                if key in PARAM_RANGES:
-                    lo, hi = PARAM_RANGES[key]
+                if key in self._param_ranges:
+                    lo, hi = self._param_ranges[key]
                     self._params[key] = max(lo, min(hi, value))
                 else:
                     logger.warning("param_server_unknown_param", key=key)
@@ -144,6 +146,21 @@ class RLParameterServer:
         latest = max(checkpoints, key=lambda p: p.stat().st_mtime)
         return str(latest)
 
+    def set_param_ranges(self, ranges: dict[str, tuple[float, float]]) -> None:
+        """Update allowed parameter ranges and clamp current values."""
+        with self._lock:
+            self._param_ranges = dict(ranges)
+            for key, value in dict(self._params).items():
+                if key in self._param_ranges:
+                    lo, hi = self._param_ranges[key]
+                    self._params[key] = max(lo, min(hi, value))
+            self._last_updated = time.time()
+
+    def set_checkpoint_dir(self, checkpoint_dir: Path | str | None) -> None:
+        """Update checkpoint discovery directory."""
+        with self._lock:
+            self._checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else None
+
     def get_status(self) -> dict[str, Any]:
         """Get server status including current params and metadata.
 
@@ -153,6 +170,7 @@ class RLParameterServer:
         with self._lock:
             return {
                 "params": dict(self._params),
+                "param_ranges": dict(self._param_ranges),
                 "last_updated": self._last_updated,
                 "checkpoint_path": self._checkpoint_path,
             }

@@ -2,25 +2,29 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+import secrets
 from typing import Literal
 from typing import Any
 
-from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Header, HTTPException, Query
+from pydantic import BaseModel, ValidationError
 import structlog
 
 from signal_system.api.dependencies import (
-    get_signal_processor,
-    get_whale_detector,
-    get_signal_store,
-    get_outcome_store,
-    get_rl_param_server,
-    get_trace_store,
-    get_param_event_store,
     get_mongo_client,
+    get_outcome_store,
+    get_param_event_store,
+    get_rl_param_server,
+    get_runtime_components,
     get_settings_ref,
+    get_signal_processor,
+    get_signal_config_store,
+    get_signal_store,
+    get_trace_store,
+    get_whale_detector,
 )
 from signal_system.dashboard.store import normalize_market_scraper_signal
+from signal_system.runtime import apply_runtime_config
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
@@ -268,6 +272,95 @@ async def get_signal_store_stats() -> dict[str, Any]:
 async def get_signal_store_stats_namespaced() -> dict[str, Any]:
     """Compatibility-safe alias for signal store stats endpoint."""
     return await get_signal_store_stats()
+
+
+def _assert_config_mutation_allowed(agent_token: str | None) -> None:
+    settings = get_settings_ref()
+    expected_token = settings.signal_admin_token.strip()
+    if not expected_token:
+        raise HTTPException(
+            status_code=403,
+            detail="Signal config mutations are disabled. Set SIGNAL_ADMIN_TOKEN to enable.",
+        )
+    if not agent_token or not secrets.compare_digest(agent_token, expected_token):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Agent-Token")
+
+
+def _extract_config_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Accept either raw config object or {config: {...}} envelope."""
+    nested = payload.get("config")
+    if isinstance(nested, dict):
+        return nested
+    return payload
+
+
+@router.get("/config/signal")
+async def get_signal_runtime_config() -> dict[str, Any]:
+    """Return current live runtime config and config file path."""
+    components = get_runtime_components()
+    config_store = get_signal_config_store()
+    settings = get_settings_ref()
+    return {
+        "config_path": str(config_store.path),
+        "mutable": bool(settings.signal_admin_token.strip()),
+        "config": components.runtime_config.model_dump(mode="json"),
+    }
+
+
+@router.post("/config/signal/validate")
+async def validate_signal_runtime_config(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a candidate signal runtime config payload without applying it."""
+    config_store = get_signal_config_store()
+    raw_payload = _extract_config_payload(payload)
+    try:
+        validated = config_store.validate(raw_payload)
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail=error.errors()) from error
+
+    return {
+        "valid": True,
+        "config": validated.model_dump(mode="json"),
+    }
+
+
+@router.put("/config/signal")
+async def update_signal_runtime_config(
+    payload: dict[str, Any],
+    agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
+) -> dict[str, Any]:
+    """Persist and apply runtime signal config from an agent-managed payload."""
+    _assert_config_mutation_allowed(agent_token)
+    config_store = get_signal_config_store()
+    components = get_runtime_components()
+    raw_payload = _extract_config_payload(payload)
+    try:
+        config = config_store.save_payload(raw_payload)
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail=error.errors()) from error
+
+    apply_runtime_config(components=components, runtime_config=config, source="config_api")
+    return {
+        "status": "applied",
+        "config_path": str(config_store.path),
+        "config": config.model_dump(mode="json"),
+    }
+
+
+@router.post("/config/signal/reload")
+async def reload_signal_runtime_config(
+    agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
+) -> dict[str, Any]:
+    """Reload runtime config from disk and apply it live."""
+    _assert_config_mutation_allowed(agent_token)
+    config_store = get_signal_config_store()
+    components = get_runtime_components()
+    config = config_store.load()
+    apply_runtime_config(components=components, runtime_config=config, source="config_reload")
+    return {
+        "status": "reloaded",
+        "config_path": str(config_store.path),
+        "config": config.model_dump(mode="json"),
+    }
 
 
 # ── RL Endpoints ──────────────────────────────────────────────
@@ -646,7 +739,7 @@ async def get_dashboard_decisions(
 
 
 @router.post("/rl/retrain")
-async def trigger_retrain(episodes: int = 100) -> dict[str, Any]:
+async def trigger_retrain(episodes: int | None = None) -> dict[str, Any]:
     """Trigger an RL retraining run (background).
 
     Args:
@@ -662,6 +755,10 @@ async def trigger_retrain(episodes: int = 100) -> dict[str, Any]:
             "message": "RL retraining API is disabled in this runtime profile",
         }
 
+    runtime_components = get_runtime_components()
+    default_episodes = runtime_components.runtime_config.improvement.default_retrain_episodes
+    selected_episodes = episodes if episodes is not None and episodes > 0 else default_episodes
+
     import subprocess
     import sys
     from pathlib import Path
@@ -669,7 +766,7 @@ async def trigger_retrain(episodes: int = 100) -> dict[str, Any]:
     project_root = Path(__file__).parent.parent.parent.parent
     cmd = [
         sys.executable, "-m", "signal_system.rl.retrain",
-        "--episodes", str(episodes),
+        "--episodes", str(selected_episodes),
         "--push",
     ]
     subprocess.Popen(
@@ -680,6 +777,6 @@ async def trigger_retrain(episodes: int = 100) -> dict[str, Any]:
     )
     return {
         "status": "retraining_initiated",
-        "episodes": episodes,
+        "episodes": selected_episodes,
         "message": "Training started in background. Check /rl/status for updates.",
     }

@@ -1,12 +1,14 @@
 """Signal System Configuration."""
 
-import os
 from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 _PROJECT_ROOT = Path(__file__).parents[3]  # cryptoOS/
+_DEFAULT_SIGNAL_CONFIG_PATH = (
+    _PROJECT_ROOT / "smart-money-signal-system" / "config" / "signal_system.yaml"
+)
 
 
 class RedisSettings(BaseSettings):
@@ -45,6 +47,8 @@ class SignalSystemSettings(BaseSettings):
     runtime_profile: str = Field(default="minimal")
     enable_rl_retrain_api: bool = Field(default=False)
     load_rl_checkpoint_on_startup: bool = Field(default=False)
+    signal_config_path: str = Field(default=str(_DEFAULT_SIGNAL_CONFIG_PATH))
+    signal_admin_token: str = Field(default="")
 
     model_config = {
         "env_file": str(_PROJECT_ROOT / ".env"),

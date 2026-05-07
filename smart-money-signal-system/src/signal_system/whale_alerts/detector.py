@@ -126,6 +126,27 @@ class WhaleAlertDetector:
             "account_value": account_value,
         }
 
+    def set_runtime_config(
+        self,
+        alpha_whale_threshold: float,
+        whale_threshold: float,
+        aggregation_window_minutes: int,
+        position_history_ttl: int,
+        max_alerts: int,
+        max_recent_changes: int,
+    ) -> None:
+        """Apply runtime settings without replacing the detector instance."""
+        self.alpha_whale_threshold = alpha_whale_threshold
+        self.whale_threshold = whale_threshold
+        self.aggregation_window = timedelta(minutes=max(1, aggregation_window_minutes))
+        self.position_history_ttl = max(60, position_history_ttl)
+        if max_alerts != self.max_alerts:
+            self.max_alerts = max(100, max_alerts)
+            self._alerts = deque(self._alerts, maxlen=self.max_alerts)
+        if max_recent_changes != self.max_recent_changes:
+            self.max_recent_changes = max(100, max_recent_changes)
+            self._recent_changes = deque(self._recent_changes, maxlen=self.max_recent_changes)
+
     def detect_position_change(
         self,
         address: str,

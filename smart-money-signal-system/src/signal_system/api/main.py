@@ -2,7 +2,6 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
@@ -10,107 +9,62 @@ from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 import structlog
 
-from signal_system.config import get_settings
-from signal_system.api.routes import router as signals_router
 from signal_system.api.dependencies import set_components
+from signal_system.api.routes import router as signals_router
+from signal_system.config import get_settings
 from signal_system.event_subscriber import EventSubscriber
-from signal_system.signal_generation.processor import SignalGenerationProcessor
-from signal_system.signal_store import SignalStore
-from signal_system.whale_alerts.detector import WhaleAlertDetector
-from signal_system.services.event_processor import EventProcessor
-from signal_system.rl.outcome_tracker import SignalOutcomeTracker
-from signal_system.rl.outcome_store import OutcomeStore
-from signal_system.rl.parameter_server import RLParameterServer
-from signal_system.dashboard.store import DecisionTraceStore, ParamEventStore
+from signal_system.runtime import RuntimeComponents, build_runtime
 
 logger = structlog.get_logger(__name__)
 
-_CHECKPOINT_DIR = Path(__file__).parent.parent.parent.parent / "checkpoints"
-
-# Component instances for this module
-_event_subscriber: EventSubscriber | None = None
-_signal_processor: SignalGenerationProcessor | None = None
-_whale_detector: WhaleAlertDetector | None = None
-_signal_store: SignalStore | None = None
-_outcome_tracker: SignalOutcomeTracker | None = None
-_outcome_store: OutcomeStore | None = None
-_rl_param_server: RLParameterServer | None = None
-_trace_store: DecisionTraceStore | None = None
-_param_event_store: ParamEventStore | None = None
-_event_processor: EventProcessor | None = None
+_runtime_components: RuntimeComponents | None = None
 _subscriber_task: asyncio.Task | None = None
+
+# Compatibility globals used by health endpoint and legacy tests.
+_event_subscriber: EventSubscriber | None = None
+_signal_processor = None
+_whale_detector = None
+_signal_store = None
+_outcome_tracker = None
+_outcome_store = None
+_rl_param_server = None
+_trace_store = None
+_param_event_store = None
+_event_processor = None
 _mongo_client: MongoClient | None = None
 
 
-def _create_mongo_client(settings) -> MongoClient | None:
-    """Create shared MongoDB client for signal-system persistence."""
-    try:
-        client = MongoClient(settings.mongo.url, serverSelectionTimeoutMS=5000)
-        client.admin.command("ping")
-        logger.info("api_mongo_connected")
-        return client
-    except Exception as error:
-        logger.warning("api_mongo_connection_failed", error=str(error))
-        return None
+def _bind_component_refs(components: RuntimeComponents) -> None:
+    """Populate module globals from assembled runtime components."""
+    global _event_subscriber, _signal_processor, _whale_detector, _signal_store
+    global _outcome_tracker, _outcome_store, _rl_param_server, _trace_store
+    global _param_event_store, _event_processor, _mongo_client
+
+    _event_subscriber = components.event_subscriber
+    _signal_processor = components.signal_processor
+    _whale_detector = components.whale_detector
+    _signal_store = components.signal_store
+    _outcome_tracker = components.outcome_tracker
+    _outcome_store = components.outcome_store
+    _rl_param_server = components.rl_param_server
+    _trace_store = components.trace_store
+    _param_event_store = components.param_event_store
+    _event_processor = components.event_processor
+    _mongo_client = components.mongo_client
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan."""
-    global _event_subscriber, _signal_processor, _whale_detector, _signal_store, _outcome_tracker, _outcome_store, _rl_param_server, _trace_store, _param_event_store, _event_processor, _subscriber_task, _mongo_client
+    global _runtime_components, _subscriber_task
 
     settings = get_settings()
-
-    _mongo_client = _create_mongo_client(settings)
-
-    # Initialize components
-    _signal_processor = SignalGenerationProcessor(symbol=settings.symbol)
-    _whale_detector = WhaleAlertDetector()
-    _signal_store = SignalStore(
-        mongo_client=_mongo_client,
-        database_name=settings.mongo.database,
-        retention_days=settings.dashboard_retention_days,
-    )
-
-    # RL components
-    _outcome_tracker = SignalOutcomeTracker()
-    _outcome_store = OutcomeStore(
-        mongo_client=_mongo_client,
-        database_name=settings.mongo.database,
-    )
-    _trace_store = DecisionTraceStore(
-        mongo_client=_mongo_client,
-        database_name=settings.mongo.database,
-        retention_days=settings.dashboard_retention_days,
-    )
-    _param_event_store = ParamEventStore(
-        mongo_client=_mongo_client,
-        database_name=settings.mongo.database,
-        retention_days=settings.dashboard_retention_days,
-    )
-    _rl_param_server = RLParameterServer(checkpoint_dir=_CHECKPOINT_DIR)
-
-    # Keep production API lightweight on constrained hosts unless explicitly enabled.
-    if settings.load_rl_checkpoint_on_startup:
-        _rl_param_server.load_from_checkpoint()
-    rl_params = _rl_param_server.get_params()
-    _signal_processor.set_rl_params(**rl_params)
-    _param_event_store.store_event(rl_params, source="startup")
-    logger.info("rl_params_loaded", **rl_params)
-
-    # Setup event subscriber
-    _event_subscriber = EventSubscriber(settings.redis)
-
-    # Create shared event processor
-    _event_processor = EventProcessor(
-        signal_processor=_signal_processor,
-        whale_detector=_whale_detector,
-        signal_store=_signal_store,
+    _runtime_components = build_runtime(
         settings=settings,
-        outcome_tracker=_outcome_tracker,
-        outcome_store=_outcome_store,
-        trace_store=_trace_store,
+        mongo_client_factory=MongoClient,
+        event_subscriber_factory=EventSubscriber,
     )
+    _bind_component_refs(_runtime_components)
 
     # Set components for dependency injection
     set_components(
@@ -123,7 +77,9 @@ async def lifespan(app: FastAPI):
         trace_store=_trace_store,
         param_event_store=_param_event_store,
         mongo_client=_mongo_client,
-        settings=settings,
+        settings=_runtime_components.settings,
+        runtime_components=_runtime_components,
+        signal_config_store=_runtime_components.config_store,
     )
 
     # Register handlers using EventProcessor
@@ -145,6 +101,8 @@ async def lifespan(app: FastAPI):
         if close_price and _event_processor:
             await _event_processor.handle_price_update(float(close_price))
 
+    if _event_subscriber is None:
+        raise RuntimeError("Event subscriber not initialized")
     _event_subscriber.subscribe("trader_positions", handle_position)
     _event_subscriber.subscribe("scored_traders", handle_scored_traders)
     _event_subscriber.subscribe("mark_price", handle_mark_price)
@@ -172,6 +130,7 @@ async def lifespan(app: FastAPI):
         await _event_subscriber.disconnect()
     if _mongo_client is not None:
         _mongo_client.close()
+    _runtime_components = None
     logger.info("api_shutdown_complete")
 
 

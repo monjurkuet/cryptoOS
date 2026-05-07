@@ -4,7 +4,6 @@ import asyncio
 from collections import deque
 import signal as signal_mod
 import sys
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -14,80 +13,41 @@ import uvicorn
 
 from signal_system.config import get_settings
 from signal_system.event_subscriber import EventSubscriber
-from signal_system.signal_generation.processor import SignalGenerationProcessor
-from signal_system.signal_store import SignalStore
-from signal_system.weighting_engine.engine import TraderWeightingEngine
-from signal_system.whale_alerts.detector import WhaleAlertDetector
 from signal_system.ml.regime_detection import MarketRegimeDetector
 from signal_system.ml.feature_importance import FeatureImportanceAnalyzer
-from signal_system.services.event_processor import EventProcessor
-from signal_system.rl.outcome_tracker import SignalOutcomeTracker
-from signal_system.rl.outcome_store import OutcomeStore
-from signal_system.rl.parameter_server import RLParameterServer
-from signal_system.dashboard.store import DecisionTraceStore, ParamEventStore
 from signal_system.api.main import app
+from signal_system.runtime import RuntimeComponents, build_runtime
 
 logger = structlog.get_logger(__name__)
-
-# Default checkpoint directory
-_CHECKPOINT_DIR = Path(__file__).parent.parent.parent / "checkpoints"
-
 
 class SignalSystem:
     """Main signal system orchestrator."""
 
     def __init__(self) -> None:
         """Initialize the signal system."""
-        self.settings = get_settings()
-        self.mongo_client: MongoClient | None = self._create_mongo_client()
+        settings = get_settings()
+        self.runtime: RuntimeComponents = build_runtime(
+            settings=settings,
+            mongo_client_factory=MongoClient,
+            event_subscriber_factory=EventSubscriber,
+        )
+        self.settings = self.runtime.settings
+        self.mongo_client = self.runtime.mongo_client
 
         # Core components
-        self.event_subscriber = EventSubscriber(self.settings.redis)
-        self.signal_processor = SignalGenerationProcessor(symbol=self.settings.symbol)
-        self.signal_store = SignalStore(
-            mongo_client=self.mongo_client,
-            database_name=self.settings.mongo.database,
-            retention_days=self.settings.dashboard_retention_days,
-        )
-        self.weighting_engine = TraderWeightingEngine()
-        self.whale_detector = WhaleAlertDetector()
+        self.event_subscriber = self.runtime.event_subscriber
+        self.signal_processor = self.runtime.signal_processor
+        self.signal_store = self.runtime.signal_store
+        self.weighting_engine = self.runtime.weighting_engine
+        self.whale_detector = self.runtime.whale_detector
 
-        # RL components
-        self.outcome_tracker = SignalOutcomeTracker()
-        self.outcome_store = OutcomeStore(
-            mongo_client=self.mongo_client,
-            database_name=self.settings.mongo.database,
-        )
-        self.trace_store = DecisionTraceStore(
-            mongo_client=self.mongo_client,
-            database_name=self.settings.mongo.database,
-            retention_days=self.settings.dashboard_retention_days,
-        )
-        self.param_event_store = ParamEventStore(
-            mongo_client=self.mongo_client,
-            database_name=self.settings.mongo.database,
-            retention_days=self.settings.dashboard_retention_days,
-        )
-        self.rl_param_server = RLParameterServer(checkpoint_dir=_CHECKPOINT_DIR)
-
-        # Keep runtime lightweight unless checkpoint loading is explicitly enabled.
-        if self.settings.load_rl_checkpoint_on_startup:
-            self.rl_param_server.load_from_checkpoint()
-        rl_params = self.rl_param_server.get_params()
-        self.signal_processor.set_rl_params(**rl_params)
-        self.param_event_store.store_event(rl_params, source="startup")
-        logger.info("rl_params_loaded", **rl_params)
-
-        # Shared event processor
-        self.event_processor = EventProcessor(
-            signal_processor=self.signal_processor,
-            whale_detector=self.whale_detector,
-            signal_store=self.signal_store,
-            settings=self.settings,
-            outcome_tracker=self.outcome_tracker,
-            outcome_store=self.outcome_store,
-            trace_store=self.trace_store,
-        )
+        # RL + dashboard components
+        self.outcome_tracker = self.runtime.outcome_tracker
+        self.outcome_store = self.runtime.outcome_store
+        self.trace_store = self.runtime.trace_store
+        self.param_event_store = self.runtime.param_event_store
+        self.rl_param_server = self.runtime.rl_param_server
+        self.event_processor = self.runtime.event_processor
 
         # ML components (optional, lazy-loaded)
         self._regime_detector: MarketRegimeDetector | None = None
@@ -95,17 +55,6 @@ class SignalSystem:
         self._recent_ohlcv: deque[dict[str, float]] = deque(maxlen=240)
 
         self._running = False
-
-    def _create_mongo_client(self) -> MongoClient | None:
-        """Create shared MongoDB client for persistence-backed stores."""
-        try:
-            client = MongoClient(self.settings.mongo.url, serverSelectionTimeoutMS=5000)
-            client.admin.command("ping")
-            logger.info("signal_system_mongo_connected")
-            return client
-        except Exception as error:
-            logger.warning("signal_system_mongo_connection_failed", error=str(error))
-            return None
 
     async def start(self) -> None:
         """Start the signal system."""

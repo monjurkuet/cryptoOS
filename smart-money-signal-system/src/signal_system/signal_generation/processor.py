@@ -16,6 +16,12 @@ TRADER_TTL_SECONDS = 86400
 # Maximum number of traders to track
 MAX_TRACKED_TRADERS = 10000
 
+DEFAULT_PARAM_RANGES: dict[str, tuple[float, float]] = {
+    "bias_threshold": (0.05, 0.8),
+    "conf_scale": (0.1, 3.0),
+    "min_confidence": (0.05, 0.9),
+}
+
 
 class SignalGenerationProcessor:
     """Generates trading signals from trader position data.
@@ -37,6 +43,9 @@ class SignalGenerationProcessor:
         bias_threshold: float = 0.2,
         conf_scale: float = 1.0,
         min_confidence: float = 0.0,
+        emit_bias_delta: float = 0.1,
+        decision_trace_buffer_size: int = 1000,
+        parameter_ranges: dict[str, tuple[float, float]] | None = None,
     ) -> None:
         """Initialize the processor.
 
@@ -51,18 +60,22 @@ class SignalGenerationProcessor:
         self.symbol = symbol
         self._trader_ttl = trader_ttl_seconds
         self._max_traders = max_traders
+        self._emit_bias_delta = emit_bias_delta
 
         # RL-adjustable parameters
         self._bias_threshold = bias_threshold
         self._conf_scale = conf_scale
         self._min_confidence = min_confidence
+        self._param_ranges = parameter_ranges or dict(DEFAULT_PARAM_RANGES)
 
         # State with TTL tracking: address -> (data, last_access_time)
         self._trader_positions: dict[str, tuple[dict, float]] = {}
         self._trader_scores: dict[str, float] = {}
         self._last_signal: dict | None = None
         self._last_decision_trace: dict[str, Any] | None = None
-        self._decision_traces: deque[dict[str, Any]] = deque(maxlen=1000)
+        self._decision_traces: deque[dict[str, Any]] = deque(
+            maxlen=max(100, decision_trace_buffer_size)
+        )
         self._signals_generated = 0
 
     async def process_position(self, event: dict) -> dict | None:
@@ -282,10 +295,14 @@ class SignalGenerationProcessor:
     ) -> None:
         now = datetime.now(timezone.utc)
         trace = {
-                "timestamp_ts": now.timestamp(),
+            "timestamp": now.isoformat(),
+            "timestamp_ts": now.timestamp(),
             "symbol": self.symbol,
             "tracked_traders": len(self._trader_positions),
             "scored_traders": len(self._trader_scores),
+            "bias_threshold": round(self._bias_threshold, 8),
+            "conf_scale": round(self._conf_scale, 8),
+            "min_confidence": round(self._min_confidence, 8),
             "weighted_long_score": round(weighted_long_score, 8),
             "weighted_short_score": round(weighted_short_score, 8),
             "total_weight": round(total_weight, 8),
@@ -316,7 +333,7 @@ class SignalGenerationProcessor:
             return True
 
         bias_change = abs(signal["net_bias"] - self._last_signal.get("net_bias", 0))
-        return bias_change >= 0.1
+        return bias_change >= self._emit_bias_delta
 
     def get_stats(self) -> dict[str, Any]:
         """Get processor statistics.
@@ -330,6 +347,10 @@ class SignalGenerationProcessor:
             "scored_traders": len(self._trader_scores),
             "decision_traces": len(self._decision_traces),
             "rl_params": {
+                "bias_threshold": self._bias_threshold,
+                "conf_scale": self._conf_scale,
+                "min_confidence": self._min_confidence,
+                "emit_bias_delta": self._emit_bias_delta,
             },
         }
 
@@ -350,11 +371,11 @@ class SignalGenerationProcessor:
             min_confidence: New minimum confidence (or None to keep current)
         """
         if bias_threshold is not None:
-            self._bias_threshold = max(0.05, min(0.8, bias_threshold))
+            self._bias_threshold = self._clamp_param("bias_threshold", bias_threshold)
         if conf_scale is not None:
-            self._conf_scale = max(0.1, min(3.0, conf_scale))
+            self._conf_scale = self._clamp_param("conf_scale", conf_scale)
         if min_confidence is not None:
-            self._min_confidence = max(0.0, min(0.9, min_confidence))
+            self._min_confidence = self._clamp_param("min_confidence", min_confidence)
 
         logger.debug(
             "signal_processor_rl_params_updated",
@@ -362,6 +383,30 @@ class SignalGenerationProcessor:
             conf_scale=self._conf_scale,
             min_confidence=self._min_confidence,
         )
+
+    def set_runtime_config(
+        self,
+        symbol: str | None = None,
+        trader_ttl_seconds: int | None = None,
+        max_traders: int | None = None,
+        emit_bias_delta: float | None = None,
+        decision_trace_buffer_size: int | None = None,
+        parameter_ranges: dict[str, tuple[float, float]] | None = None,
+    ) -> None:
+        """Update runtime behavior without recreating the processor."""
+        if symbol:
+            self.symbol = symbol
+        if trader_ttl_seconds is not None:
+            self._trader_ttl = max(1, trader_ttl_seconds)
+        if max_traders is not None:
+            self._max_traders = max(100, max_traders)
+        if emit_bias_delta is not None:
+            self._emit_bias_delta = max(0.0, emit_bias_delta)
+        if parameter_ranges is not None:
+            self._param_ranges = dict(parameter_ranges)
+        if decision_trace_buffer_size is not None:
+            buffer_size = max(100, decision_trace_buffer_size)
+            self._decision_traces = deque(self._decision_traces, maxlen=buffer_size)
 
     def get_latest_signal(self) -> dict | None:
         """Get the latest generated signal.
@@ -378,3 +423,7 @@ class SignalGenerationProcessor:
     def get_decision_traces(self, limit: int = 100) -> list[dict[str, Any]]:
         """Get recent decision traces."""
         return list(self._decision_traces)[-limit:]
+
+    def _clamp_param(self, key: str, value: float) -> float:
+        lo, hi = self._param_ranges.get(key, DEFAULT_PARAM_RANGES[key])
+        return max(lo, min(hi, value))

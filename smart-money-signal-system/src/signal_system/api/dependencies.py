@@ -8,6 +8,8 @@ from signal_system.rl.outcome_store import OutcomeStore
 from signal_system.rl.parameter_server import RLParameterServer
 from signal_system.dashboard.store import DecisionTraceStore, ParamEventStore
 from signal_system.config import SignalSystemSettings
+from signal_system.runtime import RuntimeComponents
+from signal_system.runtime_config import SignalRuntimeConfigStore
 
 # Global component references (set by main.py during startup)
 _signal_processor: SignalGenerationProcessor | None = None
@@ -20,6 +22,8 @@ _trace_store: DecisionTraceStore | None = None
 _param_event_store: ParamEventStore | None = None
 _mongo_client = None
 _settings: SignalSystemSettings | None = None
+_runtime_components: RuntimeComponents | None = None
+_signal_config_store: SignalRuntimeConfigStore | None = None
 
 
 def set_components(
@@ -33,9 +37,11 @@ def set_components(
     param_event_store: ParamEventStore | None = None,
     mongo_client=None,
     settings: SignalSystemSettings | None = None,
+    runtime_components: RuntimeComponents | None = None,
+    signal_config_store: SignalRuntimeConfigStore | None = None,
 ) -> None:
     """Set global component references."""
-    global _signal_processor, _whale_detector, _event_subscriber, _signal_store, _outcome_store, _rl_param_server, _trace_store, _param_event_store, _mongo_client, _settings
+    global _signal_processor, _whale_detector, _event_subscriber, _signal_store, _outcome_store, _rl_param_server, _trace_store, _param_event_store, _mongo_client, _settings, _runtime_components, _signal_config_store
     _signal_processor = signal_processor
     _whale_detector = whale_detector
     _event_subscriber = event_subscriber
@@ -46,6 +52,8 @@ def set_components(
     _param_event_store = param_event_store
     _mongo_client = mongo_client
     _settings = settings
+    _runtime_components = runtime_components
+    _signal_config_store = signal_config_store
 
 
 def get_signal_processor() -> SignalGenerationProcessor:
@@ -112,3 +120,17 @@ def get_settings_ref() -> SignalSystemSettings:
     if _settings is None:
         raise RuntimeError("Settings not initialized")
     return _settings
+
+
+def get_runtime_components() -> RuntimeComponents:
+    """Get assembled runtime components for config reload operations."""
+    if _runtime_components is None:
+        raise RuntimeError("Runtime components not initialized")
+    return _runtime_components
+
+
+def get_signal_config_store() -> SignalRuntimeConfigStore:
+    """Get YAML config store used by runtime endpoints."""
+    if _signal_config_store is None:
+        raise RuntimeError("Signal config store not initialized")
+    return _signal_config_store

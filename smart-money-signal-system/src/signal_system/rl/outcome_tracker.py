@@ -54,7 +54,7 @@ class SignalOutcomeTracker:
         max_pending: int = 10000,
         max_outcomes: int = 50000,
     ) -> None:
-        self._horizons = evaluation_horizons or DEFAULT_HORIZONS
+        self._horizons = sorted(evaluation_horizons or DEFAULT_HORIZONS)
         self._max_pending = max_pending
         self._pending: deque[PendingSignal] = deque(maxlen=max_pending)
         self._outcomes: deque[SignalOutcome] = deque(maxlen=max_outcomes)
@@ -133,8 +133,21 @@ class SignalOutcomeTracker:
     def get_stats(self) -> dict[str, Any]:
         outcomes = list(self._outcomes)
         return {
+            "evaluation_horizons": list(self._horizons),
             "pending_signals": len(self._pending),
             "resolved_outcomes": len(outcomes),
             "avg_pnl": sum(o.pnl_pct for o in outcomes) / len(outcomes) if outcomes else 0,
             "last_price": self._last_price,
         }
+
+    def set_runtime_config(
+        self,
+        evaluation_horizons: list[int],
+        max_pending: int,
+        max_outcomes: int,
+    ) -> None:
+        """Apply runtime settings without losing currently tracked data."""
+        self._horizons = sorted({int(h) for h in evaluation_horizons if int(h) > 0})
+        self._max_pending = max(100, max_pending)
+        self._pending = deque(self._pending, maxlen=self._max_pending)
+        self._outcomes = deque(self._outcomes, maxlen=max(100, max_outcomes))

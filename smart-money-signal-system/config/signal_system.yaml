@@ -1,0 +1,69 @@
+config_version: 1
+signal_processor:
+  symbol: BTC
+  trader_ttl_seconds: 86400
+  max_traders: 10000
+  emit_bias_delta: 0.1
+  decision_trace_buffer_size: 1000
+parameters:
+  defaults:
+    bias_threshold: 0.2
+    conf_scale: 1.0
+    min_confidence: 0.3
+  ranges:
+    bias_threshold:
+      min: 0.05
+      max: 0.8
+    conf_scale:
+      min: 0.1
+      max: 3.0
+    min_confidence:
+      min: 0.05
+      max: 0.9
+outcome_tracking:
+  evaluation_horizons: [60, 300, 900, 3600]
+  max_pending: 10000
+  max_outcomes: 50000
+weighting:
+  performance:
+    sharpe_weight: 0.25
+    sortino_weight: 0.2
+    consistency_weight: 0.2
+    max_drawdown_weight: 0.15
+    win_rate_weight: 0.1
+    profit_factor_weight: 0.1
+  size:
+    alpha_whale_threshold: 20000000
+    whale_threshold: 10000000
+    large_threshold: 5000000
+    medium_threshold: 1000000
+    standard_threshold: 100000
+    alpha_whale_weight: 3.0
+    whale_weight: 2.5
+    large_weight: 2.0
+    medium_weight: 1.5
+    standard_weight: 1.0
+    small_weight: 0.5
+  recency:
+    day_weight: 0.5
+    week_weight: 0.3
+    month_weight: 0.2
+    min_recency: 0.5
+    max_recency: 1.5
+  performance_dimension_weight: 0.4
+  size_dimension_weight: 0.3
+  recency_dimension_weight: 0.2
+  regime_dimension_weight: 0.1
+whale_alerts:
+  alpha_whale_threshold: 20000000
+  whale_threshold: 10000000
+  aggregation_window_minutes: 5
+  position_history_ttl: 604800
+  max_alerts: 500
+  max_recent_changes: 1000
+improvement:
+  enable_retrain_api: false
+  load_checkpoint_on_startup: false
+  checkpoint_dir: checkpoints
+  default_retrain_episodes: 100
+dashboard_retention_days: 30

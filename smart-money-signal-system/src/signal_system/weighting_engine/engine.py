@@ -54,6 +54,10 @@ class TraderWeightingEngine:
         self._current_regime = regime_name
         logger.debug("regime_set", regime=regime_name)
 
+    def set_config(self, config: WeightingConfig) -> None:
+        """Replace weighting configuration at runtime."""
+        self.config = config
+
     def calculate_weight(
         self,
         address: str,
