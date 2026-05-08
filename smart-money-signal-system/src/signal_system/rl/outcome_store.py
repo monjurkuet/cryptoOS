@@ -84,18 +84,32 @@ class OutcomeStore:
             except Exception as e:
                 logger.warning("outcome_store_index_creation_failed", error=str(e))
 
-            # TTL index - auto-expire outcomes after 90 days
-            try:
-                self._collection.create_index(
-                    [("resolved_at", 1)],
-                    name="ttl_retention",
-                    expireAfterSeconds=90 * 86400,
-                )
-            except Exception as e:
-                logger.warning("outcome_store_ttl_index_failed", error=str(e))
+            self._ensure_ttl_index()
         else:
             self._collection = None
             logger.info("outcome_store_running_in_memory")
+
+    def _ensure_ttl_index(self) -> None:
+        """Ensure a single TTL index exists on resolved_at with expected retention."""
+        if self._collection is None:
+            return
+        ttl_seconds = 90 * 86400
+        try:
+            indexes = list(self._collection.list_indexes())
+            for idx in indexes:
+                key = idx.get("key")
+                if key == {"resolved_at": 1} and "expireAfterSeconds" not in idx:
+                    name = idx.get("name")
+                    if name:
+                        self._collection.drop_index(name)
+                        logger.info("outcome_store_dropped_legacy_resolved_at_index", index=name)
+            self._collection.create_index(
+                [("resolved_at", 1)],
+                name="ttl_retention",
+                expireAfterSeconds=ttl_seconds,
+            )
+        except Exception as e:
+            logger.warning("outcome_store_ttl_index_failed", error=str(e))
 
     def store_outcome(self, outcome: SignalOutcome) -> None:
         """Persist a single signal outcome.
