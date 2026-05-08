@@ -245,7 +245,6 @@ class SignalGenerationProcessor:
                 action=action,
                 result=result,
                 reason_code=reason_code,
-                store=False,
             )
             return None
 
@@ -276,7 +275,6 @@ class SignalGenerationProcessor:
             action=action,
             result="suppressed",
             reason_code="duplicate_signal",
-            store=False,
         )
         return None
 

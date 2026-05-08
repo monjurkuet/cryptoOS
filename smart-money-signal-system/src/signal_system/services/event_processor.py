@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -117,6 +118,8 @@ class EventProcessor:
                 # Generate signal
                 signal = await self._signal_processor.process_position(event)
                 latest_trace = self._signal_processor.get_latest_decision_trace()
+                if inspect.isawaitable(latest_trace):
+                    latest_trace = await latest_trace
                 if latest_trace and self._trace_store is not None:
                     await asyncio.to_thread(self._trace_store.store_trace, latest_trace)
                 if signal:
