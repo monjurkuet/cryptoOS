@@ -1,70 +1,34 @@
-# Hybrid Compute Deployment Report
+# cryptoOS Deployment Status
 
-**Date:** April 13, 2026
-**Status:** ✅ Operational (VPS-only)
+**Date:** 2026-05-06
+**Status:** VPS-only deployment
 
-## Architecture
+## Current Architecture
 
-```
-Internet → VPS (Caddy Reverse Proxy)
-              ├── blockchain.datasolved.org → localhost:3845 (market-scraper on VPS)
-              ├── search.datasolved.org → localhost:8345 (DDGS API)
-              ├── llm.datasolved.org → localhost:8317
-              ├── api.datasolved.org → localhost:18080
-              └── trading.datasolved.org → localhost:3000
+cryptoOS is deployed as a pair of Python services on a VPS:
 
-VPS (100.92.181.21)
-├── Caddy (reverse proxy)
-├── market-scraper.service (port 3845)
-└── DDGS API (port 8345)
-```
+- `market-scraper.service` on port `3845`
+- `signal-system.service` on port `4341`
+- Caddy routes public traffic to the appropriate local service
+- Redis and MongoDB are external service dependencies
 
-## Components Deployed
+## What is in the repo
 
-### VPS Services
-- **Caddy** - Reverse proxy with auto-HTTPS
-- **DDGS API** - Running on port 8345
-- **market-scraper.service** - Running on port 3845
+- `market-scraper/` — market data collection and API service
+- `smart-money-signal-system/` — signal generation and RL tuning service
+- `shared/` — shared Pydantic/config utilities
+- `systemd/` — systemd unit files and deployment notes
+- `scripts/` — helper scripts for local startup/status/stop flows
 
-## Routing Notes
-
-- This deployment is configured as **single-server (VPS-only)**.
-- `blockchain.datasolved.org` reverse-proxies only to `localhost:3845` (no Desktop/Tailscale upstream).
-
-## Configuration Files
-
-### Docker Files (cryptoOS repo)
-- `Dockerfile` - Multi-stage build for market-scraper
-- `docker-compose.yml` - Container orchestration
-- `.dockerignore` - Build optimization
-
-### Caddy Routes
-- `blockchain.datasolved.org` → `localhost:3845`
-- `search.datasolved.org` → `localhost:8345`
-
-## Verification Commands
+## Verification
 
 ```bash
-# Check market-scraper on VPS
 curl http://localhost:3845/health/live
-
-# Check via domain
-curl https://blockchain.datasolved.org/health/live
-curl https://search.datasolved.org/
+curl http://localhost:4341/health
 ```
 
-## Git Commits
+## Notes
 
-### cryptoOS Repository
-- `b85b514` - fix: add README.md to Docker build context
-- `33add13` - feat: add Docker and docker-compose for hybrid compute deployment
-
-### hermesagent Repository
-- `fbb2296` - feat: add Docker API version of hybrid compute failover monitor
-
-## Next Steps (Optional)
-
-1. Add persistent volume mounts for data/logs on Desktop
-2. Implement MongoDB events optimization plan
-3. Add monitoring/alerting for failover events
-4. Set up automated container updates on Desktop
+- This repository does **not** use Docker for deployment.
+- Any stale Docker references from prior experiments should be treated as historical only.
+- Production workflow is systemd-based, with local scripts kept only for convenience during development.

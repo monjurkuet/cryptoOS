@@ -167,7 +167,6 @@ cryptoOS/
 | [smart-money-signal-system/README.md](smart-money-signal-system/README.md) | Signal system, RL flow, and API |
 | [docs/README.md](docs/README.md) | Top-level docs inventory and archival policy |
 | [systemd/README.md](systemd/README.md) | Production deployment with systemd |
-| [docs/reports/2026-04-26-recent-changes-report.md](docs/reports/2026-04-26-recent-changes-report.md) | Detailed report on the recent RL changes |
 | [market-scraper/docs/guides/deployment.md](market-scraper/docs/guides/deployment.md) | Detailed deployment guide |
 
 ## License
