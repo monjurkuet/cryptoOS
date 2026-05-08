@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from hashlib import sha256
+from datetime import UTC, datetime
 import threading
 from typing import Any
 
@@ -148,6 +150,7 @@ class SignalRuntimeConfigStore:
 
     def __init__(self, path: Path) -> None:
         self._path = path
+        self._history_path = path.with_suffix(f"{path.suffix}.history.yaml")
         self._lock = threading.RLock()
 
     @property
@@ -176,9 +179,57 @@ class SignalRuntimeConfigStore:
         config = self.validate(payload)
         return self.save(config)
 
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            config = self.load()
+            content = self._path.read_text(encoding="utf-8") if self._path.exists() else ""
+            checksum = sha256(content.encode("utf-8")).hexdigest()
+            stat = self._path.stat() if self._path.exists() else None
+            modified_at = (
+                datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat() if stat is not None else None
+            )
+            return {
+                "config_path": str(self._path),
+                "config_version": config.config_version,
+                "checksum_sha256": checksum,
+                "modified_at": modified_at,
+            }
+
     def _write(self, config: SignalRuntimeConfig) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self._path.with_suffix(f"{self._path.suffix}.tmp")
+        config_payload = config.model_dump(mode="json")
         with temp_path.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(config.model_dump(mode="json"), handle, sort_keys=False)
+            yaml.safe_dump(config_payload, handle, sort_keys=False)
         temp_path.replace(self._path)
+        self._append_history(config_payload)
+
+    def _append_history(self, config_payload: dict[str, Any]) -> None:
+        now = datetime.now(UTC).isoformat()
+        checksum = sha256(yaml.safe_dump(config_payload, sort_keys=False).encode("utf-8")).hexdigest()
+        event = {
+            "timestamp": now,
+            "config_version": config_payload.get("config_version"),
+            "checksum_sha256": checksum,
+        }
+        history: list[dict[str, Any]] = []
+        if self._history_path.exists():
+            try:
+                with self._history_path.open("r", encoding="utf-8") as handle:
+                    history = yaml.safe_load(handle) or []
+            except Exception:
+                history = []
+        history.insert(0, event)
+        history = history[:200]
+        temp_path = self._history_path.with_suffix(f"{self._history_path.suffix}.tmp")
+        with temp_path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(history, handle, sort_keys=False)
+        temp_path.replace(self._history_path)
+
+    def get_history(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            if not self._history_path.exists():
+                return []
+            with self._history_path.open("r", encoding="utf-8") as handle:
+                history = yaml.safe_load(handle) or []
+            return history[: max(1, min(limit, 200))]

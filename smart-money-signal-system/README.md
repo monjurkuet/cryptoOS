@@ -128,8 +128,11 @@ Multi-dimensional trader scoring:
 | `/api/v1/rl/outcomes` | GET | Recent resolved signal outcomes |
 | `/api/v1/rl/retrain` | POST | Trigger background retraining |
 | `/api/v1/config/signal` | GET | Current live YAML runtime config |
+| `/api/v1/config/signal/status` | GET | Config metadata (version, checksum, mtime, active params) |
+| `/api/v1/config/signal/history` | GET | Recent YAML config change events |
 | `/api/v1/config/signal/validate` | POST | Validate candidate runtime config payload |
 | `/api/v1/config/signal` | PUT | Persist + apply runtime config (requires `X-Agent-Token`) |
+| `/api/v1/config/signal/apply` | POST | Alias for config apply (requires `X-Agent-Token`) |
 | `/api/v1/config/signal/reload` | POST | Reload runtime config from disk (requires `X-Agent-Token`) |
 | `/api/v1/dashboard/signal-generator/overview` | GET | Combined dashboard overview |
 | `/api/v1/dashboard/signal-generator/timeline` | GET | Normalized combined timeline |
@@ -187,8 +190,11 @@ For local direct access without a reverse-proxy prefix, set `API_ROOT_PATH=` (em
 - Both API mode and standalone mode now use the same runtime assembly path (`signal_system.runtime.build_runtime`).
 - Config can be managed by agents through:
   - `GET /api/v1/config/signal`
+  - `GET /api/v1/config/signal/status`
+  - `GET /api/v1/config/signal/history`
   - `POST /api/v1/config/signal/validate`
   - `PUT /api/v1/config/signal` (requires `X-Agent-Token`)
+  - `POST /api/v1/config/signal/apply` (requires `X-Agent-Token`)
   - `POST /api/v1/config/signal/reload` (requires `X-Agent-Token`)
 
 ### Running

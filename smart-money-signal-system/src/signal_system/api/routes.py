@@ -307,6 +307,20 @@ async def get_signal_runtime_config() -> dict[str, Any]:
     }
 
 
+@router.get("/config/signal/status")
+async def get_signal_runtime_config_status() -> dict[str, Any]:
+    """Return config status metadata for auditability and agent workflows."""
+    config_store = get_signal_config_store()
+    components = get_runtime_components()
+    settings = get_settings_ref()
+    metadata = config_store.status()
+    return {
+        **metadata,
+        "mutable": bool(settings.signal_admin_token.strip()),
+        "active_params": components.rl_param_server.get_params(),
+    }
+
+
 @router.post("/config/signal/validate")
 async def validate_signal_runtime_config(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate a candidate signal runtime config payload without applying it."""
@@ -360,6 +374,25 @@ async def reload_signal_runtime_config(
         "status": "reloaded",
         "config_path": str(config_store.path),
         "config": config.model_dump(mode="json"),
+    }
+
+
+@router.post("/config/signal/apply")
+async def apply_signal_runtime_config(
+    payload: dict[str, Any],
+    agent_token: str | None = Header(default=None, alias="X-Agent-Token"),
+) -> dict[str, Any]:
+    """Alias for config apply to support agent workflows expecting /apply."""
+    return await update_signal_runtime_config(payload=payload, agent_token=agent_token)
+
+
+@router.get("/config/signal/history")
+async def get_signal_runtime_config_history(limit: int = 50) -> dict[str, Any]:
+    """Return recent YAML config update history for audit and rollback context."""
+    config_store = get_signal_config_store()
+    return {
+        "count": max(0, min(limit, 200)),
+        "events": config_store.get_history(limit=limit),
     }
 
 
