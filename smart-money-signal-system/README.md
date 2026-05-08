@@ -372,3 +372,7 @@ The signal-system subscribes to Redis events from the market-scraper:
 ## License
 
 MIT
+
+## Additional Docs
+
+- `docs/architecture.md`: current runtime architecture and YAML/agent config workflow.
