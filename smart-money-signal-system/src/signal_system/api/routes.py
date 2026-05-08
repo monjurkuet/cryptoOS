@@ -390,9 +390,10 @@ async def apply_signal_runtime_config(
 async def get_signal_runtime_config_history(limit: int = 50) -> dict[str, Any]:
     """Return recent YAML config update history for audit and rollback context."""
     config_store = get_signal_config_store()
+    events = config_store.get_history(limit=limit)
     return {
-        "count": max(0, min(limit, 200)),
-        "events": config_store.get_history(limit=limit),
+        "count": len(events),
+        "events": events,
     }
 
 
