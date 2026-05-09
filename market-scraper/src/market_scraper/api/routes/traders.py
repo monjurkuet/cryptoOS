@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from market_scraper.api.dependencies import get_lifecycle
@@ -17,7 +17,7 @@ from market_scraper.orchestration.lifecycle import LifecycleManager
 router = APIRouter()
 _TRADERS_ROUTE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _TRADERS_CACHE_TTL_SECONDS = 30.0
-_TRADERS_HARD_TIMEOUT_SECONDS = 12.0
+_TRADERS_HARD_TIMEOUT_SECONDS = 4.0
 
 
 # ============== Input Validation ==============
@@ -136,7 +136,103 @@ class TraderClosedTradesListResponse(BaseModel):
     count: int = 0
 
 
+class TraderBatchRequest(BaseModel):
+    """Batch trader request payload."""
+
+    addresses: list[str]
+    include_inactive: bool = False
+
+
+class TraderBatchResponse(BaseModel):
+    """Batch trader response payload."""
+
+    traders: list[dict[str, Any]]
+    requested: int
+    found: int
+
+
 # ============== Routes ==============
+
+
+def _parse_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_position(position_like: Any) -> dict[str, Any]:
+    position = position_like.get("position", position_like) if isinstance(position_like, dict) else {}
+    size = _parse_float(position.get("szi", position.get("size", 0)), 0.0)
+    entry_price = _parse_float(position.get("entryPx", position.get("entry_price", 0)), 0.0)
+    mark_price = _parse_float(position.get("markPx", position.get("mark_price", 0)), 0.0)
+    leverage_raw = position.get("leverage", 1)
+    if isinstance(leverage_raw, dict):
+        leverage = _parse_float(leverage_raw.get("value", 1), 1.0)
+    else:
+        leverage = _parse_float(leverage_raw, 1.0)
+
+    liquidation_price_raw = (
+        position.get("liquidationPx")
+        if position.get("liquidationPx") is not None
+        else position.get("liqPx")
+    )
+    if liquidation_price_raw is None:
+        liquidation_price_raw = position.get("liq")
+    liquidation_price = (
+        _parse_float(liquidation_price_raw, 0.0)
+        if liquidation_price_raw not in (None, "")
+        else None
+    )
+    notional = abs(size) * (mark_price if mark_price > 0 else entry_price)
+    direction = "long" if size > 0 else "short" if size < 0 else "flat"
+
+    return {
+        "coin": position.get("coin"),
+        "size": size,
+        "entry_price": entry_price,
+        "mark_price": mark_price,
+        "unrealized_pnl": _parse_float(position.get("unrealizedPnl", position.get("upnl", 0)), 0.0),
+        "leverage": leverage,
+        "liquidation_price": liquidation_price,
+        "position_value": notional,
+        "notional": notional,
+        "direction": direction,
+    }
+
+
+def _extract_trader_state_summary(
+    state: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str, bool]:
+    if not isinstance(state, dict):
+        return [], [], "unknown", False
+
+    raw_positions = state.get("positions", [])
+    if not isinstance(raw_positions, list):
+        raw_positions = []
+    positions = [_normalize_position(pos) for pos in raw_positions]
+    positions = [p for p in positions if abs(_parse_float(p.get("size"), 0.0)) > 0]
+
+    open_orders = state.get("open_orders", [])
+    if not isinstance(open_orders, list):
+        open_orders = []
+    normalized_orders = [order for order in open_orders if isinstance(order, dict)]
+
+    position_status = "flat"
+    has_positions = len(positions) > 0
+    if has_positions:
+        has_long = any(_parse_float(position.get("size"), 0.0) > 0 for position in positions)
+        has_short = any(_parse_float(position.get("size"), 0.0) < 0 for position in positions)
+        if has_long and has_short:
+            position_status = "mixed"
+        elif has_long:
+            position_status = "long"
+        elif has_short:
+            position_status = "short"
+        else:
+            position_status = "flat"
+
+    return positions, normalized_orders, position_status, has_positions
 
 
 @router.get("", response_model=TraderListResponse)
@@ -180,6 +276,10 @@ async def list_traders(
     include_total: bool = Query(
         default=False,
         description="When true, run an exact tracked-trader count (adds DB cost).",
+    ),
+    addresses: str | None = Query(
+        default=None,
+        description="Comma-separated exact addresses to include",
     ),
 ) -> dict[str, Any]:
     """List tracked traders.
@@ -245,6 +345,7 @@ async def list_traders(
             include_total_mode,
             include_metrics,
             include_total,
+            addresses,
         )
     )
     now_ts = time.time()
@@ -258,10 +359,23 @@ async def list_traders(
                 return []
             return [item.strip().lower().lstrip("+") for item in value.split(",") if item.strip()]
 
+        def parse_addresses_csv(value: str | None) -> list[str]:
+            if not value:
+                return []
+            parsed: list[str] = []
+            for raw in value.split(","):
+                candidate = raw.strip()
+                if not candidate:
+                    continue
+                parsed.append(validate_eth_address(candidate))
+            return parsed
+
         tags_any_list = parse_csv(tags_any)
         tags_all_list = parse_csv(tags_all)
         tags_exclude_list = parse_csv(tags_exclude)
         profitable_window_list = parse_csv(profitable_windows)
+        selected_addresses = parse_addresses_csv(addresses)
+        selected_address_set = set(selected_addresses)
         valid_profitable_windows = {"day", "week", "month", "all_time"}
         profitable_window_list = [w for w in profitable_window_list if w in valid_profitable_windows]
 
@@ -272,6 +386,7 @@ async def list_traders(
         has_extended_filters = any(
             value is not None
             for value in (
+                addresses,
                 address_contains,
                 display_name_contains,
                 max_score,
@@ -318,17 +433,24 @@ async def list_traders(
             value is not None for value in (has_positions, has_open_orders, position_status, updated_within_hours)
         ):
             # Keep the hot path bounded for low-resource VPS deployments.
-            prefetch_limit = min(300, max(40, limit * 4))
+            prefetch_limit = min(120, max(30, limit * 3))
+        if selected_addresses:
+            # Exact-address mode needs a wider prefetch window than score-ranked pages.
+            prefetch_limit = max(prefetch_limit, min(5000, max(200, len(selected_addresses) * 4)))
 
         # Get traders from tracked_traders collection
+        tracked_kwargs: dict[str, Any] = {
+            "min_score": min_score,
+            "tag": tag,
+            "active_only": True,
+            "limit": prefetch_limit,
+        }
+        if needs_performance_fields:
+            tracked_kwargs["include_performances"] = True
+        tracked_traders_call = repository.get_tracked_traders(**tracked_kwargs)
+
         traders = await asyncio.wait_for(
-            repository.get_tracked_traders(
-                min_score=min_score,
-                tag=tag,
-                active_only=True,
-                limit=prefetch_limit,
-                include_performances=needs_performance_fields,
-            ),
+            tracked_traders_call,
             timeout=_TRADERS_HARD_TIMEOUT_SECONDS,
         )
         total = None
@@ -343,13 +465,14 @@ async def list_traders(
                 timeout=_TRADERS_HARD_TIMEOUT_SECONDS,
             )
 
-        addresses = [str(t.get("eth", t.get("address", ""))).lower() for t in traders]
+        trader_addresses = [str(t.get("eth", t.get("address", ""))).lower() for t in traders]
+        current_states_call = repository.get_trader_current_states(
+            addresses=trader_addresses,
+            symbol=lifecycle._settings.hyperliquid.symbol,
+        )
+
         states_by_address = await asyncio.wait_for(
-            repository.get_trader_current_states(
-                addresses=addresses,
-                symbol=lifecycle._settings.hyperliquid.symbol,
-                include_legacy_fallback=False,
-            ),
+            current_states_call,
             timeout=_TRADERS_HARD_TIMEOUT_SECONDS,
         )
 
@@ -509,6 +632,8 @@ async def list_traders(
                 cutoff = datetime.now(UTC) - timedelta(hours=updated_within_hours)
                 if last_update < cutoff:
                     continue
+            if selected_address_set and address not in selected_address_set:
+                continue
 
             trader_responses.append(
                 TraderResponse(
@@ -552,7 +677,13 @@ async def list_traders(
 
         filtered_query_applied = any(
             value is not None
-            for value in (has_positions, has_open_orders, position_status, updated_within_hours)
+            for value in (
+                has_positions,
+                has_open_orders,
+                position_status,
+                updated_within_hours,
+                addresses,
+            )
         )
         response_total = (
             matched_total
@@ -582,6 +713,7 @@ async def list_traders(
                 "position_status": position_status,
                 "updated_within_hours": updated_within_hours,
                 "address_contains": address_contains,
+                "addresses": selected_addresses,
                 "display_name_contains": display_name_contains,
                 "account_value_min": account_value_min,
                 "account_value_max": account_value_max,
@@ -618,7 +750,22 @@ async def list_traders(
             stale_response["is_degraded"] = True
             stale_response["error"] = "traders query timed out; served stale cache"
             return stale_response
-        raise HTTPException(status_code=504, detail="Traders query timed out")
+        return {
+            "traders": [],
+            "total": 0,
+            "symbol": lifecycle._settings.hyperliquid.symbol,
+            "total_with_positions": 0,
+            "total_flat": 0,
+            "total_unknown": 0,
+            "matched_total": 0,
+            "returned_count": 0,
+            "has_more": False,
+            "applied_filters": {},
+            "is_degraded": True,
+            "error": "traders query timed out",
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         stale = _TRADERS_ROUTE_CACHE.get(request_cache_key)
         if stale:
@@ -627,6 +774,98 @@ async def list_traders(
             stale_response["error"] = str(e)
             return stale_response
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/batch", response_model=TraderBatchResponse)
+async def get_traders_batch(
+    request: TraderBatchRequest = Body(...),
+    lifecycle: LifecycleManager = Depends(get_lifecycle),
+) -> dict[str, Any]:
+    """Return detailed trader snapshots for an exact address set."""
+    repository = lifecycle.repository
+    if not repository:
+        raise HTTPException(status_code=503, detail="Repository not available")
+
+    if not request.addresses:
+        raise HTTPException(status_code=400, detail="addresses must be a non-empty list")
+    if len(request.addresses) > 1000:
+        raise HTTPException(status_code=400, detail="addresses list cannot exceed 1000 entries")
+
+    validated_addresses: list[str] = []
+    seen: set[str] = set()
+    for address in request.addresses:
+        normalized = validate_eth_address(str(address))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        validated_addresses.append(normalized)
+
+    # Fast path for production reliability:
+    # fetch only requested addresses with bounded async fan-out instead of prefetching
+    # large tracked-trader windows that can stall on resource-constrained VPS nodes.
+    async def _fetch_trader(address: str) -> tuple[str, dict[str, Any] | None]:
+        row = await repository.get_trader_by_address(address)
+        return address, row if isinstance(row, dict) else None
+
+    fetch_tasks = [_fetch_trader(address) for address in validated_addresses]
+    tracked_pairs = await asyncio.wait_for(
+        asyncio.gather(*fetch_tasks, return_exceptions=False),
+        timeout=_TRADERS_HARD_TIMEOUT_SECONDS,
+    )
+    tracked_by_address = {address: row for address, row in tracked_pairs if row is not None}
+
+    states_by_address = await asyncio.wait_for(
+        repository.get_trader_current_states(
+            addresses=validated_addresses,
+            symbol=lifecycle._settings.hyperliquid.symbol,
+            include_legacy_fallback=False,
+        ),
+        timeout=_TRADERS_HARD_TIMEOUT_SECONDS,
+    )
+
+    traders_payload: list[dict[str, Any]] = []
+    for address in validated_addresses:
+        trader = tracked_by_address.get(address)
+        if trader is None:
+            continue
+        if not request.include_inactive and not bool(trader.get("active", True)):
+            continue
+        state = states_by_address.get(address)
+        positions, open_orders, position_status, has_positions = _extract_trader_state_summary(state)
+        has_open_orders = len(open_orders) > 0
+
+        performances = trader.get("performances", {})
+        if not isinstance(performances, dict):
+            performances = {}
+
+        traders_payload.append(
+            {
+                "address": address,
+                "display_name": trader.get("name", trader.get("displayName")),
+                "score": _parse_float(trader.get("score", 0), 0.0),
+                "tags": trader.get("tags", []),
+                "account_value": _parse_float(
+                    trader.get("acct_val", trader.get("accountValue", 0)),
+                    0.0,
+                ),
+                "active": bool(trader.get("active", True)),
+                "has_positions": has_positions,
+                "has_open_orders": has_open_orders,
+                "open_order_count": len(open_orders),
+                "position_status": position_status,
+                "last_position_update": state.get("updated_at") if isinstance(state, dict) else None,
+                "performances": performances,
+                "positions": positions,
+                "open_orders": open_orders,
+                "margin_summary": state.get("margin_summary", {}) if isinstance(state, dict) else {},
+            }
+        )
+
+    return {
+        "traders": traders_payload,
+        "requested": len(validated_addresses),
+        "found": len(traders_payload),
+    }
 
 
 @router.get("/{address}", response_model=TraderDetailResponse)
@@ -681,23 +920,11 @@ async def get_trader(
             if not isinstance(state_positions, list):
                 state_positions = []
             for pos in state_positions:
-                p = pos.get("position", pos)
-                pos_data = {
-                    "coin": p.get("coin"),
-                    "size": float(p.get("szi", 0)),
-                    "entry_price": float(p.get("entryPx", 0)),
-                    "mark_price": float(p.get("markPx", 0)),
-                    "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
-                    "leverage": float(
-                        p.get("leverage", {}).get("value", 1)
-                        if isinstance(p.get("leverage"), dict)
-                        else p.get("leverage", 1)
-                    ),
-                }
+                pos_data = _normalize_position(pos)
                 positions.append(pos_data)
 
                 # Check for BTC position
-                if p.get("coin") == "BTC":
+                if pos_data.get("coin") == "BTC":
                     btc_position = pos_data
 
             has_positions = len(positions) > 0

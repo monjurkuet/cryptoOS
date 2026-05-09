@@ -1,0 +1,42 @@
+[Unit]
+Description=CryptoData Market Scraper API-Only Fallback Service
+Documentation=https://github.com/monjurkuet/cryptoOS
+After=network.target mongodb.service redis.service
+Wants=mongodb.service redis.service
+StartLimitIntervalSec=600
+StartLimitBurst=8
+
+[Service]
+Type=simple
+User=administrator
+Group=administrator
+WorkingDirectory=/home/administrator/githubrepo/cryptoOS/market-scraper
+Environment="PATH=/home/administrator/githubrepo/cryptoOS/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="LOG_LEVEL=INFO"
+Environment="MARKET_SCRAPER_LIVENESS_PORT=3861"
+ExecStart=/home/administrator/githubrepo/cryptoOS/.venv/bin/python -m market_scraper server --host 127.0.0.1 --port 3850 --no-collectors
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper-apionly.log
+StandardError=append:/home/administrator/githubrepo/cryptoOS/logs/market-scraper-apionly.error.log
+
+MemoryMax=512M
+MemoryHigh=384M
+CPUQuota=50%
+OOMScoreAdjust=150
+
+WatchdogSec=300
+NotifyAccess=all
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/administrator/githubrepo/cryptoOS/logs
+
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

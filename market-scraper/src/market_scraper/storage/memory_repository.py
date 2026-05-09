@@ -700,7 +700,16 @@ class MemoryRepository(DataRepository):
 
     async def get_active_trader_addresses(self, limit: int = 5000) -> list[str]:
         """Get active trader addresses (in-memory)."""
-        addresses = [a for a, d in self._tracked_traders.items() if d.get("active", True)]
+        ranked = sorted(
+            (d for d in self._tracked_traders.values() if d.get("active", True)),
+            key=lambda t: (
+                float(t.get("score", 0) or 0),
+                float(t.get("acct_val", t.get("accountValue", 0)) or 0),
+                str(t.get("eth", "")),
+            ),
+            reverse=True,
+        )
+        addresses = [str(item.get("eth", "")).lower() for item in ranked if item.get("eth")]
         return addresses[:limit]
 
     async def upsert_trader_current_state(

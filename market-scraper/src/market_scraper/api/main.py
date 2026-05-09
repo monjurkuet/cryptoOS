@@ -48,7 +48,8 @@ async def lifespan(app: FastAPI):
     # This is independent of the asyncio event loop and always responds,
     # even when the main loop is blocked by heavy MongoDB writes or WS processing.
     # Caddy routes /health/live to this port for reliable health checks.
-    health_server = ThreadHealthServer(host="127.0.0.1", port=3846)
+    health_port = int(os.environ.get("MARKET_SCRAPER_LIVENESS_PORT", "3846"))
+    health_server = ThreadHealthServer(host="127.0.0.1", port=health_port)
     health_server.start()
 
     # Start systemd watchdog heartbeat to prevent WatchdogSec kills

@@ -70,6 +70,7 @@ def build_runtime(
     parameter_ranges = _parameter_ranges(runtime_config)
     defaults = runtime_config.parameters.defaults
     processor_cfg = runtime_config.signal_processor
+    weighting_engine = TraderWeightingEngine(config=_build_weighting_config(runtime_config))
 
     signal_processor = SignalGenerationProcessor(
         symbol=processor_cfg.symbol,
@@ -81,13 +82,13 @@ def build_runtime(
         emit_bias_delta=processor_cfg.emit_bias_delta,
         decision_trace_buffer_size=processor_cfg.decision_trace_buffer_size,
         parameter_ranges=parameter_ranges,
+        weighting_engine=weighting_engine,
     )
     signal_store = SignalStore(
         mongo_client=mongo_client,
         database_name=resolved_settings.mongo.database,
         retention_days=runtime_config.dashboard_retention_days,
     )
-    weighting_engine = TraderWeightingEngine(config=_build_weighting_config(runtime_config))
     whale_alert_cfg = runtime_config.whale_alerts
     whale_detector = WhaleAlertDetector(
         alpha_whale_threshold=whale_alert_cfg.alpha_whale_threshold,

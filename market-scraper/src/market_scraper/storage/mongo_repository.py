@@ -1355,7 +1355,11 @@ class MongoRepository(DataRepository):
             if tag:
                 query["tags"] = tag
 
-            cursor = collection.find(query, projection).sort("score", -1).limit(limit)
+            cursor = (
+                collection.find(query, projection, max_time_ms=3000)
+                .sort("score", -1)
+                .limit(limit)
+            )
             docs = await cursor.to_list(length=limit)
 
             traders = []
@@ -1403,7 +1407,7 @@ class MongoRepository(DataRepository):
             if tag:
                 query["tags"] = tag
 
-            return await collection.count_documents(query)
+            return await collection.count_documents(query, maxTimeMS=3000)
         except Exception as e:
             raise StorageError(f"Failed to count tracked traders: {e}") from e
 
@@ -1424,12 +1428,12 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRACKED_TRADERS]
-            doc = await collection.find_one({"eth": address})
+            doc = await collection.find_one({"eth": address}, max_time_ms=2000)
             if doc:
                 doc.pop("_id", None)
                 return doc
             # Try alternate field name
-            doc = await collection.find_one({"address": address})
+            doc = await collection.find_one({"address": address}, max_time_ms=2000)
             if doc:
                 doc.pop("_id", None)
             return doc
@@ -1463,10 +1467,10 @@ class MongoRepository(DataRepository):
                 "updated_at": 1,
                 "last_event_time": 1,
             }
-            doc = await collection.find_one({"eth": address}, projection)
+            doc = await collection.find_one({"eth": address}, projection, max_time_ms=2000)
             if not doc:
                 # Backward-compatible fallback for legacy field name.
-                doc = await collection.find_one({"ethAddress": address}, projection)
+                doc = await collection.find_one({"ethAddress": address}, projection, max_time_ms=2000)
             return doc
         except Exception as e:
             raise StorageError(f"Failed to get trader current state: {e}") from e
@@ -1507,7 +1511,7 @@ class MongoRepository(DataRepository):
                 "eth": {"$in": normalized_addresses},
             }
             primary_limit = max(50, len(normalized_addresses) * 2)
-            primary_cursor = collection.find(primary_query, projection).sort(
+            primary_cursor = collection.find(primary_query, projection, max_time_ms=3000).sort(
                 [
                     ("updated_at", -1),
                     ("last_event_time", -1),
@@ -1530,7 +1534,7 @@ class MongoRepository(DataRepository):
                         "ethAddress": {"$in": missing_addresses},
                     }
                     legacy_limit = max(50, len(missing_addresses) * 2)
-                    legacy_cursor = collection.find(legacy_query, projection).sort(
+                    legacy_cursor = collection.find(legacy_query, projection, max_time_ms=3000).sort(
                         [
                             ("updated_at", -1),
                             ("last_event_time", -1),
@@ -1699,7 +1703,11 @@ class MongoRepository(DataRepository):
 
         try:
             collection = self._db[CollectionName.TRACKED_TRADERS]
-            cursor = collection.find({"active": True}, {"eth": 1, "_id": 0}).limit(limit)
+            cursor = (
+                collection.find({"active": True}, {"eth": 1, "_id": 0, "score": 1, "acct_val": 1})
+                .sort([("score", -1), ("acct_val", -1), ("eth", 1)])
+                .limit(limit)
+            )
             docs = await cursor.to_list(length=limit)
             return [str(d.get("eth", "")).lower() for d in docs if d.get("eth")]
         except Exception as e:

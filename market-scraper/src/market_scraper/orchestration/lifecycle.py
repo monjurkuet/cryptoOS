@@ -111,6 +111,8 @@ class LifecycleManager:
         self._ws_sync_task: asyncio.Task | None = None  # Background WS collector startup
         self._signal_gen_task: asyncio.Task | None = None  # Batched signal generation loop
         self._raw_event_allowlist: set[str] = set(_RAW_EVENT_ALLOWLIST)
+        self._sync_trader_ws_fn: Any | None = None
+        self._trader_ws_rotation_offset: int = 0
 
     @property
     def is_ready(self) -> bool:
@@ -570,6 +572,9 @@ class LifecycleManager:
                 if event.event_type == "ohlcv":
                     asyncio.create_task(self._store_ohlcv_candle(event))
 
+                if event.event_type == "trader_positions":
+                    asyncio.create_task(self._store_trader_positions_state(event))
+
             except Exception as e:
                 logger.error(
                     "storage_handler_error",
@@ -815,6 +820,12 @@ class LifecycleManager:
             "position_models": position_models,
         }
 
+        # Memory/local repositories do not support batch upserts; persist eagerly
+        # so API reads and tests observe position updates immediately.
+        if not hasattr(self._repository, "bulk_upsert_trader_states"):
+            await self._store_trader_positions_state_single(buffer_item)
+            return
+
         async with self._position_buffer_lock:
             self._position_write_buffer.append(buffer_item)
             should_flush = len(self._position_write_buffer) >= self._position_buffer_max_size
@@ -1017,7 +1028,7 @@ class LifecycleManager:
             if event.event_type == "leaderboard":
                 result = await trader_scoring.process(event)
                 if result and self._event_bus:
-                    await self._event_bus.publish(result, local_only=True)
+                    await self._event_bus.publish(result)
 
         await self._event_bus.subscribe("leaderboard", trader_scoring_handler)
 
@@ -1115,6 +1126,7 @@ class LifecycleManager:
 
         # Load market configuration from YAML
         market_config = load_market_config()
+        ws_config = market_config.trader_ws
 
         # Create the collector
         self._trader_ws_collector = TraderWebSocketCollector(
@@ -1122,6 +1134,8 @@ class LifecycleManager:
             config=self._settings.hyperliquid,
             on_bootstrap_event=self._store_trader_positions_state,
             buffer_config=market_config.buffer,
+            max_clients=ws_config.max_clients,
+            subscriptions_per_client=ws_config.subscriptions_per_client,
         )
 
         async def sync_trader_ws_from_repository(reason: str) -> None:
@@ -1144,14 +1158,37 @@ class LifecycleManager:
                 logger.warning("trader_ws_sync_no_active_addresses", reason=reason)
                 return
 
+            # Keep WS subscriptions fixed-size and rotate through the active universe.
+            ws_capacity = self._trader_ws_collector.get_capacity()
+            ws_addresses = list(addresses)
+            if ws_capacity > 0 and len(addresses) > ws_capacity:
+                start = self._trader_ws_rotation_offset % len(addresses)
+                end = start + ws_capacity
+                ws_addresses = addresses[start:end]
+                if len(ws_addresses) < ws_capacity:
+                    ws_addresses.extend(addresses[: ws_capacity - len(ws_addresses)])
+                self._trader_ws_rotation_offset = (start + ws_capacity) % len(addresses)
+
             try:
                 if not self._trader_ws_collector.get_stats().get("running", False):
-                    logger.info("trader_ws_starting_from_sync", reason=reason, count=len(addresses))
-                    await self._trader_ws_collector.start(addresses)
+                    logger.info(
+                        "trader_ws_starting_from_sync",
+                        reason=reason,
+                        universe_count=len(addresses),
+                        ws_selected_count=len(ws_addresses),
+                    )
+                    await self._trader_ws_collector.start(ws_addresses)
                     return
 
-                result = await self._trader_ws_collector.sync_traders(addresses)
-                logger.info("trader_ws_synced", reason=reason, **result)
+                result = await self._trader_ws_collector.sync_traders(ws_addresses)
+                logger.info(
+                    "trader_ws_synced",
+                    reason=reason,
+                    universe_count=len(addresses),
+                    ws_selected_count=len(ws_addresses),
+                    rotation_offset=self._trader_ws_rotation_offset,
+                    **result,
+                )
             except Exception as e:
                 logger.error(
                     "trader_ws_sync_failed",
@@ -1159,6 +1196,8 @@ class LifecycleManager:
                     error=str(e),
                     exc_info=True,
                 )
+
+        self._sync_trader_ws_fn = sync_trader_ws_from_repository
 
         # Keep Trader WS subscriptions aligned with the latest leaderboard selection.
         async def leaderboard_sync_handler(event: StandardEvent) -> None:
@@ -1320,6 +1359,22 @@ class LifecycleManager:
                 "scheduler_task_registered",
                 task="memory_guardian",
                 interval=mem_config.interval_seconds,
+            )
+
+        # Trader WS rotation task - keeps WS capacity fixed while cycling the universe.
+        if "trader_ws_rotation" in tasks and tasks["trader_ws_rotation"].enabled:
+            ws_rotation_config = tasks["trader_ws_rotation"]
+            interval = timedelta(seconds=ws_rotation_config.interval_seconds)
+
+            async def rotate_trader_ws_tracking() -> None:
+                if self._sync_trader_ws_fn:
+                    await self._sync_trader_ws_fn("rotation_tick")
+
+            self._scheduler.schedule("trader_ws_rotation", interval, rotate_trader_ws_tracking)
+            logger.info(
+                "scheduler_task_registered",
+                task="trader_ws_rotation",
+                interval=ws_rotation_config.interval_seconds,
             )
 
         # Start the scheduler

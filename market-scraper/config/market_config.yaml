@@ -48,7 +48,7 @@ volume_tiers:
 # Filter Criteria - Traders must match ALL filters
 filters:
   min_score: 50              # Minimum score to be tracked (0-100+)
-  max_count: 50 # Maximum traders to track (reduced from 150 for VPS memory pressure - 10 WS clients instead of 20)
+  max_count: 200 # Active tracked universe size (WS coverage rotates across this set)
   min_account_value: 10000   # Minimum account value ($10K)
 
   # Optional: Require specific performance
@@ -56,6 +56,10 @@ filters:
     all_time: false          # Require positive all-time ROI
     month: false             # Require positive month ROI
     week: false              # Require positive week ROI
+
+  # Optional: Always include specific addresses in the tracked universe
+  include:
+    addresses: []            # List of addresses to force-include
 
   # Optional: Exclude traders
   exclude:
@@ -138,6 +142,15 @@ buffer:
   # Maximum milliseconds to wait before flushing broadcast batch
   broadcast_batch_timeout_ms: 10.0
 
+# Trader WS Tracking Strategy
+trader_ws:
+  # Keep WS fanout fixed for stability: no more than 5 clients.
+  max_clients: 5
+  # Hyperliquid webData2 limit is 10 users per WS connection.
+  subscriptions_per_client: 10
+  # Rotate which traders are live-tracked over WS through the full active universe.
+  rotation_interval_seconds: 900
+
 # Candle Backfill Configuration
 # Fetches historical OHLCV data on startup instead of real-time WebSocket storage
 candle_backfill:
@@ -170,7 +183,7 @@ candle_backfill:
 # Scheduler Configuration
 # Controls periodic background tasks
 scheduler:
-  enabled: true
+  enabled: false
 
   # Periodic tasks configuration
   tasks:
@@ -199,15 +212,20 @@ scheduler:
       enabled: true
       interval_seconds: 300 # 5 minutes
 
+    # Rotate WS-tracked trader subset through the active tracked universe.
+    trader_ws_rotation:
+      enabled: true
+      interval_seconds: 900 # 15 minutes
+
     # Data archival - archive data before TTL deletion
     archival:
-      enabled: true  # Enabled - ARCHIVE_REPO_URL is set in .env
+      enabled: false  # Disabled for runtime stability on VPS
       interval_seconds: 2592000  # 30 days (monthly)
 
 # Data Archival Configuration
 # Archives data before TTL deletion for long-term storage
 archival:
-  enabled: true  # Enabled - ARCHIVE_REPO_URL is set in .env
+  enabled: false  # Disabled for runtime stability on VPS
 
   # Archive schedule (runs via scheduler)
   schedule: "monthly"  # daily, weekly, monthly

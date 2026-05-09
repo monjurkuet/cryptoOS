@@ -1,6 +1,7 @@
 """Event Subscriber for market-scraper events."""
 
 import asyncio
+from datetime import datetime, timezone
 import inspect
 import json
 from typing import Any, Callable
@@ -32,9 +33,16 @@ class EventSubscriber:
         self._running = False
         self._handlers: dict[str, list[Callable]] = {}
         self._message_count = 0
+        self._channel_counts: dict[str, int] = {}
+        self._last_message_at: str | None = None
+        self._last_payload_timestamp: str | None = None
+        self._last_payload_lag_ms: float | None = None
+        self._connect_attempts = 0
+        self._last_error: str | None = None
 
     async def connect(self) -> None:
         """Connect to Redis."""
+        self._connect_attempts += 1
         self._redis = redis.from_url(self.settings.url)
         self._pubsub = self._redis.pubsub()
         logger.info("redis_connected", url=self.settings.url)
@@ -100,6 +108,7 @@ class EventSubscriber:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                self._last_error = str(e)
                 logger.error("listen_error", error=str(e), exc_info=True)
                 await asyncio.sleep(1.0)
 
@@ -119,6 +128,19 @@ class EventSubscriber:
             event_type = channel.split(":")[-1]
 
             self._message_count += 1
+            self._channel_counts[event_type] = self._channel_counts.get(event_type, 0) + 1
+            self._last_message_at = datetime.now(timezone.utc).isoformat()
+            self._last_error = None
+            payload_timestamp = data.get("timestamp") if isinstance(data, dict) else None
+            if isinstance(payload_timestamp, str):
+                try:
+                    parsed_ts = datetime.fromisoformat(payload_timestamp.replace("Z", "+00:00"))
+                    self._last_payload_timestamp = parsed_ts.isoformat()
+                    lag = datetime.now(timezone.utc) - parsed_ts.astimezone(timezone.utc)
+                    self._last_payload_lag_ms = round(lag.total_seconds() * 1000, 2)
+                except ValueError:
+                    self._last_payload_timestamp = payload_timestamp
+                    self._last_payload_lag_ms = None
 
             # Call handlers
             handlers = self._handlers.get(event_type, [])
@@ -129,6 +151,7 @@ class EventSubscriber:
                     else:
                         handler(data)
                 except Exception as e:
+                    self._last_error = str(e)
                     logger.error(
                         "handler_error",
                         event_type=event_type,
@@ -137,8 +160,10 @@ class EventSubscriber:
                     )
 
         except json.JSONDecodeError as e:
+            self._last_error = str(e)
             logger.warning("invalid_json", error=str(e))
         except Exception as e:
+            self._last_error = str(e)
             logger.error("process_error", error=str(e), exc_info=True)
 
     def get_stats(self) -> dict[str, Any]:
@@ -151,4 +176,10 @@ class EventSubscriber:
             "running": self._running,
             "message_count": self._message_count,
             "subscribed_events": list(self._handlers.keys()),
+            "channel_counts": dict(self._channel_counts),
+            "last_message_at": self._last_message_at,
+            "last_payload_timestamp": self._last_payload_timestamp,
+            "last_payload_lag_ms": self._last_payload_lag_ms,
+            "connect_attempts": self._connect_attempts,
+            "last_error": self._last_error,
         }

@@ -228,6 +228,7 @@ class LeaderboardCollector:
             scored.append(
                 {
                     "eth": trader.get("ethAddress", ""),
+                    "address": trader.get("ethAddress", ""),
                     "name": trader.get("displayName"),
                     "score": score,
                     "acct_val": float(trader.get("accountValue", 0)),
@@ -368,36 +369,72 @@ class LeaderboardCollector:
             Filtered list of traders
         """
         filters = self._market_config.filters
+        min_score = float(filters.min_score or 0)
+        min_account_value = float(filters.min_account_value or 0)
+        max_count = int(filters.max_count or 0)
+        whale_threshold = float(self._market_config.tags.whale.get("threshold", 10_000_000))
+        include_addresses = {
+            str(address).lower()
+            for address in filters.include.get("addresses", [])
+            if address
+        }
+        exclude_addresses = {
+            str(address).lower()
+            for address in filters.exclude.get("addresses", [])
+            if address
+        }
+        exclude_tags = {str(tag).lower() for tag in filters.exclude.get("tags", []) if tag}
+        require_positive = filters.require_positive or {}
 
-        # Filter by min_score
-        filtered = [t for t in scored if t["score"] >= filters.min_score]
+        candidates: list[dict[str, Any]] = []
+        for trader in scored:
+            address = str(trader.get("eth", "")).lower()
+            if not address:
+                continue
+            if address in exclude_addresses:
+                continue
+            if float(trader.get("acct_val", 0) or 0) < min_account_value:
+                continue
+            trader_tags = [str(tag).lower() for tag in trader.get("tags", [])]
+            if exclude_tags and any(tag in exclude_tags for tag in trader_tags):
+                continue
 
-        # Filter by min_account_value
-        filtered = [t for t in filtered if t["acct_val"] >= filters.min_account_value]
-
-        # Apply require_positive filters
-        require_positive = filters.require_positive
-        if require_positive:
+            performances = trader.get("performances", {})
+            positive_ok = True
             for timeframe, required in require_positive.items():
-                if required:
-                    filtered = [
-                        t
-                        for t in filtered
-                        if t.get("performances", {}).get(timeframe, {}).get("roi", 0) > 0
-                    ]
+                if required and performances.get(timeframe, {}).get("roi", 0) <= 0:
+                    positive_ok = False
+                    break
 
-        # Apply exclude list
-        exclude_addresses = set(filters.exclude.get("addresses", []))
-        exclude_tags = set(filters.exclude.get("tags", []))
-        if exclude_addresses:
-            filtered = [t for t in filtered if t["eth"] not in exclude_addresses]
-        if exclude_tags:
-            filtered = [
-                t for t in filtered if not any(tag in exclude_tags for tag in t.get("tags", []))
-            ]
+            reasons: list[str] = []
+            if positive_ok and float(trader.get("score", 0) or 0) >= min_score:
+                reasons.append("score_threshold")
+            if float(trader.get("acct_val", 0) or 0) >= whale_threshold:
+                reasons.append("whale_threshold")
+            if address in include_addresses:
+                reasons.append("manual_include")
 
-        # Limit to max_count
-        return filtered[: filters.max_count]
+            if not reasons:
+                continue
+
+            candidate = dict(trader)
+            candidate["address"] = address
+            candidate["tracked_reason"] = reasons
+            candidates.append(candidate)
+
+        candidates.sort(
+            key=lambda t: (
+                1 if "manual_include" in t.get("tracked_reason", []) else 0,
+                1 if "whale_threshold" in t.get("tracked_reason", []) else 0,
+                float(t.get("acct_val", 0) or 0),
+                float(t.get("score", 0) or 0),
+            ),
+            reverse=True,
+        )
+
+        if max_count > 0:
+            return candidates[:max_count]
+        return candidates
 
     async def _store_derived_data(
         self,

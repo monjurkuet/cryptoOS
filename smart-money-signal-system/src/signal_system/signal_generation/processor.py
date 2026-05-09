@@ -3,11 +3,14 @@
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from signal_system.utils.safe_convert import safe_float
+from signal_system.utils.safe_convert import safe_datetime, safe_float
+
+if TYPE_CHECKING:
+    from signal_system.weighting_engine.engine import TraderWeightingEngine
 
 logger = structlog.get_logger(__name__)
 
@@ -46,6 +49,7 @@ class SignalGenerationProcessor:
         emit_bias_delta: float = 0.1,
         decision_trace_buffer_size: int = 1000,
         parameter_ranges: dict[str, tuple[float, float]] | None = None,
+        weighting_engine: "TraderWeightingEngine | None" = None,
     ) -> None:
         """Initialize the processor.
 
@@ -71,12 +75,14 @@ class SignalGenerationProcessor:
         # State with TTL tracking: address -> (data, last_access_time)
         self._trader_positions: dict[str, tuple[dict, float]] = {}
         self._trader_scores: dict[str, float] = {}
+        self._trader_metadata: dict[str, dict[str, Any]] = {}
         self._last_signal: dict | None = None
         self._last_decision_trace: dict[str, Any] | None = None
         self._decision_traces: deque[dict[str, Any]] = deque(
             maxlen=max(100, decision_trace_buffer_size)
         )
         self._signals_generated = 0
+        self._weighting_engine = weighting_engine
 
     async def process_position(self, event: dict) -> dict | None:
         """Process trader position event.
@@ -116,6 +122,15 @@ class SignalGenerationProcessor:
             score = trader.get("score", 50)
             if address:
                 self._trader_scores[address] = score
+                self._trader_metadata[address] = {
+                    "account_value": safe_float(
+                        trader.get("accountValue", trader.get("account_value", 0)),
+                        0,
+                    ),
+                    "tags": trader.get("tags", []),
+                    "performances": trader.get("performances", {}),
+                    "tracked_reason": trader.get("tracked_reason", []),
+                }
 
     def _cleanup_stale_traders(self) -> None:
         """Remove traders that haven't been updated recently.
@@ -135,6 +150,7 @@ class SignalGenerationProcessor:
             del self._trader_positions[addr]
             # Also remove scores for stale traders
             self._trader_scores.pop(addr, None)
+            self._trader_metadata.pop(addr, None)
 
         if stale_addresses:
             logger.debug(
@@ -152,6 +168,46 @@ class SignalGenerationProcessor:
             for addr, _ in sorted_items[:len(self._trader_positions) - self._max_traders]:
                 del self._trader_positions[addr]
                 self._trader_scores.pop(addr, None)
+                self._trader_metadata.pop(addr, None)
+
+    def _build_performance_metrics(self, address: str, score: float) -> dict[str, float]:
+        """Build weighting metrics with score-driven fallback when advanced stats are absent."""
+        metadata = self._trader_metadata.get(address, {})
+        performances = metadata.get("performances", {})
+        if not isinstance(performances, dict):
+            performances = {}
+        day = performances.get("day", {}) if isinstance(performances.get("day"), dict) else {}
+        week = performances.get("week", {}) if isinstance(performances.get("week"), dict) else {}
+        month = performances.get("month", {}) if isinstance(performances.get("month"), dict) else {}
+        all_time = (
+            performances.get("allTime", {})
+            if isinstance(performances.get("allTime"), dict)
+            else {}
+        )
+
+        # Score fallback: 0..100 maps to 0..1 for consistency and 0..3 for Sharpe-like proxy.
+        score_norm = min(max(safe_float(score, 50) / 100.0, 0.0), 1.0)
+        month_roi = safe_float(month.get("roi"), 0.0)
+        week_roi = safe_float(week.get("roi"), 0.0)
+        day_roi = safe_float(day.get("roi"), 0.0)
+        all_time_roi = safe_float(all_time.get("roi"), 0.0)
+
+        positive_windows = sum(1 for value in (day_roi, week_roi, month_roi, all_time_roi) if value > 0)
+        consistency = max(score_norm, positive_windows / 4.0)
+        win_rate = min(max(0.5 + (month_roi * 0.5), 0.05), 0.95)
+        sharpe_proxy = min(max(score_norm * 3.0, 0.0), 3.0)
+        sortino_proxy = min(max(score_norm * 4.0, 0.0), 4.0)
+        drawdown_proxy = min(max(abs(min(day_roi, week_roi, month_roi, all_time_roi)), 0.0), 1.0)
+        profit_factor = min(max(1.0 + score_norm * 2.0, 0.5), 3.0)
+
+        return {
+            "sharpe_ratio": sharpe_proxy,
+            "sortino_ratio": sortino_proxy,
+            "consistency": consistency,
+            "max_drawdown": drawdown_proxy,
+            "win_rate": win_rate,
+            "profit_factor": profit_factor,
+        }
 
     def _generate_signal(self) -> dict | None:
         """Generate aggregated signal.
@@ -170,7 +226,22 @@ class SignalGenerationProcessor:
 
         for address, (position, _) in self._trader_positions.items():
             score = self._trader_scores.get(address, 50)
-            weight = score / 100
+            metadata = self._trader_metadata.get(address, {})
+            account_value = safe_float(metadata.get("account_value"), 0)
+            last_trade_at = safe_datetime(position.get("timestamp"))
+            performance_metrics = self._build_performance_metrics(address, score)
+
+            if self._weighting_engine is not None:
+                weight_snapshot = self._weighting_engine.calculate_weight(
+                    address=address,
+                    performance_metrics=performance_metrics,
+                    account_value=account_value,
+                    last_trade_at=last_trade_at,
+                    regime_alignment=1.0,
+                )
+                weight = max(weight_snapshot.composite_weight, 0.01)
+            else:
+                weight = max(score / 100, 0.01)
 
             # Get BTC position
             positions = position.get("positions", [])
@@ -343,6 +414,7 @@ class SignalGenerationProcessor:
             "signals_generated": self._signals_generated,
             "tracked_traders": len(self._trader_positions),
             "scored_traders": len(self._trader_scores),
+            "scored_metadata": len(self._trader_metadata),
             "decision_traces": len(self._decision_traces),
             "rl_params": {
                 "bias_threshold": self._bias_threshold,

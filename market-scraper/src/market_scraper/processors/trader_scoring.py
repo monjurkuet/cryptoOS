@@ -16,12 +16,7 @@ from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
 from market_scraper.processors.base import Processor
-from market_scraper.utils.hyperliquid import (
-    extract_roi,
-    extract_volume,
-    is_positive_roi,
-    parse_window_performances,
-)
+from market_scraper.utils.hyperliquid import extract_roi, extract_volume, is_positive_roi, parse_window_performances
 
 logger = structlog.get_logger(__name__)
 
@@ -208,22 +203,54 @@ class TraderScoringProcessor(Processor):
         scored_traders = []
 
         for trader in traders:
-            score = calculate_trader_score(trader)
+            # Support both raw leaderboard rows and pre-scored collector rows.
+            has_precomputed_score = trader.get("score") is not None
+            precomputed_performances = trader.get("performances")
+            raw_window_performances = trader.get("windowPerformances")
 
-            if score >= self._min_score:
-                address = trader.get("ethAddress", "")
+            if has_precomputed_score and not raw_window_performances:
+                score = float(trader.get("score", 0) or 0)
+            else:
+                score = calculate_trader_score(trader)
+
+            address = (
+                trader.get("address")
+                or trader.get("eth")
+                or trader.get("ethAddress")
+                or ""
+            )
+            address = str(address).lower()
+            if not address:
+                continue
+
+            tracked_reason = trader.get("tracked_reason")
+            is_preselected = isinstance(tracked_reason, list) and len(tracked_reason) > 0
+            if not is_preselected and score < self._min_score:
+                continue
+
+            if trader.get("tags"):
+                tags = [str(tag) for tag in trader.get("tags", [])]
+            else:
                 tags = get_trader_tags(trader, score, self._tags_config)
 
-                scored_traders.append(
-                    {
-                        "address": address,
-                        "displayName": trader.get("displayName"),
-                        "accountValue": float(trader.get("accountValue", 0)),
-                        "score": score,
-                        "tags": tags,
-                        "windowPerformances": trader.get("windowPerformances", []),
-                    }
-                )
+            if isinstance(precomputed_performances, dict):
+                performances = precomputed_performances
+            else:
+                performances = parse_window_performances(raw_window_performances or [])
+
+            scored_traders.append(
+                {
+                    "address": address,
+                    "displayName": trader.get("displayName") or trader.get("name"),
+                    "accountValue": float(
+                        trader.get("accountValue", trader.get("acct_val", 0)) or 0
+                    ),
+                    "score": round(score, 2),
+                    "tags": tags,
+                    "performances": performances,
+                    "tracked_reason": tracked_reason if isinstance(tracked_reason, list) else [],
+                }
+            )
 
         # Sort by score descending
         scored_traders.sort(key=lambda x: x["score"], reverse=True)

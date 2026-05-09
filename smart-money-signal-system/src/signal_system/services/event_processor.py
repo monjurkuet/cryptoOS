@@ -196,6 +196,33 @@ class EventProcessor:
             event: Event containing trader scores
         """
         try:
+            payload = event.get("payload", {})
+            traders = payload.get("traders", [])
+            for trader in traders:
+                address = str(trader.get("address", "")).lower()
+                if not address:
+                    continue
+                account_value = safe_float(
+                    trader.get("accountValue", trader.get("account_value", 0)),
+                    0,
+                )
+                tags = [str(tag).lower() for tag in trader.get("tags", [])]
+                if account_value >= 20_000_000 or "alpha_whale" in tags:
+                    tier = "alpha_whale"
+                elif account_value >= 10_000_000 or "whale" in tags:
+                    tier = "whale"
+                elif account_value >= 5_000_000 or "large" in tags:
+                    tier = "large"
+                elif account_value >= 1_000_000:
+                    tier = "medium"
+                else:
+                    tier = "standard"
+                self._whale_detector.update_trader_info(
+                    address=address,
+                    name=trader.get("displayName"),
+                    tier=tier,
+                    account_value=account_value,
+                )
             await self._signal_processor.process_scored_traders(event)
             logger.debug("scored_traders_processed")
         except Exception as e:

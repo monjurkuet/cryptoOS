@@ -84,13 +84,26 @@ class TraderWeightingEngine:
         recency_weight = self._calc_recency_weight(last_trade_at)
         regime_weight = self._calc_regime_weight(regime_alignment)
 
-        # Combine dimensions
-        composite = (
-            perf_weight * self.config.performance_dimension_weight
-            + size_weight * self.config.size_dimension_weight
-            + recency_weight * self.config.recency_dimension_weight
-            + regime_weight * self.config.regime_dimension_weight
+        # Combine dimensions with availability-aware normalization.
+        # Performance metrics are often sparse in live feeds; when missing, do not
+        # silently allocate 40% weight to zero. Re-normalize active dimensions.
+        performance_available = bool(performance_metrics) and any(
+            abs(float(value or 0)) > 0 for value in performance_metrics.values()
         )
+        dimensions = [
+            (perf_weight, self.config.performance_dimension_weight, performance_available),
+            (size_weight, self.config.size_dimension_weight, True),
+            (recency_weight, self.config.recency_dimension_weight, True),
+            (regime_weight, self.config.regime_dimension_weight, True),
+        ]
+        active_weight_sum = sum(weight for _, weight, enabled in dimensions if enabled)
+        if active_weight_sum <= 0:
+            composite = 0.0
+        else:
+            composite = (
+                sum(value * weight for value, weight, enabled in dimensions if enabled)
+                / active_weight_sum
+            )
 
         # Determine tier
         tier = self._determine_tier(account_value)

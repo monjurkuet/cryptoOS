@@ -60,6 +60,7 @@ class FilterConfig(BaseModel):
     max_count: int = 200
     min_account_value: float = 10000
     require_positive: dict[str, bool] = Field(default_factory=dict)
+    include: dict[str, list[str]] = Field(default_factory=dict)
     exclude: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -146,6 +147,17 @@ class BufferConfig(BaseModel):
     )
 
 
+class TraderWsConfig(BaseModel):
+    """Trader WebSocket tracking configuration."""
+
+    # Hard-cap the number of websocket clients to keep system stable.
+    max_clients: int = Field(default=5, ge=1, le=30)
+    # Hyperliquid webData2 allows max 10 users/connection; keep this fixed.
+    subscriptions_per_client: int = Field(default=10, ge=1, le=10)
+    # Rotate the tracked WS subset through the active universe at this interval.
+    rotation_interval_seconds: int = Field(default=900, ge=60, le=86400)
+
+
 class CandleBackfillConfig(BaseModel):
     """Candle backfill configuration.
 
@@ -216,6 +228,7 @@ class MarketConfig(BaseModel):
     position_inference: PositionInferenceConfig = Field(default_factory=PositionInferenceConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     buffer: BufferConfig = Field(default_factory=BufferConfig)
+    trader_ws: TraderWsConfig = Field(default_factory=TraderWsConfig)
     candle_backfill: CandleBackfillConfig = Field(default_factory=CandleBackfillConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 

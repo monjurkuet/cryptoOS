@@ -91,6 +91,8 @@ class TraderWebSocketCollector:
         on_trader_data: Callable[[dict[str, Any]], None] | None = None,
         on_bootstrap_event: Callable[[StandardEvent], Any] | None = None,
         buffer_config: BufferConfig | None = None,
+        max_clients: int = 5,
+        subscriptions_per_client: int = HL_SUBSCRIPTIONS_PER_CONNECTION,
     ) -> None:
         """Initialize the trader WebSocket collector.
 
@@ -110,8 +112,9 @@ class TraderWebSocketCollector:
         # Connection management
         self._clients: list[TraderWSClient] = []
         self._num_clients = 0  # Dynamically computed from trader count (see start())
-        self._batch_size = HL_SUBSCRIPTIONS_PER_CONNECTION
-        self._max_clients = 30  # Safety cap to prevent unbounded WS connections
+        self._batch_size = max(1, min(int(subscriptions_per_client), HL_SUBSCRIPTIONS_PER_CONNECTION))
+        # Keep a hard cap on WS clients for system stability.
+        self._max_clients = max(1, min(int(max_clients), 30))
 
         # State
         self._running = False
@@ -156,6 +159,10 @@ class TraderWebSocketCollector:
         # hundreds per second and block the event loop with synchronous I/O.
         self._error_channel_count = 0
         self._error_channel_last_log: float = 0.0  # monotonic timestamp
+        self._position_max_interval = max(
+            1.0,
+            float(getattr(config, "position_max_interval", 300) or 300),
+        )
 
     async def start(self, traders: list[str] | None = None) -> None:
         """Start the collector with specified traders.
@@ -174,6 +181,8 @@ class TraderWebSocketCollector:
             "trader_ws_starting",
             num_traders=len(self._tracked_traders),
             num_clients=self._num_clients,
+            max_clients=self._max_clients,
+            subscriptions_per_client=self._batch_size,
             symbol=self.config.symbol,
             flush_interval=self._flush_interval,
             buffer_max_size=self._buffer_max_size,
@@ -453,7 +462,7 @@ class TraderWebSocketCollector:
                             )
 
                 await asyncio.gather(*(handle_direct(event) for event in events))
-                await self.event_bus.publish_bulk(events, local_only=True)
+                await self.event_bus.publish_bulk(events)
                 logger.info("trader_ws_bootstrap_published", events=len(events), errors=total_errors)
         else:
             logger.info("trader_ws_bootstrap_no_events", errors=total_errors)
@@ -806,9 +815,11 @@ class TraderWebSocketCollector:
 
         # Compute SHA-256 hash once for both comparison and storage
         current_hash = hashlib.sha256(
-            (current_normalized + current_open_orders).encode()  # margin excluded — PnL changes every tick
+            (current_normalized + current_open_orders + current_margin_summary).encode()
         ).hexdigest()
         last_hash = last_saved.get("hash", "")
+        now = time.time()
+        last_timestamp = float(last_saved.get("timestamp", 0) or 0)
 
         computed = {
             "hash": current_hash,
@@ -817,10 +828,8 @@ class TraderWebSocketCollector:
             "margin_summary": current_margin_summary,
         }
 
-        # Removed forced re-save: signal generation maintains its own state with TTL.
-    # Periodic resave only needed for bootstrap/MongoDB storage path.
-    # if time_since_save >= self._position_max_interval:
-    #     return True, computed
+        if last_timestamp and (now - last_timestamp) >= self._position_max_interval:
+            return True, computed
 
         if last_hash != current_hash:
             return True, computed
@@ -928,76 +937,90 @@ class TraderWebSocketCollector:
 
             # Offload CPU-heavy normalization to thread pool in sub-chunks
             NORM_CHUNK = 50
-            t_hash_start = time.monotonic()
             for norm_start in range(0, len(webdata_msgs), NORM_CHUNK):
                 norm_chunk = webdata_msgs[norm_start : norm_start + NORM_CHUNK]
-            norm_items = []
-            for msg in norm_chunk:
-                data = msg.get("data", {})
-                # Safety guard: skip messages where data is not a dict (e.g. error channel)
-                if not isinstance(data, dict):
+                t_hash_start = time.monotonic()
+                norm_items = []
+                for msg in norm_chunk:
+                    data = msg.get("data", {})
+                    extracted = self._extract_symbol_state(data)
+                    if not extracted:
+                        continue
+                    address, symbol_positions, symbol_open_orders, margin_summary = extracted
+
+                    # Phase 2A: quick hash dedup over symbol-specific state.
+                    # Include mark/liq/margin fields so price and risk changes still emit updates.
+                    _qh_data = {
+                        "sp": [
+                            {
+                                "coin": p.get("position", {}).get("coin"),
+                                "szi": p.get("position", {}).get("szi"),
+                                "entryPx": p.get("position", {}).get("entryPx"),
+                                "markPx": p.get("position", {}).get("markPx"),
+                                "unrealizedPnl": p.get("position", {}).get("unrealizedPnl"),
+                                "liquidationPx": p.get("position", {}).get("liquidationPx"),
+                                "leverage": p.get("position", {}).get("leverage"),
+                            }
+                            for p in symbol_positions
+                        ],
+                        "oo": [
+                            {
+                                "coin": o.get("coin"),
+                                "side": o.get("side"),
+                                "origSz": o.get("origSz"),
+                                "sz": o.get("sz"),
+                                "limitPx": o.get("limitPx"),
+                            }
+                            for o in symbol_open_orders
+                        ],
+                        "ms": margin_summary,
+                    }
+                    quick_hash = hashlib.sha256(
+                        json.dumps(_qh_data, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest()
+                    if quick_hash == self._quick_hashes.get(address):
+                        self._positions_skipped += 1
+                        self._quick_hash_skips += 1
+                        continue
+
+                    norm_items.append(
+                        (address, symbol_positions, symbol_open_orders, margin_summary, quick_hash)
+                    )
+
+                t_hash_ms += (time.monotonic() - t_hash_start) * 1000
+
+                if not norm_items:
+                    await asyncio.sleep(0)
                     continue
-                address = str(data.get("user", "")).lower()
 
-                # Extract symbol-specific fields BEFORE hash for effective dedup
-                clearinghouse = data.get("clearinghouseState", {})
-                positions = clearinghouse.get("assetPositions", [])
-                open_orders = data.get("openOrders", [])
-                margin_summary = clearinghouse.get("marginSummary", {})
-                if not isinstance(positions, list):
-                    positions = []
-                active_positions = [p for p in positions if float(p.get("position", {}).get("szi", 0)) != 0]
-                symbol_positions = [p for p in active_positions if p.get("position", {}).get("coin") == self.config.symbol]
-                symbol_open_orders = self._filter_symbol_open_orders(open_orders)
-                if not isinstance(margin_summary, dict):
-                    margin_summary = {}
-
-                # Phase 2A: Quick hash dedup— hash only symbol-specific data.
-                # Full account state changes frequently (other positions, PnL ticks)
-                # even when the tracked symbol's position is unchanged.
-                # Only hash position state + order details (not margin/PnL which change every tick)
-                _qh_data = {
-                    "sp": [{"coin": p.get("position", {}).get("coin"),
-                            "szi": p.get("position", {}).get("szi"),
-                            "entryPx": p.get("position", {}).get("entryPx"),
-                            "leverage": p.get("position", {}).get("leverage")}
-                           for p in symbol_positions],
-                    "oo": [{"coin": o.get("coin"),
-                            "side": o.get("side"),
-                            "origSz": o.get("origSz"),
-                            "limitPx": o.get("limitPx")}
-                           for o in symbol_open_orders],
-                }
-                quick_hash = hashlib.sha256(
-                    json.dumps(_qh_data, sort_keys=True).encode()
-                ).hexdigest()
-                if quick_hash == self._quick_hashes.get(address):
-                    self._positions_skipped += 1
-                    self._quick_hash_skips += 1
-                    continue
-
-                norm_items.append((address, symbol_positions, symbol_open_orders, margin_summary, quick_hash))
-
-            t_hash_ms += (time.monotonic() - t_hash_start) * 1000
-            t_norm_start = time.monotonic()
-
-            # Run CPU-bound normalization in thread pool
-            raw_items = [(sp, so, ms) for _, sp, so, ms, _ in norm_items]
-            normalized_results = await asyncio.get_running_loop().run_in_executor(
-                self._executor, self._normalize_batch, raw_items
-            )
-            t_norm_ms += (time.monotonic() - t_norm_start) * 1000
-            t_pub_start = time.monotonic()
-
-            # Now do the async-side comparison and event creation with pre-computed norms
-            for (address, symbol_positions, symbol_open_orders, margin_summary, quick_hash), (norm_pos, norm_ords, norm_margin) in zip(norm_items, normalized_results):
-                event = self._create_trader_positions_event_normalized(
-                    address, symbol_positions, symbol_open_orders, margin_summary,
-                    norm_pos, norm_ords, norm_margin, allow_empty=False,
+                t_norm_start = time.monotonic()
+                raw_items = [(sp, so, ms) for _, sp, so, ms, _ in norm_items]
+                normalized_results = await asyncio.get_running_loop().run_in_executor(
+                    self._executor, self._normalize_batch, raw_items
                 )
-                self._quick_hashes[address] = quick_hash
-                if event:
-                    events.append(event)
+                t_norm_ms += (time.monotonic() - t_norm_start) * 1000
+
+                # Now do the async-side comparison and event creation with pre-computed norms
+                for (
+                    address,
+                    symbol_positions,
+                    symbol_open_orders,
+                    margin_summary,
+                    quick_hash,
+                ), (norm_pos, norm_ords, norm_margin) in zip(norm_items, normalized_results):
+                    event = self._create_trader_positions_event_normalized(
+                        address,
+                        symbol_positions,
+                        symbol_open_orders,
+                        margin_summary,
+                        norm_pos,
+                        norm_ords,
+                        norm_margin,
+                        allow_empty=False,
+                    )
+                    self._quick_hashes[address] = quick_hash
+                    if event:
+                        events.append(event)
 
                 # Yield after each normalization sub-chunk
                 await asyncio.sleep(0)
@@ -1017,9 +1040,10 @@ class TraderWebSocketCollector:
         )
 
         # Publish events in chunks
+        t_pub_start = time.monotonic()
         for pub_start in range(0, len(events), CHUNK_SIZE):
             chunk_events = events[pub_start : pub_start + CHUNK_SIZE]
-            await self.event_bus.publish_bulk(chunk_events, local_only=True)
+            await self.event_bus.publish_bulk(chunk_events)
             await asyncio.sleep(0)
 
         t_pub_ms = (time.monotonic() - t_pub_start) * 1000
@@ -1062,6 +1086,52 @@ class TraderWebSocketCollector:
                 continue
             symbol_orders.append(order)
         return symbol_orders
+
+    def _extract_symbol_state(
+        self,
+        data: Any,
+    ) -> tuple[str, list[dict], list[dict], dict[str, Any]] | None:
+        """Extract normalized symbol-specific trader state from a webData2 payload."""
+        if not isinstance(data, dict):
+            return None
+
+        address = str(data.get("user", "")).lower()
+        if not address:
+            return None
+
+        clearinghouse = data.get("clearinghouseState", {})
+        if not isinstance(clearinghouse, dict):
+            clearinghouse = {}
+
+        positions = clearinghouse.get("assetPositions", [])
+        if not isinstance(positions, list):
+            positions = []
+
+        symbol_positions: list[dict] = []
+        symbol = str(self.config.symbol).upper()
+        for raw_position in positions:
+            if not isinstance(raw_position, dict):
+                continue
+            position = raw_position.get("position", {})
+            if not isinstance(position, dict):
+                continue
+            try:
+                size = float(position.get("szi", 0) or 0)
+            except (TypeError, ValueError):
+                size = 0.0
+            if size == 0:
+                continue
+            if str(position.get("coin", "")).upper() != symbol:
+                continue
+            symbol_positions.append(raw_position)
+
+        symbol_open_orders = self._filter_symbol_open_orders(data.get("openOrders", []))
+
+        margin_summary = clearinghouse.get("marginSummary", {})
+        if not isinstance(margin_summary, dict):
+            margin_summary = {}
+
+        return address, symbol_positions, symbol_open_orders, margin_summary
 
     def _create_trader_positions_event_normalized(
         self,
@@ -1124,9 +1194,11 @@ class TraderWebSocketCollector:
         last_saved = self._last_positions.get(address, {})
 
         current_hash = hashlib.sha256(
-            (norm_positions + norm_open_orders).encode()  # margin excluded — PnL changes every tick
+            (norm_positions + norm_open_orders + norm_margin).encode()
         ).hexdigest()
         last_hash = last_saved.get("hash", "")
+        now = time.time()
+        last_timestamp = float(last_saved.get("timestamp", 0) or 0)
 
         computed = {
             "hash": current_hash,
@@ -1135,15 +1207,35 @@ class TraderWebSocketCollector:
             "margin_summary": norm_margin,
         }
 
-        # Removed forced re-save: signal generation maintains its own state with TTL.
-    # Periodic resave only needed for bootstrap/MongoDB storage path.
-    # if time_since_save >= self._position_max_interval:
-    #     return True, computed
+        if last_timestamp and (now - last_timestamp) >= self._position_max_interval:
+            return True, computed
 
         if last_hash != current_hash:
             return True, computed
 
         return False, {}
+
+    def _process_webdata2(self, msg: dict[str, Any]) -> StandardEvent | None:
+        """Process a single webData2 message into a trader_positions event.
+
+        This method exists for unit-test compatibility and is also used by
+        low-volume code paths where one-off processing is needed.
+        """
+        if msg.get("channel") != "webData2":
+            return None
+
+        extracted = self._extract_symbol_state(msg.get("data", {}))
+        if not extracted:
+            return None
+
+        address, symbol_positions, symbol_open_orders, margin_summary = extracted
+        return self._create_trader_positions_event(
+            address=address,
+            symbol_positions=symbol_positions,
+            open_orders=symbol_open_orders,
+            margin_summary=margin_summary,
+            allow_empty=(address in self._last_positions),
+        )
 
     def _create_trader_positions_event(
         self,
@@ -1210,6 +1302,10 @@ class TraderWebSocketCollector:
             "error_channel_count": self._error_channel_count,
             "buffer_size": len(self._message_buffer),
         }
+
+    def get_capacity(self) -> int:
+        """Return fixed WS capacity (#clients * subscriptions per client)."""
+        return self._max_clients * self._batch_size
 
 class TraderWSClient:
     """Single WebSocket client for a batch of traders."""
