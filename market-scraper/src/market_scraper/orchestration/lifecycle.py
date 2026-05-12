@@ -108,6 +108,8 @@ class LifecycleManager:
         self._db_write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
         self._general_executor: ThreadPoolExecutor | None = None  # General pool for non-DB to_thread calls
         self._max_active_writes: int = 16  # Cap total concurrent write tasks
+        self._ohlcv_semaphore = asyncio.Semaphore(16)  # Limit concurrent ohlcv writes
+        self._trader_pos_semaphore = asyncio.Semaphore(16)  # Limit concurrent trader_positions writes
         self._ws_sync_task: asyncio.Task | None = None  # Background WS collector startup
         self._signal_gen_task: asyncio.Task | None = None  # Batched signal generation loop
         self._raw_event_allowlist: set[str] = set(_RAW_EVENT_ALLOWLIST)
@@ -570,10 +572,10 @@ class LifecycleManager:
                     asyncio.create_task(self._store_trading_signal(event))
 
                 if event.event_type == "ohlcv":
-                    asyncio.create_task(self._store_ohlcv_candle(event))
+                    asyncio.create_task(self._bounded_store_ohlcv(event))
 
                 if event.event_type == "trader_positions":
-                    asyncio.create_task(self._store_trader_positions_state(event))
+                    asyncio.create_task(self._bounded_store_trader_positions(event))
 
             except Exception as e:
                 logger.error(
@@ -692,6 +694,16 @@ class LifecycleManager:
                 reason="ohlcv_persistence_failed",
                 error=e,
             )
+
+    async def _bounded_store_ohlcv(self, event: StandardEvent) -> None:
+        """Semaphore-bounded wrapper for _store_ohlcv_candle."""
+        async with self._ohlcv_semaphore:
+            await self._store_ohlcv_candle(event)
+
+    async def _bounded_store_trader_positions(self, event: StandardEvent) -> None:
+        """Semaphore-bounded wrapper for _store_trader_positions_state."""
+        async with self._trader_pos_semaphore:
+            await self._store_trader_positions_state(event)
 
     async def _store_trading_signal(self, event: StandardEvent) -> None:
         """Store a trading signal in the signals collection.
