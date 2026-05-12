@@ -892,15 +892,16 @@ class LifecycleManager:
         *args: Any,
         operation_name: str,
     ) -> None:
-        """Fire-and-forget wrapper for repository writes.
+        """Direct-await wrapper for repository writes.
 
-        Schedules the write via _retry_repository_op but catches and logs any
-        errors so callers never need to await the result. This keeps the event
-        loop responsive — storage handlers return immediately after scheduling.
+        Awaits _retry_repository_op directly instead of creating additional tasks.
+        Concurrency is already controlled by callers (queue workers, dispatch
+        semaphore). This prevents unbounded task proliferation from nested
+        create_task calls.
 
         If too many write tasks are already in-flight (exceeding _max_active_writes),
-        the write is dropped to prevent event loop starvation from too many
-        pending Motor socket callbacks.
+        the write is dropped to prevent event loop starvation.
+
         """
         if self._active_write_count >= self._max_active_writes:
             logger.debug(
@@ -911,22 +912,19 @@ class LifecycleManager:
             )
             return
 
-        async def _guarded_write() -> None:
-            self._active_write_count += 1
-            try:
-                await self._retry_repository_op(
-                    operation, *args, operation_name=operation_name
-                )
-            except Exception as e:
-                logger.error(
-                    "fire_and_forget_write_failed",
-                    operation=operation_name,
-                    error=str(e),
-                )
-            finally:
-                self._active_write_count -= 1
-
-        asyncio.create_task(_guarded_write())
+        self._active_write_count += 1
+        try:
+            await self._retry_repository_op(
+                operation, *args, operation_name=operation_name
+            )
+        except Exception as e:
+            logger.error(
+                "fire_and_forget_write_failed",
+                operation=operation_name,
+                error=str(e),
+            )
+        finally:
+            self._active_write_count -= 1
 
     async def _retry_repository_op(
         self,
