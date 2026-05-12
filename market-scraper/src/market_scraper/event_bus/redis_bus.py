@@ -56,6 +56,10 @@ class RedisEventBus(EventBus):
         # through Redis only (behaviour identical to pre-2C).
         self._direct_dispatch: bool = True
 
+        # Semaphore to limit concurrent handler dispatches and prevent
+        # event loop starvation from hundreds of simultaneous DB writes.
+        self._dispatch_semaphore = asyncio.Semaphore(20)
+
     # -- Local subscriber management ----------------------------------------
 
     async def subscribe_local(
@@ -196,11 +200,9 @@ class RedisEventBus(EventBus):
     ) -> None:
         """Dispatch a batch of events to local subscribers.
 
-        Uses asyncio.create_task() for each handler call to avoid sequential
-        blocking. Each handler (e.g. storage_handler) internally uses
-        asyncio.create_task() for I/O, but the dispatch itself must also be
-        non-blocking to prevent 200+ sequential awaits per flush from
-        causing event loop lag.
+        Uses asyncio.create_task() with a bounded semaphore to limit concurrency.
+        This prevents hundreds of simultaneous DB write dispatches from starving
+        the event loop, while still returning quickly to avoid blocking the flush.
 
         Exceptions in individual handlers are caught and logged.
 
@@ -211,31 +213,25 @@ class RedisEventBus(EventBus):
             return
 
         async def _safe_dispatch(handler: EventHandler, event: StandardEvent) -> None:
-            try:
-                await handler(event)
-                self._metrics["delivered"] += 1
-            except Exception as e:
-                self._metrics["errors"] += 1
-                logger.error(
-                    "local_dispatch_handler_error",
-                    event_type=event.event_type,
-                    handler=handler.__qualname__,
-                    error=str(e),
-                    exc_info=True,
-                )
+            async with self._dispatch_semaphore:
+                try:
+                    await handler(event)
+                    self._metrics["delivered"] += 1
+                except Exception as e:
+                    self._metrics["errors"] += 1
+                    logger.error(
+                        "local_dispatch_handler_error",
+                        event_type=event.event_type,
+                        handler=handler.__qualname__,
+                        error=str(e),
+                        exc_info=True,
+                    )
 
         for event in events:
             event_type_str = str(event.event_type)
             handlers = self._get_local_handlers(event_type_str)
-            dispatch_tasks = []
             for _priority, handler in handlers:
-                dispatch_tasks.append(asyncio.create_task(_safe_dispatch(handler, event)))
-            if dispatch_tasks:
-                # Fire-and-forget: tasks already scheduled via create_task above.
-                # Not awaiting gather — prevents event loop blocking from slow DB writes.
-                pass
-
-    # -- Connection management ---------------------------------------------
+                asyncio.create_task(_safe_dispatch(handler, event))
 
     async def connect(self) -> None:
         """Connect to Redis."""
