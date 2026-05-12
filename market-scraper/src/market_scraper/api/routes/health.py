@@ -123,7 +123,7 @@ async def health_status(
             lifecycle.get_detailed_health(),
             timeout=_HEALTH_CHECK_TIMEOUT,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         # Health check timed out — return cached stale data or degraded
         if cached_entry:
             return cached_entry[1]

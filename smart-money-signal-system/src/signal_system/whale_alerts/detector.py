@@ -2,7 +2,7 @@
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
@@ -250,7 +250,6 @@ class WhaleAlertDetector:
         Returns:
             WhaleAlert if conditions met, else None
         """
-        now = datetime.now(timezone.utc)
         self._clean_old_changes()
 
         changes_to_process = [change] if change else self._recent_changes

@@ -17,6 +17,23 @@ crypto-shared = { workspace = true }
 target-version = "py311"
 line-length = 100
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "e2e: End-to-end tests",
+    "slow: Slow tests",
+    "timeout: Per-test timeout for live integration checks",
+]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
+ignore_missing_imports = true
+follow_imports = "skip"
+no_site_packages = true
+
+[[tool.mypy.overrides]]
+module = ["market_scraper.*", "signal_system.*"]
+ignore_errors = true

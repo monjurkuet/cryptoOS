@@ -14,6 +14,11 @@ from market_scraper.event_bus.memory_bus import MemoryEventBus
 from market_scraper.streaming import SubscriptionManager, WebSocketServer
 
 
+async def _wait_for_event_bus_idle(event_bus: MemoryEventBus) -> None:
+    """Wait until the in-memory event bus has delivered queued events."""
+    await asyncio.wait_for(event_bus._queue.join(), timeout=2.0)
+
+
 class TestStreamingIntegration:
     """Integration tests for streaming layer."""
 
@@ -119,8 +124,7 @@ class TestStreamingIntegration:
 
         await event_bus.publish(event)
 
-        # Give the event bus time to process
-        await asyncio.sleep(0.1)
+        await _wait_for_event_bus_idle(event_bus)
 
         # Verify the event was broadcast
         assert mock_ws.send.called
@@ -152,7 +156,7 @@ class TestStreamingIntegration:
             )
             await event_bus.publish(event)
 
-        await asyncio.sleep(0.1)
+        await _wait_for_event_bus_idle(event_bus)
 
         # Should receive all 3 events
         assert mock_ws.send.call_count == 3
@@ -187,7 +191,7 @@ class TestStreamingIntegration:
         )
         await event_bus.publish(eth_event)
 
-        await asyncio.sleep(0.1)
+        await _wait_for_event_bus_idle(event_bus)
 
         # Should only receive BTC event
         assert mock_ws.send.call_count == 1
@@ -288,7 +292,7 @@ class TestStreamingIntegration:
         )
 
         await event_bus.publish(event)
-        await asyncio.sleep(0.1)
+        await _wait_for_event_bus_idle(event_bus)
 
         # Good client should still receive the message
         assert good_ws.send.called

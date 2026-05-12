@@ -288,14 +288,14 @@ class CollectorManager:
         # "Cannot track more than 10" errors on reconnect).
         try:
             await asyncio.wait_for(self._close_ws(), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             pass  # Best-effort close — don't block reconnection
 
         # Stop collectors (flushes remaining buffered events)
         for collector in self._collectors.values():
             try:
                 await asyncio.wait_for(collector.stop(), timeout=5.0)
-            except (asyncio.TimeoutError, Exception):
+            except (TimeoutError, Exception):
                 logger.warning("collector_stop_timeout_on_disconnect", collector=collector.name)
 
         self._reconnect_attempts += 1

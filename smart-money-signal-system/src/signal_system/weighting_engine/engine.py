@@ -1,7 +1,7 @@
 """Trader Weighting Engine for multi-dimensional trader scoring."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import structlog

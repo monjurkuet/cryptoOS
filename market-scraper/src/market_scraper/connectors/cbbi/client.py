@@ -153,7 +153,7 @@ class CBBIClient:
 
                 return data
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error(
                     "cbbi_fetch_timeout",
                     timeout_s=_CBBI_FETCH_TIMEOUT,
@@ -317,7 +317,7 @@ class CBBIClient:
                 "latency_ms": round(latency, 2),
                 "message": "API responding normally",
             }
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {
                 "status": "unhealthy",
                 "latency_ms": 0,

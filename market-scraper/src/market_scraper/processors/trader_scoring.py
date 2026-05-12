@@ -16,7 +16,12 @@ from market_scraper.core.config import HyperliquidSettings
 from market_scraper.core.events import StandardEvent
 from market_scraper.event_bus.base import EventBus
 from market_scraper.processors.base import Processor
-from market_scraper.utils.hyperliquid import extract_roi, extract_volume, is_positive_roi, parse_window_performances
+from market_scraper.utils.hyperliquid import (
+    extract_roi,
+    extract_volume,
+    is_positive_roi,
+    parse_window_performances,
+)
 
 logger = structlog.get_logger(__name__)
 

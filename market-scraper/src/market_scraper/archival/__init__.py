@@ -9,7 +9,7 @@ Components:
 - GitLFSPusher: Pushes archives to a Git LFS repository
 """
 
-from market_scraper.archival.compressor import Compressor
 from market_scraper.archival.archiver import Archiver
+from market_scraper.archival.compressor import Compressor
 
 __all__ = ["Compressor", "Archiver"]

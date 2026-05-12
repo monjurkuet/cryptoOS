@@ -4,8 +4,8 @@
 
 import argparse
 import asyncio
-from datetime import UTC, datetime, timedelta
 import sys
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog

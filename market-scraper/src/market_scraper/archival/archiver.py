@@ -4,8 +4,7 @@ Queries MongoDB collections for data approaching TTL expiry and
 creates compressed archives for long-term storage.
 """
 
-import asyncio
-from datetime import datetime, timedelta, UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +107,7 @@ class Archiver:
 
         projection = None
         if exclude_fields:
-            projection = {f: 0 for f in exclude_fields}
+            projection = dict.fromkeys(exclude_fields, 0)
 
         async for doc in cursor:
             # Convert ObjectId and datetime to serializable format

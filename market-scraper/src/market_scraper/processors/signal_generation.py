@@ -336,7 +336,7 @@ class SignalGenerationProcessor(Processor):
 
     def generate_signal_if_dirty(self) -> StandardEvent | None:
         """Generate signal only if state has changed since last generation.
-        
+
         Called periodically by lifecycle instead of per-event.
         Returns signal event or None.
         """

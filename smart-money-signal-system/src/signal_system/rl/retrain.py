@@ -52,7 +52,6 @@ def _generate_outcomes_from_signals(
     Returns:
         List of SignalOutcome objects
     """
-    import time
     from datetime import datetime as dt
 
     db = mongo_client["market_scraper"]

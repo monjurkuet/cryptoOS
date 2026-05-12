@@ -15,6 +15,7 @@ Uses raw socket communication (no systemd-daemon dependency needed).
 import os
 import socket
 import threading
+
 import structlog
 
 logger = structlog.get_logger(__name__)

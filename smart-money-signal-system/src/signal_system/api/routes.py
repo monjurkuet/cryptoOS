@@ -69,7 +69,6 @@ async def get_latest_signal() -> SignalResponse | None:
     Returns:
         Latest signal or None if no signal generated yet
     """
-    processor = get_signal_processor()
     store = get_signal_store()
     signal = await asyncio.to_thread(store.get_latest_signal)
 

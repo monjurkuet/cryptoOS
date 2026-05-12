@@ -1,8 +1,8 @@
 """Base storage module for the Market Scraper Framework."""
 
+import hashlib
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
-import hashlib
 from typing import Any
 
 from pydantic import BaseModel, Field

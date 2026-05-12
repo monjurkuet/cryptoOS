@@ -160,7 +160,7 @@ class ExchangeFlowClient:
 
                 return data
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error(
                     "exchange_flow_fetch_timeout",
                     timeout_s=_EXCHANGE_FLOW_FETCH_TIMEOUT,
@@ -308,7 +308,7 @@ class ExchangeFlowClient:
                 "latency_ms": round(latency, 2),
                 "message": "Exchange Flow API responding",
             }
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {
                 "status": "unhealthy",
                 "latency_ms": 0,

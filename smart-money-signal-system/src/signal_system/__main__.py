@@ -15,7 +15,6 @@ from signal_system.config import get_settings
 from signal_system.event_subscriber import EventSubscriber
 from signal_system.ml.regime_detection import MarketRegimeDetector
 from signal_system.ml.feature_importance import FeatureImportanceAnalyzer
-from signal_system.api.main import app
 from signal_system.runtime import RuntimeComponents, build_runtime
 
 logger = structlog.get_logger(__name__)

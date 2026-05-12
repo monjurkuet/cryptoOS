@@ -3,8 +3,8 @@
 """Lifecycle manager for orchestrating all system components."""
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -275,7 +275,7 @@ class LifecycleManager:
                         timeout=self._position_buffer_flush_interval,
                     )
                     self._position_buffer_flush_event.clear()
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass  # periodic flush interval
                 if self._position_write_buffer:
                     await self._flush_position_buffer()
@@ -320,7 +320,7 @@ class LifecycleManager:
                 source = item.get("source", "hyperliquid")
 
                 state_items.append((addr, sym, positions, open_orders, margin_summary, event_ts, source))
-                
+
                 # Use pre-built position models from buffer item
                 item_models = item.get("position_models", [])
                 all_position_models.extend(item_models)
@@ -438,7 +438,7 @@ class LifecycleManager:
             self._ws_sync_task.cancel()
             try:
                 await asyncio.wait_for(self._ws_sync_task, timeout=10.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (TimeoutError, asyncio.CancelledError):
                 logger.debug("ws_sync_task_cancelled")
 
         # Cancel signal gen loop
@@ -446,7 +446,7 @@ class LifecycleManager:
             self._signal_gen_task.cancel()
             try:
                 await asyncio.wait_for(self._signal_gen_task, timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 pass
             logger.debug("signal_gen_task_cancelled")
 
@@ -685,7 +685,7 @@ class LifecycleManager:
                 v=float(payload.get("volume", 0) or 0),
             )
             await self._fire_and_forget_write(
-                    getattr(self._repository, "store_candle"),
+                    self._repository.store_candle,
                     candle,
                     symbol,
                     interval,
@@ -777,7 +777,7 @@ class LifecycleManager:
                 price=payload.get("price", 0),
             )
             await self._fire_and_forget_write(
-                    getattr(repository, "store_signal"),
+                    repository.store_signal,
                     signal,
                     operation_name="store_trading_signal",
                 )
@@ -962,7 +962,7 @@ class LifecycleManager:
                         )
                         await asyncio.sleep(delay)
                         delay *= 2
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "repository_semaphore_timeout",
                 operation=operation_name,
@@ -988,7 +988,7 @@ class LifecycleManager:
         async def _dlq_write() -> None:
             try:
                 await self._retry_repository_op(
-                    getattr(self._repository, "store_dead_letter"),
+                    self._repository.store_dead_letter,
                     event=event,
                     reason=reason,
                     error_message=str(error),

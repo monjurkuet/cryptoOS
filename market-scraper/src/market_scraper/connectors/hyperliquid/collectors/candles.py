@@ -2,7 +2,7 @@
 
 """Candles collector for OHLCV data."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -119,7 +119,7 @@ class CandlesCollector(BaseCollector):
             StandardEvent or None if invalid
         """
         try:
-            timestamp = datetime.fromtimestamp(candle.get("t", 0) / 1000, tz=timezone.utc)
+            timestamp = datetime.fromtimestamp(candle.get("t", 0) / 1000, tz=UTC)
 
             return StandardEvent.create(
                 event_type="ohlcv",

@@ -2,11 +2,11 @@
 
 """Trader API routes."""
 
+import asyncio
 import re
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
-import asyncio
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel

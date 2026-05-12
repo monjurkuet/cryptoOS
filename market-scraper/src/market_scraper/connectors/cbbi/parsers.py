@@ -2,7 +2,7 @@
 
 """Response parsers for CBBI data."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from market_scraper.core.events import StandardEvent
@@ -43,7 +43,7 @@ def parse_cbbi_index_response(data: dict[str, Any], source: str = "cbbi") -> Sta
         event_type="cbbi_index",
         source=source,
         payload={
-            "timestamp": datetime.fromtimestamp(latest_ts, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(latest_ts, tz=UTC).isoformat(),
             "confidence": latest_value,
             "components": components,
             "price": float(price) if price is not None else None,
@@ -86,7 +86,7 @@ def parse_cbbi_historical_response(
                     event_type="cbbi_historical",
                     source=source,
                     payload={
-                        "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                        "timestamp": datetime.fromtimestamp(ts, tz=UTC).isoformat(),
                         "confidence": value,
                         "components": components,
                     },
@@ -138,7 +138,7 @@ def parse_cbbi_component_response(
             if ts >= cutoff:
                 historical.append(
                     {
-                        "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                        "timestamp": datetime.fromtimestamp(ts, tz=UTC).isoformat(),
                         "value": float(value),
                     }
                 )
@@ -175,7 +175,7 @@ def parse_timestamp(timestamp_str: str) -> datetime:
     """
     try:
         ts = int(timestamp_str)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
+        return datetime.fromtimestamp(ts, tz=UTC)
     except (ValueError, TypeError, OSError) as e:
         raise ValueError(f"Invalid timestamp format: {timestamp_str}") from e
 
