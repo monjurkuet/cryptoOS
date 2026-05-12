@@ -146,7 +146,7 @@ class TraderWebSocketCollector:
         self._lag_monitor_task: asyncio.Task | None = None
 
         # Thread pool for CPU-bound normalization (ELB.7)
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="norm-")
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="norm-")
 
         # Stats
         self._messages_received = 0
@@ -836,6 +836,74 @@ class TraderWebSocketCollector:
 
         return False, {}
 
+    def _process_webdata_batch(
+        self,
+        messages: list[dict],
+        known_hashes: dict[str, str],
+        symbol: str,
+    ) -> list[tuple[str, list[dict], list[dict], dict, str, str, str, str] | None]:
+        """Extract, hash, and normalize webData2 messages in one pass.
+
+        Runs entirely in thread pool -- extraction + hash + normalization off the event loop.
+        Returns list of (address, positions, orders, margin, quick_hash, norm_pos, norm_ords, norm_margin)
+        or None for skipped messages.
+
+        Thread safety: known_hashes is a snapshot copy; symbol is immutable config.
+        """
+        results: list[tuple[str, list[dict], list[dict], dict, str, str, str, str] | None] = []
+        for msg in messages:
+            data = msg.get("data", {})
+            extracted = self._extract_symbol_state(data)
+            if not extracted:
+                results.append(None)
+                continue
+
+            address, symbol_positions, symbol_open_orders, margin_summary = extracted
+
+            # Phase 2A: quick hash dedup -- now in thread pool, not blocking event loop
+            _qh_data = {
+                "sp": [
+                    {
+                        "coin": p.get("position", {}).get("coin"),
+                        "szi": p.get("position", {}).get("szi"),
+                        "entryPx": p.get("position", {}).get("entryPx"),
+                        "markPx": p.get("position", {}).get("markPx"),
+                        "unrealizedPnl": p.get("position", {}).get("unrealizedPnl"),
+                        "liquidationPx": p.get("position", {}).get("liquidationPx"),
+                        "leverage": p.get("position", {}).get("leverage"),
+                    }
+                    for p in symbol_positions
+                ],
+                "oo": [
+                    {
+                        "coin": o.get("coin"),
+                        "side": o.get("side"),
+                        "origSz": o.get("origSz"),
+                        "sz": o.get("sz"),
+                        "limitPx": o.get("limitPx"),
+                    }
+                    for o in symbol_open_orders
+                ],
+                "ms": margin_summary,
+            }
+            quick_hash = hashlib.sha256(
+                json.dumps(_qh_data, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            if quick_hash == known_hashes.get(address):
+                results.append(None)  # skipped by quick hash
+                continue
+
+            # Normalize in the same thread -- no event loop blocking
+            norm_pos = self._normalize_positions(symbol_positions)
+            norm_ords = self._normalize_open_orders(symbol_open_orders)
+            norm_margin = self._normalize_margin_summary(margin_summary)
+
+            results.append(
+                (address, symbol_positions, symbol_open_orders, margin_summary,
+                 quick_hash, norm_pos, norm_ords, norm_margin)
+            )
+        return results
+
     def _normalize_batch(self, items: list[tuple[list, list, dict]]) -> list[tuple[str, str, str]]:
         """Normalize a batch of (positions, open_orders, margin_summary) tuples.
 
@@ -906,8 +974,7 @@ class TraderWebSocketCollector:
     async def _flush_messages(self) -> None:
         """Flush buffered messages and emit events."""
         flush_start = time.monotonic()
-        t_hash_ms = 0.0
-        t_norm_ms = 0.0
+        t_hash_ms = 0.0  # Accumulates combined hash+norm offload time
         t_pub_ms = 0.0
 
         async with self._buffer_lock:
@@ -935,95 +1002,49 @@ class TraderWebSocketCollector:
                     webdata_count += 1
                     webdata_msgs.append(msg)
 
-            # Offload CPU-heavy normalization to thread pool in sub-chunks
-            NORM_CHUNK = 50
-            for norm_start in range(0, len(webdata_msgs), NORM_CHUNK):
-                norm_chunk = webdata_msgs[norm_start : norm_start + NORM_CHUNK]
-                t_hash_start = time.monotonic()
-                norm_items = []
-                for msg in norm_chunk:
-                    data = msg.get("data", {})
-                    extracted = self._extract_symbol_state(data)
-                    if not extracted:
-                        continue
-                    address, symbol_positions, symbol_open_orders, margin_summary = extracted
+        # Offload ALL CPU-heavy work (extraction + hash + normalization) to thread pool.
+        # Previous approach: hashing on event loop + only normalization in thread pool
+        # caused 2.5-5s blocking per flush with 500+ messages (json.dumps + sha256).
+        NORM_CHUNK = 50
+        for norm_start in range(0, len(webdata_msgs), NORM_CHUNK):
+            norm_chunk = webdata_msgs[norm_start : norm_start + NORM_CHUNK]
 
-                    # Phase 2A: quick hash dedup over symbol-specific state.
-                    # Include mark/liq/margin fields so price and risk changes still emit updates.
-                    _qh_data = {
-                        "sp": [
-                            {
-                                "coin": p.get("position", {}).get("coin"),
-                                "szi": p.get("position", {}).get("szi"),
-                                "entryPx": p.get("position", {}).get("entryPx"),
-                                "markPx": p.get("position", {}).get("markPx"),
-                                "unrealizedPnl": p.get("position", {}).get("unrealizedPnl"),
-                                "liquidationPx": p.get("position", {}).get("liquidationPx"),
-                                "leverage": p.get("position", {}).get("leverage"),
-                            }
-                            for p in symbol_positions
-                        ],
-                        "oo": [
-                            {
-                                "coin": o.get("coin"),
-                                "side": o.get("side"),
-                                "origSz": o.get("origSz"),
-                                "sz": o.get("sz"),
-                                "limitPx": o.get("limitPx"),
-                            }
-                            for o in symbol_open_orders
-                        ],
-                        "ms": margin_summary,
-                    }
-                    quick_hash = hashlib.sha256(
-                        json.dumps(_qh_data, sort_keys=True, separators=(",", ":")).encode()
-                    ).hexdigest()
-                    if quick_hash == self._quick_hashes.get(address):
-                        self._positions_skipped += 1
-                        self._quick_hash_skips += 1
-                        continue
+            t_offload_start = time.monotonic()
+            # Snapshot quick_hashes for thread safety (dict may be mutated on event loop)
+            known_hashes = self._quick_hashes.copy()
+            symbol = str(self.config.symbol).upper()
+            batch_results = await asyncio.get_running_loop().run_in_executor(
+                self._executor, self._process_webdata_batch, norm_chunk, known_hashes, symbol
+            )
+            t_offload_ms = (time.monotonic() - t_offload_start) * 1000
+            t_hash_ms += t_offload_ms  # Combined hash+norm time for logging
 
-                    norm_items.append(
-                        (address, symbol_positions, symbol_open_orders, margin_summary, quick_hash)
-                    )
-
-                t_hash_ms += (time.monotonic() - t_hash_start) * 1000
-
-                if not norm_items:
-                    await asyncio.sleep(0)
+            # Process results on the event loop -- only fast dict lookups + event creation
+            for result in batch_results:
+                if result is None:
+                    self._positions_skipped += 1
+                    self._quick_hash_skips += 1
                     continue
 
-                t_norm_start = time.monotonic()
-                raw_items = [(sp, so, ms) for _, sp, so, ms, _ in norm_items]
-                normalized_results = await asyncio.get_running_loop().run_in_executor(
-                    self._executor, self._normalize_batch, raw_items
-                )
-                t_norm_ms += (time.monotonic() - t_norm_start) * 1000
+                (address, symbol_positions, symbol_open_orders, margin_summary,
+                 quick_hash, norm_pos, norm_ords, norm_margin) = result
 
-                # Now do the async-side comparison and event creation with pre-computed norms
-                for (
+                event = self._create_trader_positions_event_normalized(
                     address,
                     symbol_positions,
                     symbol_open_orders,
                     margin_summary,
-                    quick_hash,
-                ), (norm_pos, norm_ords, norm_margin) in zip(norm_items, normalized_results):
-                    event = self._create_trader_positions_event_normalized(
-                        address,
-                        symbol_positions,
-                        symbol_open_orders,
-                        margin_summary,
-                        norm_pos,
-                        norm_ords,
-                        norm_margin,
-                        allow_empty=False,
-                    )
-                    self._quick_hashes[address] = quick_hash
-                    if event:
-                        events.append(event)
+                    norm_pos,
+                    norm_ords,
+                    norm_margin,
+                    allow_empty=False,
+                )
+                self._quick_hashes[address] = quick_hash
+                if event:
+                    events.append(event)
 
-                # Yield after each normalization sub-chunk
-                await asyncio.sleep(0)
+            # Yield after each sub-chunk
+            await asyncio.sleep(0)
 
         # Non-webData2 messages (error channel, subscription responses)
         # are already filtered in _handle_message — skip them entirely.
@@ -1057,8 +1078,7 @@ class TraderWebSocketCollector:
         logger.info(
             "trader_ws_flush_complete",
             duration_ms=round(flush_duration * 1000, 1),
-            hash_ms=round(t_hash_ms, 1),
-            norm_ms=round(t_norm_ms, 1),
+        offload_ms=round(t_hash_ms, 1),  # Combined hash+norm (now all in thread pool)
             pub_ms=round(t_pub_ms, 1),
             messages=len(events) + webdata_count,
             quick_hash_skips=self._quick_hash_skips,
