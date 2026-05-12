@@ -9,6 +9,7 @@ Real-time cryptocurrency market data collection system for Hyperliquid.
 
 - Event-driven architecture with WebSocket data collection
 - Trader scoring and position tracking
+- Saved Binance.com account positions from user-provided read-only API keys
 - Signal generation (BUY/SELL/NEUTRAL)
 - Bitcoin on-chain metrics (CBBI, Fear & Greed, MVRV, SOPR, NUPL)
 - REST API + WebSocket streaming (port 3845)
@@ -164,6 +165,7 @@ cryptoOS/
 | Document | Description |
 |----------|-------------|
 | [market-scraper/README.md](market-scraper/README.md) | Market scraper features and API |
+| [docs/binance-account-positions.md](docs/binance-account-positions.md) | Saved Binance account position setup and API |
 | [smart-money-signal-system/README.md](smart-money-signal-system/README.md) | Signal system, RL flow, and API |
 | [docs/README.md](docs/README.md) | Top-level docs inventory and archival policy |
 | [systemd/README.md](systemd/README.md) | Production deployment with systemd |

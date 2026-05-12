@@ -6,11 +6,14 @@ This directory contains cross-project documentation for `cryptoOS`.
 
 - `hybrid-compute-deployment.md`: deployment guidance for hybrid compute environments.
 - `trader-position-api.md`: trader position API contracts and usage.
+- `binance-account-positions.md`: saved Binance account position setup and API.
 
 ## Planning and Reports
 
 Historical one-off plans/reports were pruned during the zero-debt pass.
 Runtime behavior and architecture are now documented only in current subsystem docs.
+
+- `reports/2026-05-12-binance-positions-audit.md`: implementation audit for saved Binance account positions.
 
 ## Archival Policy
 

@@ -1,6 +1,6 @@
 # Market Scraper v2
 
-Real-time cryptocurrency market data collection system for Hyperliquid with trader tracking, signal generation, and Bitcoin on-chain metrics.
+Real-time cryptocurrency market data collection system for Hyperliquid with trader tracking, signal generation, Bitcoin on-chain metrics, and saved Binance account position viewing.
 
 ## Overview
 
@@ -38,6 +38,10 @@ A production-ready market data system that collects real-time data from Hyperliq
 | **ExchangeFlow** | Exchange inflows/outflows, netflow | On-demand |
 
 **Note:** On-chain connectors do NOT return price data. Use Hyperliquid candles for price information.
+
+### Saved Binance Account Positions
+
+Users can open `/account`, create a local account, save a Binance.com read-only API key encrypted in MongoDB, and view live spot balances plus USD-M futures positions. The feature never calls trading, transfer, withdrawal, or order endpoints.
 
 ### API Endpoints
 
@@ -98,6 +102,19 @@ A production-ready market data system that collects real-time data from Hyperliq
 | GET | `/api/v1/onchain/btc/exchange-flows` | Exchange inflows/outflows |
 | GET | `/api/v1/onchain/btc/nupl` | Net Unrealized Profit/Loss |
 | GET | `/api/v1/onchain/btc/mvrv` | Market Value to Realized Value |
+
+#### Local Accounts and Binance Positions
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/account` | Static saved Binance positions page |
+| POST | `/api/v1/auth/register` | Create local account and session |
+| POST | `/api/v1/auth/login` | Start local session |
+| POST | `/api/v1/auth/logout` | End local session |
+| GET | `/api/v1/auth/me` | Current local user and CSRF token |
+| POST | `/api/v1/binance/connections` | Save encrypted Binance credentials |
+| GET | `/api/v1/binance/connections` | List saved Binance connections |
+| DELETE | `/api/v1/binance/connections/{connection_id}` | Delete saved connection |
+| GET | `/api/v1/binance/positions` | Fetch live spot and USD-M futures positions |
 
 #### WebSocket
 | Endpoint | Description |
@@ -220,6 +237,13 @@ Configuration is via environment variables or `.env` file, plus YAML for advance
 MONGO__URL=mongodb://localhost:27017
 MONGO__DATABASE=market_scraper
 
+# Saved Binance account positions
+BINANCE_ACCOUNT__ENABLED=true
+BINANCE_CREDENTIAL_ENCRYPTION_KEY=<fernet-key>
+BINANCE_ACCOUNT__SPOT_BASE_URL=https://api.binance.com
+BINANCE_ACCOUNT__FUTURES_BASE_URL=https://fapi.binance.com
+AUTH__SESSION_COOKIE_SECURE=false
+
 # Redis (optional, for distributed setups - now default when available)
 REDIS__URL=redis://localhost:6379
 
@@ -230,6 +254,12 @@ HYPERLIQUID__SYMBOL=BTC           # Only save data for this symbol
 # API
 API_HOST=0.0.0.0
 API_PORT=3845
+```
+
+Generate `BINANCE_CREDENTIAL_ENCRYPTION_KEY` with:
+
+```bash
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
 ### YAML Configuration (Advanced)
