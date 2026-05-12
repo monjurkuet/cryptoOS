@@ -108,8 +108,14 @@ class LifecycleManager:
         self._db_write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
         self._general_executor: ThreadPoolExecutor | None = None  # General pool for non-DB to_thread calls
         self._max_active_writes: int = 16  # Cap total concurrent write tasks
-        self._ohlcv_semaphore = asyncio.Semaphore(16)  # Limit concurrent ohlcv writes
-        self._trader_pos_semaphore = asyncio.Semaphore(16)  # Limit concurrent trader_positions writes
+        # Bounded queues + workers for storage operations.
+        # Only N worker tasks exist per queue — prevents 1000+ create_task calls
+        # from flooding the event loop's task queue (the root cause of lag spikes).
+        self._ohlcv_queue: asyncio.Queue[tuple[StandardEvent, ...]] = asyncio.Queue(maxsize=200)
+        self._trader_pos_queue: asyncio.Queue[tuple[StandardEvent, ...]] = asyncio.Queue(maxsize=200)
+        self._ohlcv_workers: list[asyncio.Task] = []
+        self._trader_pos_workers: list[asyncio.Task] = []
+        self._storage_workers_started = False
         self._ws_sync_task: asyncio.Task | None = None  # Background WS collector startup
         self._signal_gen_task: asyncio.Task | None = None  # Batched signal generation loop
         self._raw_event_allowlist: set[str] = set(_RAW_EVENT_ALLOWLIST)
@@ -572,10 +578,10 @@ class LifecycleManager:
                     asyncio.create_task(self._store_trading_signal(event))
 
                 if event.event_type == "ohlcv":
-                    asyncio.create_task(self._bounded_store_ohlcv(event))
+                    asyncio.create_task(self._enqueue_ohlcv(event))
 
                 if event.event_type == "trader_positions":
-                    asyncio.create_task(self._bounded_store_trader_positions(event))
+                    asyncio.create_task(self._enqueue_trader_positions(event))
 
             except Exception as e:
                 logger.error(
@@ -695,15 +701,54 @@ class LifecycleManager:
                 error=e,
             )
 
-    async def _bounded_store_ohlcv(self, event: StandardEvent) -> None:
-        """Semaphore-bounded wrapper for _store_ohlcv_candle."""
-        async with self._ohlcv_semaphore:
-            await self._store_ohlcv_candle(event)
+    def _ensure_storage_workers(self) -> None:
+        """Start background worker tasks for storage queues (idempotent)."""
+        if self._storage_workers_started:
+            return
+        self._storage_workers_started = True
 
-    async def _bounded_store_trader_positions(self, event: StandardEvent) -> None:
-        """Semaphore-bounded wrapper for _store_trader_positions_state."""
-        async with self._trader_pos_semaphore:
-            await self._store_trader_positions_state(event)
+        async def _ohlcv_worker() -> None:
+            while True:
+                try:
+                    args = await self._ohlcv_queue.get()
+                    await self._store_ohlcv_candle(args[0])
+                except Exception as e:
+                    logger.error("ohlcv_worker_error", error=str(e))
+                finally:
+                    self._ohlcv_queue.task_done()
+
+        async def _trader_pos_worker() -> None:
+            while True:
+                try:
+                    args = await self._trader_pos_queue.get()
+                    await self._store_trader_positions_state(args[0])
+                except Exception as e:
+                    logger.error("trader_pos_worker_error", error=str(e))
+                finally:
+                    self._trader_pos_queue.task_done()
+
+        for _ in range(4):
+            self._ohlcv_workers.append(asyncio.create_task(_ohlcv_worker()))
+            self._trader_pos_workers.append(asyncio.create_task(_trader_pos_worker()))
+        logger.info("storage_workers_started", ohlcv_workers=4, trader_pos_workers=4)
+
+    async def _enqueue_ohlcv(self, event: StandardEvent) -> None:
+        """Enqueue OHLCV event for bounded storage (non-blocking)."""
+        self._ensure_storage_workers()
+        try:
+            self._ohlcv_queue.put_nowait((event,))
+        except asyncio.QueueFull:
+            logger.warning("ohlcv_queue_full_dropped", event_id=event.event_id)
+
+    async def _enqueue_trader_positions(self, event: StandardEvent) -> None:
+        """Enqueue trader_positions event for bounded storage (non-blocking)."""
+        self._ensure_storage_workers()
+        try:
+            self._trader_pos_queue.put_nowait((event,))
+        except asyncio.QueueFull:
+            logger.warning("trader_pos_queue_full_dropped", event_id=event.event_id)
+
+
 
     async def _store_trading_signal(self, event: StandardEvent) -> None:
         """Store a trading signal in the signals collection.
