@@ -200,11 +200,13 @@ class RedisEventBus(EventBus):
     ) -> None:
         """Dispatch a batch of events to local subscribers.
 
-        Uses asyncio.create_task() with a bounded semaphore to limit concurrency.
-        This prevents hundreds of simultaneous DB write dispatches from starving
-        the event loop, while still returning quickly to avoid blocking the flush.
+        Uses a bounded semaphore to limit concurrent handler executions to 20.
+        Tasks are created for all (handler, event) pairs but the semaphore
+        ensures only 20 run concurrently, preventing event loop starvation.
 
-        Exceptions in individual handlers are caught and logged.
+        Dispatch is fire-and-forget: this method creates a single background
+        task that processes all dispatches, then returns immediately so the
+        caller (publish_bulk) is not blocked.
 
         Args:
             events: List of events to dispatch
@@ -227,12 +229,20 @@ class RedisEventBus(EventBus):
                         exc_info=True,
                     )
 
-        for event in events:
-            event_type_str = str(event.event_type)
-            handlers = self._get_local_handlers(event_type_str)
-            for _priority, handler in handlers:
-                asyncio.create_task(_safe_dispatch(handler, event))
+        async def _run_all_dispatches() -> None:
+            tasks = []
+            for event in events:
+                event_type_str = str(event.event_type)
+                handlers = self._get_local_handlers(event_type_str)
+                for _priority, handler in handlers:
+                    tasks.append(asyncio.create_task(
+                        _safe_dispatch(handler, event)
+                    ))
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Fire-and-forget: run all dispatches in a single background task
+        asyncio.create_task(_run_all_dispatches())
     async def connect(self) -> None:
         """Connect to Redis."""
         try:
