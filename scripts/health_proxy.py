@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 UPSTREAM = "http://127.0.0.1:3845/health/live"
 HOST = "127.0.0.1"
 PORT = 3847
-TIMEOUT = 3
+TIMEOUT = 10
 
 
 class Handler(BaseHTTPRequestHandler):

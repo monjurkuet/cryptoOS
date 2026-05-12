@@ -231,7 +231,9 @@ class RedisEventBus(EventBus):
             for _priority, handler in handlers:
                 dispatch_tasks.append(asyncio.create_task(_safe_dispatch(handler, event)))
             if dispatch_tasks:
-                await asyncio.gather(*dispatch_tasks, return_exceptions=True)
+                # Fire-and-forget: tasks already scheduled via create_task above.
+                # Not awaiting gather — prevents event loop blocking from slow DB writes.
+                pass
 
     # -- Connection management ---------------------------------------------
 
