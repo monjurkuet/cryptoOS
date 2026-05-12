@@ -684,15 +684,13 @@ class LifecycleManager:
                 c=float(payload.get("close", 0) or 0),
                 v=float(payload.get("volume", 0) or 0),
             )
-            asyncio.create_task(
-                self._fire_and_forget_write(
+            await self._fire_and_forget_write(
                     getattr(self._repository, "store_candle"),
                     candle,
                     symbol,
                     interval,
                     operation_name="store_candle",
                 )
-            )
         except Exception as e:
             logger.error("ohlcv_store_error", error=str(e), event_id=event.event_id)
             self._store_dead_letter(
@@ -778,13 +776,11 @@ class LifecycleManager:
                 t_flat=payload.get("tradersFlat", 0),
                 price=payload.get("price", 0),
             )
-            asyncio.create_task(
-                self._fire_and_forget_write(
+            await self._fire_and_forget_write(
                     getattr(repository, "store_signal"),
                     signal,
                     operation_name="store_trading_signal",
                 )
-            )
             logger.debug("trading_signal_stored", symbol=signal.symbol, rec=signal.rec)
         except Exception as e:
             logger.error("trading_signal_store_error", error=str(e))
