@@ -97,7 +97,7 @@ class LifecycleManager:
         self._scheduler: Scheduler | None = None
         self._health_monitor: HealthMonitor | None = None
         self._last_event_timestamps: dict[str, datetime] = {}
-        self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(12)
+        self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(6)  # Reduced for memory pressure
         self._position_write_buffer: list[dict] = []
         self._position_buffer_lock = asyncio.Lock()
         self._position_buffer_flush_interval: float = 5.0
@@ -107,7 +107,7 @@ class LifecycleManager:
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
         self._db_write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
         self._general_executor: ThreadPoolExecutor | None = None  # General pool for non-DB to_thread calls
-        self._max_active_writes: int = 16  # Cap total concurrent write tasks
+        self._max_active_writes: int = 8  # Cap total concurrent write tasks (reduced for memory pressure)
         # Bounded queues + workers for storage operations.
         # Only N worker tasks exist per queue — prevents 1000+ create_task calls
         # from flooding the event loop's task queue (the root cause of lag spikes).
@@ -727,10 +727,10 @@ class LifecycleManager:
                 finally:
                     self._trader_pos_queue.task_done()
 
-        for _ in range(4):
+        for _ in range(2):
             self._ohlcv_workers.append(asyncio.create_task(_ohlcv_worker()))
             self._trader_pos_workers.append(asyncio.create_task(_trader_pos_worker()))
-        logger.info("storage_workers_started", ohlcv_workers=4, trader_pos_workers=4)
+        logger.info("storage_workers_started", ohlcv_workers=2, trader_pos_workers=2)
 
     async def _enqueue_ohlcv(self, event: StandardEvent) -> None:
         """Enqueue OHLCV event for bounded storage (non-blocking)."""

@@ -58,7 +58,7 @@ class RedisEventBus(EventBus):
 
         # Semaphore to limit concurrent handler dispatches and prevent
         # event loop starvation from hundreds of simultaneous DB writes.
-        self._dispatch_semaphore = asyncio.Semaphore(20)
+        self._dispatch_semaphore = asyncio.Semaphore(8)
 
     # -- Local subscriber management ----------------------------------------
 
