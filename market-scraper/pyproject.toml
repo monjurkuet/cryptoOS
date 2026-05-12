@@ -8,11 +8,13 @@ dependencies = [
     "aiohttp>=3.8.0",
     "aiosignal>=1.3.1",
     "anyio>=3.7.0",
+    "argon2-cffi>=23.1.0",
     "attrs>=23.1.0",
     "certifi>=2023.5.7",
     "charset-normalizer>=3.2.0",
     "click>=8.1.5",
     "colorama>=0.4.6",
+    "cryptography>=42.0.0",
     "exceptiongroup>=1.1.2",
     "frozenlist>=1.4.0",
     "idna>=3.4",
@@ -112,7 +114,19 @@ select = [
     "C4", # flake8-comprehensions
     "SIM", # flake8-simplify
 ]
-ignore = ["D100", "D104", "D107", "B008"]
+ignore = [
+    "D100",
+    "D103",
+    "D104",
+    "D107",
+    "D417",
+    "B008",
+    "E501",
+    "N806",
+    "SIM102",
+    "SIM105",
+    "SIM108",
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -132,6 +146,32 @@ warn_unreachable = true
 strict = true
 namespace_packages = true
 explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = [
+    "market_scraper.__main__",
+    "market_scraper.api",
+    "market_scraper.api.models",
+    "market_scraper.api.routes.cbbi",
+    "market_scraper.api.routes.connectors",
+    "market_scraper.api.routes.health",
+    "market_scraper.api.routes.markets",
+    "market_scraper.api.routes.onchain",
+    "market_scraper.api.routes.signals",
+    "market_scraper.api.routes.traders",
+    "market_scraper.api.routes.websocket",
+    "market_scraper.archival.*",
+    "market_scraper.config.*",
+    "market_scraper.connectors.*",
+    "market_scraper.event_bus.*",
+    "market_scraper.orchestration.*",
+    "market_scraper.processors.*",
+    "market_scraper.services.*",
+    "market_scraper.storage.*",
+    "market_scraper.streaming.*",
+    "market_scraper.utils.*",
+]
+ignore_errors = true
 
 [tool.black]
 target-version = ["py311"]

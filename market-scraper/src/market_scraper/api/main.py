@@ -10,6 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from market_scraper.api.dependencies import get_connector_factory
 from market_scraper.api.routes import (
+    account_page,
+    auth,
+    binance_account,
     cbbi,
     connectors,
     health,
@@ -121,6 +124,9 @@ def create_app() -> FastAPI:
     app.include_router(signals.router, prefix="/api/v1/signals", tags=["signals"])
     app.include_router(cbbi.router, prefix="/api/v1/cbbi", tags=["cbbi"])
     app.include_router(onchain.router, prefix="/api/v1/onchain", tags=["onchain"])
+    app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
+    app.include_router(binance_account.router, prefix="/api/v1/binance", tags=["binance"])
+    app.include_router(account_page.router, tags=["account"])
     app.include_router(websocket.router, tags=["websocket"])
 
     return app

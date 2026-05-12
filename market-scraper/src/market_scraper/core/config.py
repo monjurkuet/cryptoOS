@@ -77,6 +77,29 @@ class HyperliquidSettings(BaseModel):
     retry_delay_seconds: float = Field(default=1.0, description="Delay between retries")
 
 
+class AuthSettings(BaseModel):
+    """Local account and session settings."""
+
+    session_cookie_name: str = Field(default="cryptoos_session")
+    session_cookie_secure: bool = Field(default=False)
+    session_ttl_hours: int = Field(default=24, ge=1, le=24 * 30)
+    csrf_header_name: str = Field(default="X-CSRF-Token")
+    password_min_length: int = Field(default=8, ge=8, le=128)
+
+
+class BinanceAccountSettings(BaseModel):
+    """Binance saved-account feature settings."""
+
+    enabled: bool = Field(default=True)
+    encryption_key: str | None = Field(
+        default_factory=lambda: os.environ.get("BINANCE_CREDENTIAL_ENCRYPTION_KEY")
+    )
+    spot_base_url: str = Field(default="https://api.binance.com")
+    futures_base_url: str = Field(default="https://fapi.binance.com")
+    timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    recv_window_ms: int = Field(default=5000, ge=1000, le=60000)
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment."""
 
@@ -103,6 +126,10 @@ class Settings(BaseSettings):
 
     # Hyperliquid connector settings
     hyperliquid: HyperliquidSettings = Field(default_factory=HyperliquidSettings)
+
+    # Local accounts and saved Binance credentials
+    auth: AuthSettings = Field(default_factory=AuthSettings)
+    binance_account: BinanceAccountSettings = Field(default_factory=BinanceAccountSettings)
 
     # API
     api_host: str = Field(default="0.0.0.0")

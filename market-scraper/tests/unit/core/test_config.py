@@ -130,6 +130,16 @@ class TestSettings:
         assert settings.redis.url == "redis://custom:6379"
         assert settings.mongo.url == "mongodb+srv://example.mongodb.net/"
 
+    @patch.dict(
+        os.environ,
+        {"BINANCE_CREDENTIAL_ENCRYPTION_KEY": "test-fernet-key"},
+        clear=True,
+    )
+    def test_binance_credential_encryption_key_env(self) -> None:
+        """Test the public Binance credential key environment variable."""
+        settings = Settings(_env_file=None, mongo=MongoConfig(url="mongodb+srv://example.mongodb.net/"))
+        assert settings.binance_account.encryption_key == "test-fernet-key"
+
     def test_custom_values(self) -> None:
         """Test custom settings values."""
         settings = Settings(

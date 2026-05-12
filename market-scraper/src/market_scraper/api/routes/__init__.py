@@ -1,6 +1,9 @@
 # src/market_scraper/api/routes/__init__.py
 
 from market_scraper.api.routes import (
+    account_page,
+    auth,
+    binance_account,
     cbbi,
     connectors,
     health,
@@ -12,6 +15,9 @@ from market_scraper.api.routes import (
 )
 
 __all__ = [
+    "account_page",
+    "auth",
+    "binance_account",
     "health",
     "markets",
     "connectors",

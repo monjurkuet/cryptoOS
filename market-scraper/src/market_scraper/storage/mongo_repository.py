@@ -1,10 +1,9 @@
 """MongoDB repository implementation for the Market Scraper Framework."""
 
-from datetime import UTC, datetime
-from typing import Any
-
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from typing import Any
 
 import motor.motor_asyncio
 import pymongo
@@ -196,7 +195,7 @@ class MongoRepository(DataRepository):
 
         for collection_name, field, days in ttl_collections:
             target_name = f"ttl_retention_{collection_name}"
-            for attempt in range(2):  # max 2 attempts (initial + retry after drop)
+            for _attempt in range(2):  # max 2 attempts (initial + retry after drop)
                 try:
                     await self._db[collection_name].create_index(
                         [(field, 1)],
@@ -302,6 +301,24 @@ class MongoRepository(DataRepository):
             await self._db[CollectionName.TRADER_SIGNALS].create_index([("eth", 1), ("t", -1)])
             await self._db[CollectionName.TRADER_SIGNALS].create_index([("symbol", 1), ("t", -1)])
 
+            await self._db[CollectionName.APP_USERS].create_index([("email", 1)], unique=True)
+            await self._db[CollectionName.AUTH_SESSIONS].create_index(
+                [("token_hash", 1)],
+                unique=True,
+            )
+            await self._db[CollectionName.AUTH_SESSIONS].create_index(
+                [("expires_at", 1)],
+                expireAfterSeconds=0,
+            )
+            await self._db[CollectionName.AUTH_SESSIONS].create_index([("user_id", 1)])
+            await self._db[CollectionName.BINANCE_CONNECTIONS].create_index(
+                [("user_id", 1), ("connection_id", 1)],
+                unique=True,
+            )
+            await self._db[CollectionName.BINANCE_CONNECTIONS].create_index(
+                [("user_id", 1), ("created_at", -1)]
+            )
+
             logger.info("model_indexes_created")
         except Exception as e:
             logger.warning("model_index_creation_failed", error=str(e), exc_info=True)
@@ -319,6 +336,130 @@ class MongoRepository(DataRepository):
             from market_scraper.config.market_config import RetentionConfig
 
             return RetentionConfig()
+
+    # ============== Local App Account Methods ==============
+
+    async def create_app_user(self, user: dict[str, Any]) -> dict[str, Any]:
+        """Create a local application user."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        document = dict(user)
+        document["email"] = str(document["email"]).lower()
+        try:
+            await self._db[CollectionName.APP_USERS].insert_one(document)
+        except DuplicateKeyError as exc:
+            raise StorageError("User already exists") from exc
+        document.pop("_id", None)
+        return document
+
+    async def get_app_user_by_email(self, email: str) -> dict[str, Any] | None:
+        """Fetch a local application user by normalized email."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        document = await self._db[CollectionName.APP_USERS].find_one(
+            {"email": str(email).lower()},
+            {"_id": 0},
+        )
+        return dict(document) if document else None
+
+    async def get_app_user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        """Fetch a local application user by id."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        document = await self._db[CollectionName.APP_USERS].find_one(
+            {"user_id": user_id},
+            {"_id": 0},
+        )
+        return dict(document) if document else None
+
+    async def create_auth_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        """Create a hashed local auth session."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        document = dict(session)
+        await self._db[CollectionName.AUTH_SESSIONS].insert_one(document)
+        document.pop("_id", None)
+        return document
+
+    async def get_auth_session_by_token_hash(self, token_hash: str) -> dict[str, Any] | None:
+        """Fetch a valid auth session by hashed bearer token."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        document = await self._db[CollectionName.AUTH_SESSIONS].find_one(
+            {"token_hash": token_hash},
+            {"_id": 0},
+        )
+        return dict(document) if document else None
+
+    async def delete_auth_session(self, token_hash: str) -> bool:
+        """Delete one auth session by token hash."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        result = await self._db[CollectionName.AUTH_SESSIONS].delete_one(
+            {"token_hash": token_hash}
+        )
+        return result.deleted_count > 0
+
+    async def update_auth_session_csrf(self, token_hash: str, csrf_hash: str) -> bool:
+        """Rotate the stored CSRF hash for an existing auth session."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        result = await self._db[CollectionName.AUTH_SESSIONS].update_one(
+            {"token_hash": token_hash},
+            {"$set": {"csrf_hash": csrf_hash, "updated_at": datetime.now(UTC)}},
+        )
+        return result.modified_count > 0
+
+    async def create_binance_connection(self, connection: dict[str, Any]) -> dict[str, Any]:
+        """Create an encrypted Binance credential connection."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        document = dict(connection)
+        await self._db[CollectionName.BINANCE_CONNECTIONS].insert_one(document)
+        document.pop("_id", None)
+        return document
+
+    async def list_binance_connections(self, user_id: str) -> list[dict[str, Any]]:
+        """List saved Binance connections for one user."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        cursor = self._db[CollectionName.BINANCE_CONNECTIONS].find(
+            {"user_id": user_id},
+            {"_id": 0},
+        ).sort("created_at", -1)
+        return [dict(document) async for document in cursor]
+
+    async def get_binance_connection(
+        self, user_id: str, connection_id: str
+    ) -> dict[str, Any] | None:
+        """Fetch one Binance connection belonging to a user."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        document = await self._db[CollectionName.BINANCE_CONNECTIONS].find_one(
+            {"user_id": user_id, "connection_id": connection_id},
+            {"_id": 0},
+        )
+        return dict(document) if document else None
+
+    async def delete_binance_connection(self, user_id: str, connection_id: str) -> bool:
+        """Delete one Binance connection belonging to a user."""
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        result = await self._db[CollectionName.BINANCE_CONNECTIONS].delete_one(
+            {"user_id": user_id, "connection_id": connection_id}
+        )
+        return result.deleted_count > 0
 
     @staticmethod
     def _normalize_tags(tags: Any) -> list[str]:
@@ -785,7 +926,6 @@ class MongoRepository(DataRepository):
         self, candles: list[Candle], symbol: str, interval: str
     ) -> int:
         """Sync implementation of store_candles_bulk (runs in thread pool)."""
-
         collection = self._sync_db[CollectionName.candles(symbol, interval)]
         operations = [
             UpdateOne(
@@ -956,7 +1096,6 @@ class MongoRepository(DataRepository):
         """Sync implementation of store_trader_position_bulk (runs in thread pool)."""
         from pymongo.errors import (
             BulkWriteError as SyncBulkWriteError,
-            DuplicateKeyError as SyncDuplicateKeyError,
         )
 
         collection = self._sync_db[CollectionName.TRADER_POSITIONS]
@@ -999,7 +1138,7 @@ class MongoRepository(DataRepository):
                 {"$setOnInsert": normalized},
                 upsert=True,
             )
-        except SyncDuplicateKeyError:
+        except DuplicateKeyError:
             pass
         return True
 

@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Binance Positions</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #19202a;
+      --muted: #667085;
+      --line: #d9dee7;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --danger: #b42318;
+      --warn: #b54708;
+      --ok: #047857;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.4;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 20px; font-weight: 700; }
+    h2 { font-size: 16px; font-weight: 700; margin-bottom: 14px; }
+    h3 { font-size: 14px; font-weight: 700; margin: 18px 0 10px; }
+
+    main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 24px auto 48px;
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) 1fr;
+      gap: 18px;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    form {
+      display: grid;
+      gap: 12px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 11px;
+      color: var(--ink);
+      font: inherit;
+      background: #fff;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--accent);
+      outline: 2px solid rgba(15, 118, 110, 0.16);
+    }
+
+    button {
+      min-height: 38px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #fff;
+      background: var(--accent);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:hover { background: var(--accent-dark); }
+    button.secondary {
+      color: var(--ink);
+      background: #fff;
+      border-color: var(--line);
+    }
+    button.secondary:hover { background: #f3f4f6; }
+    button.danger { background: var(--danger); }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .stack { display: grid; gap: 14px; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .hidden { display: none !important; }
+
+    .status {
+      min-height: 22px;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .status.error { color: var(--danger); }
+    .status.ok { color: var(--ok); }
+    .status.warn { color: var(--warn); }
+
+    .connection {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+
+    .connection.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.14);
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 18px;
+      overflow-wrap: anywhere;
+    }
+
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      padding: 10px 12px;
+      text-align: right;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+
+    th:first-child, td:first-child { text-align: left; }
+    tr:last-child td { border-bottom: 0; }
+    th { color: var(--muted); background: #f8fafc; font-weight: 700; }
+
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+      .metrics { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+    }
+
+    @media (max-width: 520px) {
+      main { width: min(100vw - 20px, 1180px); margin-top: 12px; }
+      section { padding: 14px; }
+      .metrics { grid-template-columns: 1fr; }
+      .row > button { flex: 1 1 130px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Binance Positions</h1>
+      <p class="muted" id="identity">Signed out</p>
+    </div>
+    <button id="logoutButton" class="secondary hidden" type="button">Logout</button>
+  </header>
+
+  <main>
+    <div class="stack">
+      <section id="authSection">
+        <h2>Account</h2>
+        <form id="authForm">
+          <label>Email
+            <input id="email" name="email" autocomplete="email" required>
+          </label>
+          <label>Password
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <div class="row">
+            <button id="loginButton" type="submit">Login</button>
+            <button id="registerButton" class="secondary" type="button">Register</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="connectionSection" class="hidden">
+        <h2>Saved Connection</h2>
+        <form id="connectionForm">
+          <label>Label
+            <input id="label" name="label" autocomplete="off" placeholder="Primary Binance" required>
+          </label>
+          <label>API Key
+            <input id="apiKey" name="apiKey" autocomplete="off" spellcheck="false" required>
+          </label>
+          <label>API Secret
+            <input id="apiSecret" name="apiSecret" type="password" autocomplete="off" spellcheck="false" required>
+          </label>
+          <button type="submit">Save Encrypted</button>
+        </form>
+        <h3>Connections</h3>
+        <div id="connections" class="stack"></div>
+      </section>
+    </div>
+
+    <section id="positionsSection" class="hidden">
+      <div class="row" style="justify-content: space-between;">
+        <div>
+          <h2>Positions</h2>
+          <p class="muted" id="asOf"></p>
+        </div>
+        <div class="row">
+          <label class="row" style="gap: 6px;">
+            <input id="includeZero" type="checkbox" style="width: auto;">
+            Zero rows
+          </label>
+          <button id="refreshButton" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <div class="metrics" id="totals"></div>
+      <p id="warnings" class="status warn"></p>
+
+      <h3>Futures</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th><th>Side</th><th>Amount</th><th>Entry</th><th>Mark</th>
+              <th>Notional</th><th>UPnL</th><th>Leverage</th><th>Liq</th>
+            </tr>
+          </thead>
+          <tbody id="futuresRows"></tbody>
+        </table>
+      </div>
+
+      <h3>Spot</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Asset</th><th>Free</th><th>Locked</th><th>Total</th><th>Price</th><th>Value</th>
+            </tr>
+          </thead>
+          <tbody id="spotRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <p id="status" class="status" style="width: min(1180px, calc(100vw - 32px)); margin: -28px auto 40px;"></p>
+
+  <script>
+    let csrfToken = "";
+    let activeConnectionId = "";
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("status");
+
+    function setStatus(message, type = "") {
+      statusEl.textContent = message;
+      statusEl.className = `status ${type}`;
+    }
+
+    function money(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+      return Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+
+    function amount(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+      return Number(value).toLocaleString(undefined, { maximumFractionDigits: 8 });
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[char]);
+    }
+
+    async function api(path, options = {}) {
+      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+      if (csrfToken && !["GET", "HEAD"].includes((options.method || "GET").toUpperCase())) {
+        headers["X-CSRF-Token"] = csrfToken;
+      }
+      const response = await fetch(path, { credentials: "same-origin", ...options, headers });
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!response.ok) throw new Error(data.detail || data.error || "Request failed");
+      return data;
+    }
+
+    function setSignedIn(user) {
+      $("identity").textContent = user ? user.email : "Signed out";
+      $("logoutButton").classList.toggle("hidden", !user);
+      $("authSection").classList.toggle("hidden", !!user);
+      $("connectionSection").classList.toggle("hidden", !user);
+      $("positionsSection").classList.toggle("hidden", !user);
+    }
+
+    async function loadMe() {
+      try {
+        const data = await api("/api/v1/auth/me");
+        csrfToken = data.csrf_token;
+        setSignedIn(data.user);
+        await loadConnections();
+      } catch (_) {
+        csrfToken = "";
+        setSignedIn(null);
+      }
+    }
+
+    async function auth(mode) {
+      const email = $("email").value.trim();
+      const password = $("password").value;
+      const data = await api(`/api/v1/auth/${mode}`, {
+        method: "POST",
+        body: JSON.stringify({ email, password })
+      });
+      csrfToken = data.csrf_token;
+      $("password").value = "";
+      setSignedIn(data.user);
+      setStatus(`${mode === "login" ? "Logged in" : "Registered"}.`, "ok");
+      await loadConnections();
+    }
+
+    async function loadConnections() {
+      const data = await api("/api/v1/binance/connections");
+      const root = $("connections");
+      root.innerHTML = "";
+      if (!data.connections.length) {
+        root.innerHTML = '<p class="muted">No saved connections.</p>';
+        return;
+      }
+      data.connections.forEach((connection) => {
+        const item = document.createElement("div");
+        item.className = `connection ${connection.connection_id === activeConnectionId ? "active" : ""}`;
+        item.innerHTML = `
+          <strong>${escapeHtml(connection.label)}</strong>
+          <span class="muted">${escapeHtml(connection.masked_api_key)}</span>
+          <div class="row">
+            <button type="button" data-view="${escapeHtml(connection.connection_id)}">View</button>
+            <button type="button" class="danger" data-delete="${escapeHtml(connection.connection_id)}">Delete</button>
+          </div>
+        `;
+        root.appendChild(item);
+      });
+    }
+
+    async function saveConnection(event) {
+      event.preventDefault();
+      const payload = {
+        label: $("label").value,
+        api_key: $("apiKey").value,
+        api_secret: $("apiSecret").value,
+        scope: "spot_and_usdm_futures"
+      };
+      await api("/api/v1/binance/connections", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      $("apiKey").value = "";
+      $("apiSecret").value = "";
+      $("label").value = "";
+      setStatus("Connection saved.", "ok");
+      await loadConnections();
+    }
+
+    async function refreshPositions() {
+      if (!activeConnectionId) {
+        setStatus("Select a connection first.", "warn");
+        return;
+      }
+      const includeZero = $("includeZero").checked ? "true" : "false";
+      setStatus("Fetching Binance account data...");
+      const data = await api(`/api/v1/binance/positions?connection_id=${encodeURIComponent(activeConnectionId)}&include_zero=${includeZero}`);
+      renderPositions(data);
+      setStatus("Positions refreshed.", "ok");
+    }
+
+    function renderPositions(data) {
+      $("asOf").textContent = `As of ${new Date(data.as_of).toLocaleString()}`;
+      $("warnings").textContent = data.warnings.join(" | ");
+      const totals = [
+        ["Estimated", data.totals.estimated_usdt_value],
+        ["Spot", data.totals.spot_value_usdt],
+        ["Futures Wallet", data.totals.futures_wallet_balance_usdt],
+        ["Futures UPnL", data.totals.futures_unrealized_pnl_usdt],
+      ];
+      $("totals").innerHTML = totals.map(([label, value]) => `
+        <div class="metric"><span>${label}</span><strong>${money(value)} USDT</strong></div>
+      `).join("");
+      $("futuresRows").innerHTML = data.futures_positions.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.symbol)}</td><td>${escapeHtml(row.side)}</td><td>${amount(row.position_amt)}</td>
+          <td>${money(row.entry_price)}</td><td>${money(row.mark_price)}</td>
+          <td>${money(row.notional_usdt)}</td><td>${money(row.unrealized_pnl)}</td>
+          <td>${amount(row.leverage)}</td><td>${money(row.liquidation_price)}</td>
+        </tr>
+      `).join("") || '<tr><td colspan="9">No futures positions.</td></tr>';
+      $("spotRows").innerHTML = data.spot_balances.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.asset)}</td><td>${amount(row.free)}</td><td>${amount(row.locked)}</td>
+          <td>${amount(row.total)}</td><td>${money(row.price_usdt)}</td><td>${money(row.value_usdt)}</td>
+        </tr>
+      `).join("") || '<tr><td colspan="6">No spot balances.</td></tr>';
+    }
+
+    $("authForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try { await auth("login"); } catch (error) { setStatus(error.message, "error"); }
+    });
+    $("registerButton").addEventListener("click", async () => {
+      try { await auth("register"); } catch (error) { setStatus(error.message, "error"); }
+    });
+    $("logoutButton").addEventListener("click", async () => {
+      try {
+        await api("/api/v1/auth/logout", { method: "POST", body: "{}" });
+        csrfToken = "";
+        activeConnectionId = "";
+        setSignedIn(null);
+        setStatus("Logged out.", "ok");
+      } catch (error) { setStatus(error.message, "error"); }
+    });
+    $("connectionForm").addEventListener("submit", async (event) => {
+      try { await saveConnection(event); } catch (error) { setStatus(error.message, "error"); }
+    });
+    $("connections").addEventListener("click", async (event) => {
+      const viewId = event.target.dataset.view;
+      const deleteId = event.target.dataset.delete;
+      try {
+        if (viewId) {
+          activeConnectionId = viewId;
+          await loadConnections();
+          await refreshPositions();
+        }
+        if (deleteId) {
+          await api(`/api/v1/binance/connections/${encodeURIComponent(deleteId)}`, { method: "DELETE", body: "{}" });
+          if (activeConnectionId === deleteId) activeConnectionId = "";
+          await loadConnections();
+          setStatus("Connection deleted.", "ok");
+        }
+      } catch (error) { setStatus(error.message, "error"); }
+    });
+    $("refreshButton").addEventListener("click", async () => {
+      try { await refreshPositions(); } catch (error) { setStatus(error.message, "error"); }
+    });
+    $("includeZero").addEventListener("change", async () => {
+      try { await refreshPositions(); } catch (error) { setStatus(error.message, "error"); }
+    });
+
+    loadMe();
+  </script>
+</body>
+</html>

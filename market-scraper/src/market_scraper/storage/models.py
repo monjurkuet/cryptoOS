@@ -190,6 +190,9 @@ class CollectionName:
     TRACKED_TRADERS = "tracked_traders"
     TRADER_CURRENT_STATE = "trader_current_state"
     TRADER_CLOSED_TRADES = "trader_closed_trades"
+    APP_USERS = "app_users"
+    AUTH_SESSIONS = "auth_sessions"
+    BINANCE_CONNECTIONS = "binance_connections"
 
     # Signals
     SIGNALS = "signals"
