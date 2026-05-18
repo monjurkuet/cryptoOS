@@ -14,9 +14,21 @@ from market_scraper.event_bus.memory_bus import MemoryEventBus
 from market_scraper.streaming import SubscriptionManager, WebSocketServer
 
 
-async def _wait_for_event_bus_idle(event_bus: MemoryEventBus) -> None:
-    """Wait until the in-memory event bus has delivered queued events."""
-    await asyncio.wait_for(event_bus._queue.join(), timeout=2.0)
+async def _wait_for_send_calls(
+    websocket: AsyncMock,
+    expected_count: int,
+    timeout_seconds: float = 10.0,
+) -> None:
+    """Wait until a websocket mock has received the expected send count."""
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if websocket.send.call_count >= expected_count:
+            return
+        await asyncio.sleep(0.01)
+
+    raise TimeoutError(
+        f"Expected at least {expected_count} websocket sends, got {websocket.send.call_count}"
+    )
 
 
 class TestStreamingIntegration:
@@ -124,7 +136,7 @@ class TestStreamingIntegration:
 
         await event_bus.publish(event)
 
-        await _wait_for_event_bus_idle(event_bus)
+        await _wait_for_send_calls(mock_ws, expected_count=1)
 
         # Verify the event was broadcast
         assert mock_ws.send.called
@@ -148,15 +160,17 @@ class TestStreamingIntegration:
         server._subscription_manager.subscribe(client_id, mock_ws, "BTC-USD", "*")
 
         # Publish different event types
-        for event_type in [EventType.TRADE, EventType.TICKER, EventType.OHLCV]:
+        for expected_count, event_type in enumerate(
+            [EventType.TRADE, EventType.TICKER, EventType.OHLCV],
+            start=1,
+        ):
             event = StandardEvent.create(
                 event_type=event_type,
                 source="test",
                 payload={"symbol": "BTC-USD", "price": 50000.0},
             )
             await event_bus.publish(event)
-
-        await _wait_for_event_bus_idle(event_bus)
+            await _wait_for_send_calls(mock_ws, expected_count=expected_count)
 
         # Should receive all 3 events
         assert mock_ws.send.call_count == 3
@@ -191,7 +205,7 @@ class TestStreamingIntegration:
         )
         await event_bus.publish(eth_event)
 
-        await _wait_for_event_bus_idle(event_bus)
+        await _wait_for_send_calls(mock_ws, expected_count=1)
 
         # Should only receive BTC event
         assert mock_ws.send.call_count == 1
@@ -292,7 +306,7 @@ class TestStreamingIntegration:
         )
 
         await event_bus.publish(event)
-        await _wait_for_event_bus_idle(event_bus)
+        await _wait_for_send_calls(good_ws, expected_count=1)
 
         # Good client should still receive the message
         assert good_ws.send.called

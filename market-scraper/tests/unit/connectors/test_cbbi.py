@@ -3,7 +3,7 @@
 """Unit tests for CBBI connector skeleton."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 
 from market_scraper.connectors.base import ConnectorConfig, DataConnector
 from market_scraper.connectors.cbbi import (
@@ -106,8 +106,8 @@ class TestCBBIConnector:
         """Test that connect/disconnect updates is_connected."""
         config = CBBIConfig(name="cbbi")
         connector = CBBIConnector(config)
-        connector._client.connect = AsyncMock()
-        connector._client.close = AsyncMock()
+        connector._client.connect = MagicMock()
+        connector._client.close = MagicMock()
 
         async def run_test() -> None:
             await connector.connect()
