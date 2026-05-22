@@ -26,6 +26,15 @@ class CurrentUser:
     csrf_hash: str
 
 
+def _normalize_utc_datetime(value: Any) -> datetime | None:
+    """Normalize datetimes from storage to UTC-aware values."""
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def get_account_repository(lifecycle: LifecycleManager = Depends(get_lifecycle)) -> Any:
     """Return a repository that supports account storage."""
     repository = lifecycle.repository
@@ -58,8 +67,8 @@ async def require_current_user(
     if not session:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
 
-    expires_at = session.get("expires_at")
-    if not isinstance(expires_at, datetime) or expires_at <= datetime.now(UTC):
+    expires_at = _normalize_utc_datetime(session.get("expires_at"))
+    if expires_at is None or expires_at <= datetime.now(UTC):
         await repository.delete_auth_session(token_hash)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
 
