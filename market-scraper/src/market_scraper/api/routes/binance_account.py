@@ -24,6 +24,7 @@ from market_scraper.binance_account.models import (
     BinanceConnectionCreateRequest,
     BinanceConnectionResponse,
     BinanceConnectionsListResponse,
+    BinanceOrdersResponse,
     BinancePositionsResponse,
 )
 from market_scraper.binance_account.security import CredentialCipher, mask_api_key
@@ -123,6 +124,31 @@ async def delete_connection(
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
     return {"ok": True}
+
+
+@router.get("/orders", response_model=BinanceOrdersResponse)
+async def get_open_orders(
+    connection_id: str = Query(..., min_length=1),
+    current_user: CurrentUser = Depends(require_current_user),
+    repository: Any = Depends(get_account_repository),
+    settings: Settings = Depends(get_settings_dependency),
+) -> BinanceOrdersResponse:
+    """Fetch live Binance USD-M futures open orders."""
+    _require_feature_enabled(settings)
+    cipher = _credential_cipher(settings)
+    connection = await repository.get_binance_connection(current_user.user_id, connection_id)
+    if not connection:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+
+    credentials = BinanceCredentials(
+        api_key=cipher.decrypt(str(connection["api_key_encrypted"])),
+        api_secret=cipher.decrypt(str(connection["api_secret_encrypted"])),
+    )
+    try:
+        async with BinanceAccountClient(credentials, settings.binance_account) as client:
+            return await client.get_open_orders(connection_id=connection_id)
+    except BinanceAPIError as exc:
+        raise _binance_http_exception(exc) from exc
 
 
 @router.get("/positions", response_model=BinancePositionsResponse)

@@ -75,6 +75,27 @@ class FuturesPositionResponse(BaseModel):
     liquidation_price: float | None = None
 
 
+class OpenOrderResponse(BaseModel):
+    """Binance USD-M futures open order."""
+
+    symbol: str
+    side: str
+    type: str
+    price: float
+    orig_qty: float
+    time: int
+    order_id: int
+    reduce_only: bool
+
+
+class BinanceOrdersResponse(BaseModel):
+    """Binance USD-M futures open orders response."""
+
+    connection_id: str
+    as_of: datetime
+    orders: list[OpenOrderResponse]
+
+
 class BinancePositionsResponse(BaseModel):
     """Combined Binance spot and USD-M futures positions response."""
 

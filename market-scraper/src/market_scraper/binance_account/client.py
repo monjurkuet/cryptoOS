@@ -15,9 +15,11 @@ import httpx
 
 from market_scraper.binance_account.models import (
     BinanceAccountScope,
+    BinanceOrdersResponse,
     BinancePositionsResponse,
     BinanceTotalsResponse,
     FuturesPositionResponse,
+    OpenOrderResponse,
     SpotBalanceResponse,
 )
 from market_scraper.core.config import BinanceAccountSettings
@@ -136,6 +138,22 @@ class BinanceAccountClient:
             spot_balances=spot_balances,
             futures_positions=futures_positions,
             warnings=list(dict.fromkeys(self.warnings)),
+        )
+
+    async def get_open_orders(
+        self,
+        connection_id: str,
+    ) -> BinanceOrdersResponse:
+        """Fetch USD-M futures open orders."""
+        data = await self._signed_request("futures", "GET", "/fapi/v1/openOrders")
+        raw_orders: list[dict[str, Any]] = (
+            [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+        )
+        orders = self._normalize_open_orders(raw_orders)
+        return BinanceOrdersResponse(
+            connection_id=connection_id,
+            as_of=datetime.now(UTC),
+            orders=orders,
         )
 
     async def get_spot_account(self) -> dict[str, Any]:
@@ -334,6 +352,26 @@ class BinanceAccountClient:
             )
 
         normalized.sort(key=lambda item: item.value_usdt or 0.0, reverse=True)
+        return normalized
+
+    @staticmethod
+    def _normalize_open_orders(
+        orders: list[dict[str, Any]],
+    ) -> list[OpenOrderResponse]:
+        normalized: list[OpenOrderResponse] = []
+        for row in orders:
+            normalized.append(
+                OpenOrderResponse(
+                    symbol=str(row.get("symbol", "")).upper(),
+                    side=str(row.get("side", "")),
+                    type=str(row.get("type", "")),
+                    price=float(_decimal(row.get("price"))),
+                    orig_qty=float(_decimal(row.get("origQty"))),
+                    time=int(row.get("time", 0)),
+                    order_id=int(row.get("orderId", 0)),
+                    reduce_only=bool(row.get("reduceOnly", False)),
+                )
+            )
         return normalized
 
     @staticmethod
