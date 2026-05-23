@@ -50,6 +50,19 @@ class BinanceCredentials:
 class BinanceAccountClient:
     """Fetch Binance spot balances and USD-M futures positions."""
 
+    # Stablecoins pegged 1:1 to USDT.
+    _STABLECOIN_ASSETS = frozenset({"USDT", "FDUSD", "USDC", "BUSD", "TUSD", "DAI"})
+    # Launchpool (LD*) tokens that are 1:1 with their stablecoin base.
+    _LD_STABLECOIN_MAP: dict[str, Decimal] = {
+        "LDUSDT": Decimal("1"),
+        "LDUSDC": Decimal("1"),
+        "LDFDUSD": Decimal("1"),
+        "LDBUSD": Decimal("1"),
+        "LDTUSD": Decimal("1"),
+    }
+    # Quote assets to try when looking up a spot price (ordered by liquidity).
+    _QUOTE_FALLBACKS = ("USDT", "USDC", "FDUSD", "BUSD", "TUSD")
+
     def __init__(
         self,
         credentials: BinanceCredentials,
@@ -241,6 +254,48 @@ class BinanceAccountClient:
             return self._settings.spot_base_url.rstrip("/")
         return self._settings.futures_base_url.rstrip("/")
 
+    def _resolve_price_usdt(
+        self,
+        asset: str,
+        prices: dict[str, Decimal],
+    ) -> Decimal | None:
+        """Resolve the USDT price for an asset using multiple strategies.
+
+        Strategies (in order):
+        1. Direct stablecoin peg (USDT, USDC, FDUSD, etc.)
+        2. LD-stablecoin peg (LDUSDT, LDUSDC, etc.)
+        3. LD-crypto unwrap: LDBTC→BTCUSDT, LDETH→ETHUSDT
+        4. Multi-quote fallback: {asset}USDT, {asset}USDC, {asset}FDUSD…
+        """
+        # 1. Direct stablecoin
+        if asset in self._STABLECOIN_ASSETS:
+            return Decimal("1")
+
+        # 2. LD-stablecoin peg
+        if asset in self._LD_STABLECOIN_MAP:
+            return self._LD_STABLECOIN_MAP[asset]
+
+        # 3. LD-crypto unwrap: strip "LD" prefix and look up the base token
+        if asset.startswith("LD") and len(asset) > 2:
+            base = asset[2:]  # e.g. LDBTC → BTC
+            for quote in self._QUOTE_FALLBACKS:
+                price = prices.get(f"{base}{quote}")
+                if price is not None:
+                    if quote == "USDT":
+                        return price
+                    # Convert via stablecoin pair (assume 1:1 to USDT)
+                    return price
+
+        # 4. Multi-quote fallback for any other token
+        for quote in self._QUOTE_FALLBACKS:
+            price = prices.get(f"{asset}{quote}")
+            if price is not None:
+                if quote == "USDT":
+                    return price
+                return price
+
+        return None
+
     def _normalize_spot_balances(
         self,
         balances: Any,
@@ -262,16 +317,10 @@ class BinanceAccountClient:
             if not include_zero and total == 0:
                 continue
 
-            price_usdt: Decimal | None
-            value_usdt: Decimal | None
-            if asset in {"USDT", "FDUSD", "USDC"}:
-                price_usdt = Decimal("1")
-                value_usdt = total
-            else:
-                price_usdt = prices.get(f"{asset}USDT")
-                value_usdt = total * price_usdt if price_usdt is not None else None
-                if total > 0 and price_usdt is None:
-                    self.warnings.append(f"No USDT spot price found for {asset}")
+            price_usdt = self._resolve_price_usdt(asset, prices)
+            value_usdt = total * price_usdt if price_usdt is not None else None
+            if total > 0 and price_usdt is None:
+                self.warnings.append(f"No USDT spot price found for {asset}")
 
             normalized.append(
                 SpotBalanceResponse(
