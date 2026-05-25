@@ -834,6 +834,7 @@ async def get_traders_batch(
                 "positions": positions,
                 "open_orders": open_orders,
                 "margin_summary": state.get("margin_summary", {}) if isinstance(state, dict) else {},
+                "metrics": _build_metrics_from_performances(trader),
             }
         )
 
