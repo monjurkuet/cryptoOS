@@ -110,6 +110,7 @@ class TraderDetailResponse(BaseModel):
     has_positions: bool = False
     btc_position: dict[str, Any] | None = None  # BTC-specific position if available
     btc_open_orders: list[dict[str, Any]] = []
+    metrics: dict[str, Any] | None = None
 
 
 class TraderClosedTradeResponse(BaseModel):
@@ -493,32 +494,7 @@ async def list_traders(
             normalized_tags = [str(item).lower() for item in (t.get("tags", []) or [])]
             metrics = None
             if needs_performance_fields:
-                performances = t.get("performances", {})
-                if not isinstance(performances, dict):
-                    performances = {}
-                day = performances.get("day", {}) if isinstance(performances.get("day", {}), dict) else {}
-                week = performances.get("week", {}) if isinstance(performances.get("week", {}), dict) else {}
-                month = performances.get("month", {}) if isinstance(performances.get("month", {}), dict) else {}
-                all_time = performances.get("allTime", {}) if isinstance(performances.get("allTime", {}), dict) else {}
-                metrics = {
-                    "roi": {
-                        "day": float(day.get("roi", 0) or 0),
-                        "week": float(week.get("roi", 0) or 0),
-                        "month": float(month.get("roi", 0) or 0),
-                        "all_time": float(all_time.get("roi", 0) or 0),
-                    },
-                    "volume": {
-                        "day": float(day.get("vlm", 0) or 0),
-                        "week": float(week.get("vlm", 0) or 0),
-                        "month": float(month.get("vlm", 0) or 0),
-                    },
-                    "pnl": {
-                        "day": float(day.get("pnl", 0) or 0),
-                        "week": float(week.get("pnl", 0) or 0),
-                        "month": float(month.get("pnl", 0) or 0),
-                        "all_time": float(all_time.get("pnl", 0) or 0),
-                    },
-                }
+                metrics = _build_metrics_from_performances(t)
 
             has_pos = False
             has_orders = False
@@ -868,6 +844,39 @@ async def get_traders_batch(
     }
 
 
+def _build_metrics_from_performances(trader: dict[str, Any]) -> dict[str, Any] | None:
+    """Build the metrics dict from a trader's performances data.
+
+    Returns None if performances is empty/missing, matching the list endpoint behavior.
+    """
+    performances = trader.get("performances", {})
+    if not isinstance(performances, dict) or not performances:
+        return None
+    day = performances.get("day", {}) if isinstance(performances.get("day", {}), dict) else {}
+    week = performances.get("week", {}) if isinstance(performances.get("week", {}), dict) else {}
+    month = performances.get("month", {}) if isinstance(performances.get("month", {}), dict) else {}
+    all_time = performances.get("allTime", {}) if isinstance(performances.get("allTime", {}), dict) else {}
+    return {
+        "roi": {
+            "day": float(day.get("roi", 0) or 0),
+            "week": float(week.get("roi", 0) or 0),
+            "month": float(month.get("roi", 0) or 0),
+            "all_time": float(all_time.get("roi", 0) or 0),
+        },
+        "volume": {
+            "day": float(day.get("vlm", 0) or 0),
+            "week": float(week.get("vlm", 0) or 0),
+            "month": float(month.get("vlm", 0) or 0),
+        },
+        "pnl": {
+            "day": float(day.get("pnl", 0) or 0),
+            "week": float(week.get("pnl", 0) or 0),
+            "month": float(month.get("pnl", 0) or 0),
+            "all_time": float(all_time.get("pnl", 0) or 0),
+        },
+    }
+
+
 @router.get("/{address}", response_model=TraderDetailResponse)
 async def get_trader(
     address: str,
@@ -964,6 +973,7 @@ async def get_trader(
             has_positions=has_positions,
             btc_position=btc_position,
             btc_open_orders=btc_open_orders,
+            metrics=_build_metrics_from_performances(trader),
         )
 
     except HTTPException:
