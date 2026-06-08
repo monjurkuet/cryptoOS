@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+
 """Independent lightweight health proxy for market-scraper.
 
 Serves on 127.0.0.1:3847 and proxies health checks to market-scraper on 3845.
+
 """
 from __future__ import annotations
 
@@ -9,44 +11,65 @@ import json
 import socket
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as PoolTimeoutError
 
-UPSTREAM = "http://127.0.0.1:3845/health/live"
+UPSTREAM_HEALTH = "http://127.0.0.1:3845/health/live"
+UPSTREAM_READY = "http://127.0.0.1:3846/health/live"
 HOST = "127.0.0.1"
 PORT = 3847
-TIMEOUT = 30
+PROBE_TIMEOUT = 3
+CLUSTER_TIMEOUT = 10
 
 
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, code: int, payload: dict) -> None:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def _probe(self) -> tuple[int, dict]:
+    def _probe_single(self, url: str, timeout: int) -> tuple[int, dict]:
         try:
-            req = urllib.request.Request(UPSTREAM, method="GET")
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-                raw = resp.read().decode("utf-8", errors="replace").strip()
+            req = urllib.request.Request(url, method='GET')
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode('utf-8', errors='replace').strip()
             # Preserve expected strict success payload when upstream is healthy.
-            if raw == '{"status":"alive"}':
+            if raw == '{"status": "alive"}':
                 return 200, {"status": "alive"}
             # Accept equivalent JSON payloads that include alive status.
             try:
                 parsed = json.loads(raw)
             except Exception:
                 parsed = None
-            if isinstance(parsed, dict) and parsed.get("status") == "alive" and "warning" not in parsed:
+            if isinstance(parsed, dict) and parsed.get('status') == 'alive' and 'warning' not in parsed:
                 return 200, {"status": "alive"}
             return 503, {"status": "degraded", "detail": raw[:300]}
-        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+        except (urllib.error.URLError, PoolTimeoutError, socket.timeout, OSError) as exc:
             return 503, {"status": "down", "error": str(exc)[:300]}
+
+    def _probe_cluster(self) -> tuple[int, dict]:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_health = executor.submit(self._probe_single, UPSTREAM_HEALTH, PROBE_TIMEOUT)
+            future_ready = executor.submit(self._probe_single, UPSTREAM_READY, PROBE_TIMEOUT)
+
+            try:
+                health_code, health_payload = future_health.result(timeout=CLUSTER_TIMEOUT)
+                ready_code, ready_payload = future_ready.result(timeout=CLUSTER_TIMEOUT)
+            except PoolTimeoutError:
+                return 503, {"status": "degraded", "error": "Health check timed out (cluster)"}
+
+            if health_code == 200 and ready_code == 200:
+                return 200, {"status": "alive"}
+            elif health_code == 200 and ready_code != 200:
+                return 200, {"status": "alive", "warning": f"Ready check degraded: {ready_payload.get('detail') or ready_payload.get('error')}"}
+            else:
+                return 503, {"status": "degraded", "health": health_payload, "ready": ready_payload}
 
     def do_GET(self) -> None:
         if self.path in ("/", "/health", "/health/live"):
-            code, payload = self._probe()
+            code, payload = self._probe_cluster()
             self._send_json(code, payload)
             return
         self._send_json(404, {"error": "not_found"})
