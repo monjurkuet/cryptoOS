@@ -16,11 +16,11 @@ from typing import Any
 
 import structlog
 
-# Runtime defaults are intentionally duplicated here so minimal API/runtime
-# does not import gymnasium-heavy RL environment modules.
-DEFAULT_BIAS_THRESHOLD = 0.2
-DEFAULT_CONF_SCALE = 1.0
-DEFAULT_MIN_CONFIDENCE = 0.3
+from signal_system.rl.environment import (
+    DEFAULT_BIAS_THRESHOLD,
+    DEFAULT_CONF_SCALE,
+    DEFAULT_MIN_CONFIDENCE,
+)
 
 logger = structlog.get_logger(__name__)
 

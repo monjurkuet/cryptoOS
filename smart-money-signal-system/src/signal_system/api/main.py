@@ -82,32 +82,6 @@ async def lifespan(app: FastAPI):
         signal_config_store=_runtime_components.config_store,
     )
 
-    # Register handlers using EventProcessor
-    async def handle_position(event: dict) -> None:
-        await _event_processor.handle_position_event(event)
-
-    async def handle_scored_traders(event: dict) -> None:
-        await _event_processor.handle_scored_traders(event)
-
-    async def handle_mark_price(event: dict) -> None:
-        payload = event.get("payload", {})
-        mark_price = payload.get("mark_price", 0)
-        if mark_price and _event_processor:
-            await _event_processor.handle_price_update(float(mark_price))
-
-    async def handle_ohlcv(event: dict) -> None:
-        payload = event.get("payload", {})
-        close_price = payload.get("close", 0)
-        if close_price and _event_processor:
-            await _event_processor.handle_price_update(float(close_price))
-
-    if _event_subscriber is None:
-        raise RuntimeError("Event subscriber not initialized")
-    _event_subscriber.subscribe("trader_positions", handle_position)
-    _event_subscriber.subscribe("scored_traders", handle_scored_traders)
-    _event_subscriber.subscribe("mark_price", handle_mark_price)
-    _event_subscriber.subscribe("ohlcv", handle_ohlcv)
-
     # Connect and start subscriber in background
     try:
         await _event_subscriber.connect()

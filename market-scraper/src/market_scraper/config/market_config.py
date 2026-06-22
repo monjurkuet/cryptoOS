@@ -87,6 +87,7 @@ class PositionInferenceConfig(BaseModel):
 
     enabled: bool = True
     confidence_threshold: float = 0.5
+    max_inferred_traders: int = 50
     indicators: dict[str, float] = {
         "day_roi_threshold": 0.0001,
         "pnl_ratio_threshold": 0.001,

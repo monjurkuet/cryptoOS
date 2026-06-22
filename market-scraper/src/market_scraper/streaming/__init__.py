@@ -5,7 +5,6 @@
 from market_scraper.streaming.broadcast import (
     BroadcastManager,
     BroadcastMessage,
-    MessageCompressor,
     RateLimitConfig,
     RateLimiter,
 )
@@ -19,5 +18,4 @@ __all__ = [
     "BroadcastMessage",
     "RateLimiter",
     "RateLimitConfig",
-    "MessageCompressor",
 ]

@@ -237,10 +237,6 @@ class WhaleAlertDetector:
             if not coins:
                 del self._position_history[address]
 
-    def _clean_old_changes(self) -> None:
-        """Remove changes outside the aggregation window."""
-        self._cleanup()
-
     def generate_alert(self, change: PositionChange | None = None) -> WhaleAlert | None:
         """Generate alert based on detected changes.
 
@@ -250,7 +246,7 @@ class WhaleAlertDetector:
         Returns:
             WhaleAlert if conditions met, else None
         """
-        self._clean_old_changes()
+        self._cleanup()
 
         changes_to_process = [change] if change else self._recent_changes
         if not changes_to_process:

@@ -498,30 +498,6 @@ class MongoRepository(DataRepository):
             "week_roi": float(data.get("week_roi", 0) or 0),
         }
 
-    @classmethod
-    def _current_state_payload(
-        cls,
-        address: str,
-        symbol: str,
-        positions: list[dict[str, Any]],
-        open_orders: list[dict[str, Any]],
-        margin_summary: dict[str, Any] | None,
-        event_timestamp: datetime,
-        source: str,
-        existing_state: dict[str, Any] | None = None,
-    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        """Build comparable payload for materialized trader current state."""
-        return cls.build_trader_current_state_payload(
-            address=address,
-            symbol=symbol,
-            positions=positions,
-            open_orders=open_orders,
-            margin_summary=margin_summary,
-            event_timestamp=event_timestamp,
-            source=source,
-            existing_state=existing_state,
-        )
-
     async def store(self, event: StandardEvent) -> bool:
         """Store a single event.
 
@@ -1903,7 +1879,7 @@ class MongoRepository(DataRepository):
             },
         )
 
-        doc, closed_trade = self._current_state_payload(
+        doc, closed_trade = MongoRepository.build_trader_current_state_payload(
             address=address,
             symbol=symbol,
             positions=positions,
@@ -2027,7 +2003,7 @@ class MongoRepository(DataRepository):
             key = (address.lower(), str(symbol or "").upper())
             existing = existing_states.get(key)
 
-            doc, closed_trade = self._current_state_payload(
+            doc, closed_trade = MongoRepository.build_trader_current_state_payload(
                 address=address,
                 symbol=symbol,
                 positions=positions,

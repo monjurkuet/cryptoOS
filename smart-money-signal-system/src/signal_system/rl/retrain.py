@@ -35,6 +35,12 @@ logger = structlog.get_logger(__name__)
 DEFAULT_CHECKPOINT_DIR = Path(__file__).parent.parent.parent.parent / "checkpoints"
 DEFAULT_EPISODES = 100
 
+# MongoDB collection names for candle data
+CANDLE_COLLECTION_5M = "btc_candles_5m"
+CANDLE_COLLECTION_15M = "btc_candles_15m"
+CANDLE_COLLECTION_1H = "btc_candles_1h"
+CANDLE_COLLECTION_1M = "btc_candles_1m"
+
 
 def _generate_outcomes_from_signals(
     mongo_client: Any,
@@ -67,9 +73,9 @@ def _generate_outcomes_from_signals(
     # Build candle lookup: map timestamp -> close price
     # Load 5m candles (good resolution for 1m/5m/15m/1h horizons)
     candle_cols = [
-        ("btc_candles_5m", 300),
-        ("btc_candles_15m", 900),
-        ("btc_candles_1h", 3600),
+        (CANDLE_COLLECTION_5M, 300),
+        (CANDLE_COLLECTION_15M, 900),
+        (CANDLE_COLLECTION_1H, 3600),
     ]
 
     candle_map: dict[float, float] = {}
@@ -86,7 +92,7 @@ def _generate_outcomes_from_signals(
     logger.info("candles_loaded", candle_count=len(candle_map))
 
     # Also load 1m candles for finer resolution
-    for candle in db["btc_candles_1m"].find():
+    for candle in db[CANDLE_COLLECTION_1M].find():
         t = candle.get("t")
         c = candle.get("c")
         if t is not None and c is not None:

@@ -120,9 +120,11 @@ class PositionInferenceProcessor(Processor):
             self._day_roi_threshold = indicators.get("day_roi_threshold", 0.0001)
             self._day_pnl_threshold = indicators.get("pnl_ratio_threshold", 0.001)
             self._day_volume_threshold = indicators.get("day_volume_threshold", 100_000)
+            self._max_inferred_traders = position_inference_config.max_inferred_traders
         else:
             self._enabled = True
             self._confidence_threshold = 0.5
+            self._max_inferred_traders = 50
             self._day_roi_threshold = 0.0001
             self._day_pnl_threshold = 0.001
             self._day_volume_threshold = 100_000
@@ -198,7 +200,7 @@ class PositionInferenceProcessor(Processor):
                 payload={
                     "symbol": self._config.symbol if self._config else "BTC",
                     "inferred_count": len(inferred),
-                    "traders": inferred[:50],  # Limit payload size
+                    "traders": inferred[:self._max_inferred_traders],  # Limit payload size
                 },
             )
 

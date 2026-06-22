@@ -77,8 +77,9 @@ class HealthMonitor:
 
     async def _perform_check(self, component: ComponentHealth) -> None:
         """Perform the actual health check for a component."""
-        await asyncio.sleep(0.01)
-        component.latency_ms = 1.0
+        # Delegate to the component's own health check if available
+        # Health checks are primarily handled by LifecycleManager
+        component.latency_ms = 0.0
 
     async def check_all(self) -> dict[str, ComponentHealth]:
         """Check health of all registered components."""

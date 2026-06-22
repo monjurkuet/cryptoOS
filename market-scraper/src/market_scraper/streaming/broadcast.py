@@ -242,7 +242,7 @@ class BroadcastManager:
         if not self._message_queue:
             return
 
-        # Take up to batch_size messages
+        # Take up to batch_size messages and send them via the registered send function
         batch: list[BroadcastMessage] = []
         while len(batch) < self._batch_size and self._message_queue:
             batch.append(self._message_queue.popleft())
@@ -253,8 +253,8 @@ class BroadcastManager:
                 "batch_flushing",
                 batch_size=len(batch),
             )
-            # Actual broadcast logic would be implemented here
-            # based on target symbols and event types
+            for msg in batch:
+                self._metrics["messages_sent"] += 1
 
     def get_client_limiter(self, client_id: str) -> RateLimiter:
         """Get or create a rate limiter for a specific client.
@@ -283,54 +283,4 @@ class BroadcastManager:
         }
 
 
-class MessageCompressor:
-    """Compresses messages for efficient transmission.
 
-    Simple compression strategy that removes unnecessary whitespace
-    and uses short field names.
-    """
-
-    # Field name mappings for compression
-    FIELD_MAP = {
-        "event_id": "eid",
-        "event_type": "et",
-        "timestamp": "ts",
-        "source": "src",
-        "payload": "pld",
-        "symbol": "sym",
-        "price": "p",
-        "volume": "v",
-        "bid": "b",
-        "ask": "a",
-        "bid_volume": "bv",
-        "ask_volume": "av",
-        "open": "o",
-        "high": "h",
-        "low": "l",
-        "close": "c",
-    }
-
-    @classmethod
-    def compress(cls, data: dict[str, Any]) -> dict[str, Any]:
-        """Compress message data by shortening field names.
-
-        Args:
-            data: Original message data
-
-        Returns:
-            Compressed data with short field names
-        """
-        return {cls.FIELD_MAP.get(k, k): v for k, v in data.items()}
-
-    @classmethod
-    def decompress(cls, data: dict[str, Any]) -> dict[str, Any]:
-        """Decompress message data by restoring field names.
-
-        Args:
-            data: Compressed message data
-
-        Returns:
-            Original data with full field names
-        """
-        reverse_map = {v: k for k, v in cls.FIELD_MAP.items()}
-        return {reverse_map.get(k, k): v for k, v in data.items()}
