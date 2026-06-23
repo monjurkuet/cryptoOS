@@ -718,6 +718,7 @@ class LeaderboardCollector:
                         "acct_val": trader.get("acct_val", 0),
                         "tags": trader.get("tags", []),
                         "performances": trader.get("performances", {}),
+                        "cadence_tier": trader.get("cadence_tier"),  # persist assigned tier
                         "active": True,
                     },
                     updated_at=now,
