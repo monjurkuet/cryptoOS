@@ -7,6 +7,7 @@ from market_scraper.api.routes import (
     cbbi,
     connectors,
     health,
+    leaderboard_raw,
     markets,
     onchain,
     signals,

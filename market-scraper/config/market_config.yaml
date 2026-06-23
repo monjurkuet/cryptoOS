@@ -48,7 +48,7 @@ volume_tiers:
 # Filter Criteria - Traders must match ALL filters
 filters:
   min_score: 50              # Minimum score to be tracked (0-100+)
-  max_count: 200 # Active tracked universe size (WS coverage rotates across this set)
+  max_count: 200             # Active tracked universe size (WS coverage rotates across this set)
   min_account_value: 10000   # Minimum account value ($10K)
 
   # Optional: Require specific performance
@@ -56,6 +56,24 @@ filters:
     all_time: false          # Require positive all-time ROI
     month: false             # Require positive month ROI
     week: false              # Require positive week ROI
+
+  # Numeric ROI thresholds (overrides require_positive when set)
+  min_roi_all_time: null     # Min all-time ROI (e.g. 0.5 = 50%) — null = no filter
+  max_roi_all_time: null     # Max all-time ROI
+  min_roi_month: null        # Min month ROI
+  max_roi_month: null        # Max month ROI
+  min_roi_week: null         # Min week ROI
+  max_roi_week: null         # Max week ROI
+  min_roi_day: null          # Min day ROI
+  max_roi_day: null          # Max day ROI
+
+  # Numeric volume thresholds
+  min_volume_month: null     # Min monthly volume
+  max_volume_month: null     # Max monthly volume
+
+  # Numeric PnL thresholds
+  min_pnl_all_time: null     # Min all-time PnL
+  max_pnl_all_time: null     # Max all-time PnL
 
   # Optional: Always include specific addresses in the tracked universe
   include:
@@ -110,10 +128,14 @@ storage:
   # Keep score history for trend analysis
   keep_score_history: false
 
+  # Cache the full raw 39K trader leaderboard snapshot each cycle
+  keep_raw_leaderboard: true
+
   # Per-collection retention (days) - automatic deletion via MongoDB TTL indexes
   retention:
     events: 2                  # Raw audit events only (canonical data lives elsewhere)
     leaderboard_history: 90    # Leaderboard snapshots
+    leaderboard_raw: 7         # Raw 39K trader snapshots (large dataset, shorter retention)
     trader_positions: 30       # Position snapshots
     trader_scores: 90          # Score history
     signals: 30                # Trading signals
@@ -126,130 +148,81 @@ storage:
 # Buffer and Flush Configuration
 # Controls how events are batched before being saved to MongoDB
 buffer:
-  # How often to automatically flush buffered events to database (seconds)
-  # Lower values = more frequent writes, lower latency
-  # Higher values = fewer writes, better throughput
   flush_interval: 120.0
 
-  # Maximum number of events to buffer before forced flush
-  # Lower values = more frequent writes
-  # Higher values = better batching, more memory usage
   max_size: 500
 
-  # Maximum messages to batch for WebSocket broadcasts
   broadcast_batch_size: 100
 
-  # Maximum milliseconds to wait before flushing broadcast batch
   broadcast_batch_timeout_ms: 10.0
 
 # Trader WS Tracking Strategy
 trader_ws:
-  # Keep WS fanout fixed for stability: no more than 5 clients.
   max_clients: 5
-  # Hyperliquid webData2 limit is 10 users per WS connection.
   subscriptions_per_client: 10
-  # Rotate which traders are live-tracked over WS through the full active universe.
   rotation_interval_seconds: 900
 
 # Candle Backfill Configuration
-# Fetches historical OHLCV data on startup instead of real-time WebSocket storage
 candle_backfill:
   enabled: true
-
-  # Start date for backfill (ISO format)
-  # Set to null to use earliest available data from Hyperliquid
-  # Hyperliquid launched ~2023, so data before then won't exist
-  start_date: null  # or "2023-01-01" for explicit date
-
-  # Timeframes to backfill (only 1h and above to reduce storage)
+  start_date: null
   timeframes:
     - "1h"
     - "4h"
     - "1d"
-
-  # Batch size per API request (number of candles)
   batch_size: 500
-
-  # Delay between API requests (seconds) to avoid rate limits
   rate_limit_delay: 0.5
-
-  # Run backfill on every startup (checks for missing data first)
   run_on_startup: false
-
-  # Smart backfill: only fetch data that doesn't exist in DB
-  # Queries latest candle timestamp and fetches from there to now
   incremental: true
 
 # Scheduler Configuration
-# Controls periodic background tasks
 scheduler:
   enabled: false
 
-  # Periodic tasks configuration
   tasks:
-    # Leaderboard refresh - fetch latest trader rankings
     leaderboard_refresh:
       enabled: true
-      interval_seconds: 3600  # 1 hour
+      interval_seconds: 3600
 
-    # Health check - verify all components are healthy
     health_check:
       enabled: true
-      interval_seconds: 600  # 10 minutes
+      interval_seconds: 600
 
-    # Data cleanup - remove old data based on retention settings
     data_cleanup:
-      enabled: false  # Disabled by default (use MongoDB TTL indexes instead)
-      interval_seconds: 86400  # 24 hours
+      enabled: false
+      interval_seconds: 86400
 
-    # Connector health - check on-chain connector status
     connector_health:
       enabled: true
-      interval_seconds: 600 # 10 minutes
+      interval_seconds: 600
 
-    # Memory guardian - periodic GC and RSS monitoring for VPS memory pressure
     memory_guardian:
       enabled: true
-      interval_seconds: 300 # 5 minutes
+      interval_seconds: 300
 
-    # Rotate WS-tracked trader subset through the active tracked universe.
     trader_ws_rotation:
       enabled: true
-      interval_seconds: 900 # 15 minutes
+      interval_seconds: 900
 
-    # Data archival - archive data before TTL deletion
     archival:
-      enabled: false  # Disabled for runtime stability on VPS
-      interval_seconds: 2592000  # 30 days (monthly)
+      enabled: false
+      interval_seconds: 2592000
 
 # Data Archival Configuration
-# Archives data before TTL deletion for long-term storage
 archival:
-  enabled: false  # Disabled for runtime stability on VPS
-
-  # Archive schedule (runs via scheduler)
-  schedule: "monthly"  # daily, weekly, monthly
-
-  # Compression settings
+  enabled: false
+  schedule: "monthly"
   compression:
     algorithm: "zstd"
-    level: 3  # 1=fastest, 22=best ratio, 3=balanced
-
-  # Git LFS configuration for archive storage
+    level: 3
   git_lfs:
-    repo_url: "${ARCHIVE_REPO_URL}"  # Set in .env
+    repo_url: "${ARCHIVE_REPO_URL}"
     branch: "main"
     local_cache: "/data/archives/repo"
-
-  # Local cache for archive files before push
   local_cache: "/data/archives"
-
-  # Collections to archive (matches retention keys)
   collections:
     - trader_positions
     - signals
     - leaderboard_history
     - candles
-
-  # Archive data older than retention_days before TTL deletion
-  archive_before_ttl_days: 2  # Archive 2 days before TTL expires
+  archive_before_ttl_days: 2

@@ -203,6 +203,7 @@ class CollectionName:
 
     # Leaderboard
     LEADERBOARD_HISTORY = "leaderboard_history"
+    LEADERBOARD_RAW = "leaderboard_raw"
 
     @classmethod
     def trades(cls, symbol: str) -> str:

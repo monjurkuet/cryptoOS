@@ -54,12 +54,29 @@ class FilterConfig(BaseModel):
     """Filter criteria for trader selection.
 
     Traders must match ALL filter criteria to be selected.
+    Supports both boolean (require_positive) and numeric thresholds
+    for ROI, volume, and PnL across all time windows.
     """
 
     min_score: float = 50
     max_count: int = 200
     min_account_value: float = 10000
     require_positive: dict[str, bool] = Field(default_factory=dict)
+    # Numeric ROI thresholds (null = no filter)
+    min_roi_all_time: float | None = None
+    max_roi_all_time: float | None = None
+    min_roi_month: float | None = None
+    max_roi_month: float | None = None
+    min_roi_week: float | None = None
+    max_roi_week: float | None = None
+    min_roi_day: float | None = None
+    max_roi_day: float | None = None
+    # Numeric volume thresholds
+    min_volume_month: float | None = None
+    max_volume_month: float | None = None
+    # Numeric PnL thresholds
+    min_pnl_all_time: float | None = None
+    max_pnl_all_time: float | None = None
     include: dict[str, list[str]] = Field(default_factory=dict)
     exclude: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -103,6 +120,7 @@ class RetentionConfig(BaseModel):
 
     events: int = Field(default=2, description="Days to keep raw audit events only")
     leaderboard_history: int = Field(default=90, description="Days to keep leaderboard history")
+    leaderboard_raw: int = Field(default=7, description="Days to keep raw 39K leaderboard snapshots")
     trader_positions: int = Field(default=7, description="Days to keep position snapshots")
     trader_closed_trades: int = Field(default=90, description="Days to keep closed-trade ledger")
     trader_scores: int = Field(default=90, description="Days to keep score history")
@@ -120,6 +138,7 @@ class StorageConfig(BaseModel):
     refresh_interval: int = 3600
     keep_snapshots: bool = True
     keep_score_history: bool = False
+    keep_raw_leaderboard: bool = True
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
 

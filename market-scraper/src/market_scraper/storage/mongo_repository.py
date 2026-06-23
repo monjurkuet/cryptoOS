@@ -184,6 +184,7 @@ class MongoRepository(DataRepository):
         ttl_collections = [
             ("events", "timestamp", retention.events),
             (CollectionName.LEADERBOARD_HISTORY, "t", retention.leaderboard_history),
+            (CollectionName.LEADERBOARD_RAW, "created_at", retention.leaderboard_raw),
             (CollectionName.TRADER_POSITIONS, "t", retention.trader_positions),
             (CollectionName.TRADER_CLOSED_TRADES, "t", retention.trader_closed_trades),
             (CollectionName.TRADER_SCORES, "t", retention.trader_scores),
@@ -1850,6 +1851,56 @@ class MongoRepository(DataRepository):
         except Exception as e:
             raise StorageError(f"Failed to get trader current states: {e}") from e
 
+    async def store_raw_leaderboard(
+        self,
+        symbol: str,
+        rows: list[dict],
+        fetch_time: datetime | None = None,
+    ) -> bool:
+        """Store full raw leaderboard snapshot (all 39K traders).
+
+        Inserts the raw trader rows as a single batch document to minimize
+        write pressure. The document stores the entire snapshot under 'rows'
+        with a 'created_at' timestamp for TTL-based auto-expiry.
+
+        Args:
+            symbol: Market symbol
+            rows: Raw leaderboard row dicts from the API
+            fetch_time: Snapshot timestamp (defaults to now)
+
+        Returns:
+            True if stored successfully
+        """
+        if self._sync_db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            return await self._db_to_thread(
+                self._sync_store_raw_leaderboard,
+                symbol, rows, fetch_time,
+            )
+        except Exception as e:
+            raise StorageError(f"Failed to store raw leaderboard: {e}") from e
+
+    def _sync_store_raw_leaderboard(
+        self,
+        symbol: str,
+        rows: list[dict],
+        fetch_time: datetime | None = None,
+    ) -> bool:
+        """Sync implementation of store_raw_leaderboard for thread pool."""
+        now = fetch_time or datetime.now(UTC)
+        collection = self._sync_db[CollectionName.LEADERBOARD_RAW]
+        collection.insert_one(
+            {
+                "created_at": now,
+                "symbol": symbol,
+                "row_count": len(rows),
+                "rows": rows,
+            }
+        )
+        return True
+
     async def store_leaderboard_snapshot(
         self,
         symbol: str,
@@ -1892,6 +1943,225 @@ class MongoRepository(DataRepository):
             }
         )
         return True
+
+    def _get_roi_field(self, timeframe: str) -> str:
+        """Get MongoDB field path for ROI in a given timeframe."""
+        return f"windowPerformances.{timeframe}.roi"
+
+    def _get_vlm_field(self, timeframe: str) -> str:
+        """Get MongoDB field path for volume in a given timeframe."""
+        return f"windowPerformances.{timeframe}.vlm"
+
+    def _get_pnl_field(self, timeframe: str) -> str:
+        """Get MongoDB field path for PnL in a given timeframe."""
+        return f"windowPerformances.{timeframe}.pnl"
+
+    def _resolve_sort_field(self, sort_by: str | None) -> str:
+        """Resolve a friendly sort key to the MongoDB field path."""
+        if sort_by is None or sort_by == "accountValue":
+            return "accountValue"
+        sort_map = {
+            "roi_all_time": self._get_roi_field("allTime"),
+            "roi_month": self._get_roi_field("month"),
+            "roi_week": self._get_roi_field("week"),
+            "roi_day": self._get_roi_field("day"),
+            "volume_month": self._get_vlm_field("month"),
+            "pnl_all_time": self._get_pnl_field("allTime"),
+            "acct_val": "accountValue",
+            "eth": "ethAddress",
+        }
+        return sort_map.get(sort_by, "accountValue")
+
+    async def get_raw_leaderboard(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: str | None = None,
+        sort_desc: bool = True,
+        min_score: float | None = None,
+        max_score: float | None = None,
+        min_acct_val: float | None = None,
+        max_acct_val: float | None = None,
+        min_roi_all_time: float | None = None,
+        max_roi_all_time: float | None = None,
+        min_roi_month: float | None = None,
+        max_roi_month: float | None = None,
+        min_roi_week: float | None = None,
+        max_roi_week: float | None = None,
+        min_roi_day: float | None = None,
+        max_roi_day: float | None = None,
+        min_volume_month: float | None = None,
+        max_volume_month: float | None = None,
+        min_pnl_all_time: float | None = None,
+        max_pnl_all_time: float | None = None,
+        has_positive: list[str] | None = None,
+        address_filter: list[str] | None = None,
+        fetch_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Query the latest raw leaderboard snapshot with arbitrary filters.
+
+        Uses MongoDB aggregation to unroll the raw rows array onto individual
+        traders, then applies filter criteria. This enables querying the full
+        39K trader universe without keeping it in application memory.
+
+        Args:
+            limit: Max results (default 50, max 500)
+            offset: Pagination offset
+            sort_by: Sort key (accountValue, roi_all_time, roi_month, roi_week, roi_day, volume_month, pnl_all_time)
+            sort_desc: Sort descending (default True)
+            min_* / max_*: Numeric range filters
+            has_positive: List of timeframes requiring positive ROI
+            address_filter: Specific addresses to filter by
+            fetch_time: Specific snapshot to query (None = latest)
+
+        Returns:
+            Dict with traders list, total, offset, limit
+        """
+        if self._sync_db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        try:
+            return await self._db_to_thread(
+                self._sync_get_raw_leaderboard,
+                limit=min(limit, 500),
+                offset=offset,
+                sort_by=sort_by,
+                sort_desc=sort_desc,
+                min_acct_val=min_acct_val,
+                max_acct_val=max_acct_val,
+                min_roi_all_time=min_roi_all_time,
+                max_roi_all_time=max_roi_all_time,
+                min_roi_month=min_roi_month,
+                max_roi_month=max_roi_month,
+                min_roi_week=min_roi_week,
+                max_roi_week=max_roi_week,
+                min_roi_day=min_roi_day,
+                max_roi_day=max_roi_day,
+                min_volume_month=min_volume_month,
+                max_volume_month=max_volume_month,
+                min_pnl_all_time=min_pnl_all_time,
+                max_pnl_all_time=max_pnl_all_time,
+                has_positive=has_positive,
+                address_filter=address_filter,
+                fetch_time=fetch_time,
+            )
+        except Exception as e:
+            raise StorageError(f"Failed to get raw leaderboard: {e}") from e
+
+    def _sync_get_raw_leaderboard(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: str | None = None,
+        sort_desc: bool = True,
+        min_acct_val: float | None = None,
+        max_acct_val: float | None = None,
+        min_roi_all_time: float | None = None,
+        max_roi_all_time: float | None = None,
+        min_roi_month: float | None = None,
+        max_roi_month: float | None = None,
+        min_roi_week: float | None = None,
+        max_roi_week: float | None = None,
+        min_roi_day: float | None = None,
+        max_roi_day: float | None = None,
+        min_volume_month: float | None = None,
+        max_volume_month: float | None = None,
+        min_pnl_all_time: float | None = None,
+        max_pnl_all_time: float | None = None,
+        has_positive: list[str] | None = None,
+        address_filter: list[str] | None = None,
+        fetch_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Sync implementation of get_raw_leaderboard for thread pool.
+
+        Uses aggregation pipeline: unwind rows -> match filters -> sort -> facet.
+        """
+        collection = self._sync_db[CollectionName.LEADERBOARD_RAW]
+
+        # Step 1: Find the target snapshot document
+        match_snapshot: dict[str, Any] = {}
+        if fetch_time:
+            match_snapshot["created_at"] = fetch_time
+
+        # Step 2: Build aggregation pipeline
+        pipeline: list[dict[str, Any]] = [
+            {"$match": match_snapshot},
+            {"$sort": {"created_at": -1}},
+            {"$limit": 1},
+            {"$unwind": "$rows"},
+            {"$replaceRoot": {"newRoot": "$rows"}},
+        ]
+
+        # Build performance filter matchers
+        perf_filters: list[dict[str, Any]] = []
+        if min_roi_all_time is not None:
+            perf_filters.append({self._get_roi_field("allTime"): {"$gte": min_roi_all_time}})
+        if max_roi_all_time is not None:
+            perf_filters.append({self._get_roi_field("allTime"): {"$lte": max_roi_all_time}})
+        if min_roi_month is not None:
+            perf_filters.append({self._get_roi_field("month"): {"$gte": min_roi_month}})
+        if max_roi_month is not None:
+            perf_filters.append({self._get_roi_field("month"): {"$lte": max_roi_month}})
+        if min_roi_week is not None:
+            perf_filters.append({self._get_roi_field("week"): {"$gte": min_roi_week}})
+        if max_roi_week is not None:
+            perf_filters.append({self._get_roi_field("week"): {"$lte": max_roi_week}})
+        if min_roi_day is not None:
+            perf_filters.append({self._get_roi_field("day"): {"$gte": min_roi_day}})
+        if max_roi_day is not None:
+            perf_filters.append({self._get_roi_field("day"): {"$lte": max_roi_day}})
+        if min_volume_month is not None:
+            perf_filters.append({self._get_vlm_field("month"): {"$gte": min_volume_month}})
+        if max_volume_month is not None:
+            perf_filters.append({self._get_vlm_field("month"): {"$lte": max_volume_month}})
+        if min_pnl_all_time is not None:
+            perf_filters.append({self._get_pnl_field("allTime"): {"$gte": min_pnl_all_time}})
+        if max_pnl_all_time is not None:
+            perf_filters.append({self._get_pnl_field("allTime"): {"$lte": max_pnl_all_time}})
+
+        if has_positive:
+            for tf in has_positive:
+                perf_filters.append({self._get_roi_field(tf): {"$gt": 0}})
+
+        # Account value filters
+        if min_acct_val is not None:
+            perf_filters.append({"accountValue": {"$gte": min_acct_val}})
+        if max_acct_val is not None:
+            perf_filters.append({"accountValue": {"$lte": max_acct_val}})
+
+        # Address filter
+        if address_filter:
+            perf_filters.append(
+                {"ethAddress": {"$in": [a.lower() for a in address_filter]}}
+            )
+
+        if perf_filters:
+            pipeline.append({"$match": {"$and": perf_filters}})
+
+        # Sort
+        sort_field = self._resolve_sort_field(sort_by)
+        sort_order = -1 if sort_desc else 1
+        pipeline.append({"$sort": {sort_field: sort_order}})
+
+        # Facet for pagination + total
+        pipeline.append({
+            "$facet": {
+                "results": [{"$skip": offset}, {"$limit": limit}],
+                "total": [{"$count": "count"}],
+            }
+        })
+
+        results = list(collection.aggregate(pipeline))
+        if not results:
+            return {"traders": [], "total": 0, "offset": offset, "limit": limit}
+
+        facet = results[0]
+        traders_data = facet.get("results", [])
+        total_count = facet["total"][0]["count"] if facet.get("total") else 0
+
+        return {"traders": traders_data, "total": total_count, "offset": offset, "limit": limit}
 
     async def upsert_tracked_trader_data(
         self,

@@ -175,7 +175,7 @@ class LeaderboardCollector:
 
                 # Store derived data via repository if available
                 if self._repository is not None:
-                    asyncio.create_task(self._store_derived_data(filtered, total_traders))
+                    asyncio.create_task(self._store_derived_data(filtered, rows, total_traders))
 
                 # Emit canonical leaderboard event consumed by processors.
                 # Payload contains only the filtered top traders (not the raw 35K rows),
@@ -439,17 +439,20 @@ class LeaderboardCollector:
     async def _store_derived_data(
         self,
         traders: list[dict],
+        raw_rows: list[dict],
         total_count: int,
     ) -> None:
         """Store derived leaderboard data to MongoDB.
 
         Stores:
-        1. Lightweight snapshot to leaderboard_history
-        2. Optional score snapshots to trader_scores
-        3. Upsert traders to tracked_traders
+        1. Full raw snapshot to leaderboard_raw (all 39K)
+        2. Lightweight snapshot to leaderboard_history
+        3. Optional score snapshots to trader_scores
+        4. Upsert traders to tracked_traders
 
         Args:
             traders: Filtered list of traders to track
+            raw_rows: Full raw leaderboard rows
             total_count: Total number of traders in leaderboard
         """
         if self._repository is None:
@@ -457,6 +460,14 @@ class LeaderboardCollector:
 
         try:
             now = datetime.now(UTC)
+
+            # 0. Store full raw leaderboard snapshot (all 39K traders)
+            if self._market_config.storage.keep_raw_leaderboard:
+                await self._repository.store_raw_leaderboard(
+                    symbol=self.config.symbol,
+                    rows=raw_rows,
+                    fetch_time=now,
+                )
 
             # 1. Store lightweight snapshot
             if self._market_config.storage.keep_snapshots:
