@@ -121,3 +121,80 @@ async def query_raw_leaderboard(
     )
 
     return result
+
+
+@router.get("/tiers")
+async def get_tier_distribution(
+    lifecycle: LifecycleManager = Depends(get_lifecycle),
+) -> dict[str, Any]:
+    """Get the distribution of tracked traders across cadence tiers
+    and the current tier configuration from market_config."""
+    repository = lifecycle.repository
+    config = lifecycle.market_config
+
+    if not config.filters.tiered_enabled:
+        return {
+            "tiered_enabled": False,
+            "cadence_enabled": config.tracking_cadence.enabled,
+            "message": "Tiered filtering is disabled. Enable filters.tiered_enabled in market_config.yaml.",
+        }
+
+    # Count traders by cadence tier
+    try:
+        tier_breakdown = await repository.get_tier_breakdown()
+
+        total_active = sum(t.get("count", 0) for t in tier_breakdown)
+
+        return {
+            "tiered_enabled": True,
+            "cadence_enabled": config.tracking_cadence.enabled,
+            "total_active_tracked": total_active,
+            "tier_breakdown": [
+                {
+                    "tier": t.get("_id", "unknown"),
+                    "count": t.get("count", 0),
+                    "avg_acct_val": round(float(t.get("avg_acct_val", 0)), 2),
+                    "avg_score": round(float(t.get("avg_score", 0)), 2),
+                }
+                for t in sorted(tier_breakdown, key=lambda x: -x.get("count", 0))
+            ],
+            "multi_tier_config": [
+                {
+                    "name": t.name,
+                    "max_slots": t.max_slots,
+                    "min_account_value": t.min_account_value,
+                    "min_score": t.min_score,
+                    "min_roi_all_time": t.min_roi_all_time,
+                    "min_roi_month": t.min_roi_month,
+                }
+                for t in config.filters.tiers
+            ],
+            "cadence_config": {
+                k: {
+                    "max_traders": v.max_traders,
+                    "check_interval_seconds": v.check_interval_seconds,
+                    "min_acct_val": v.min_acct_val,
+                    "min_month_roi": v.min_month_roi,
+                    "min_score": v.min_score,
+                }
+                for k, v in config.tracking_cadence.tiers.items()
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get tier distribution: {e}")
+
+
+@router.post("/run-promotions")
+async def run_promotion_evaluation(
+    lifecycle: LifecycleManager = Depends(get_lifecycle),
+) -> dict[str, Any]:
+    """Manually trigger a promotion/demotion evaluation cycle."""
+    collector = lifecycle.leaderboard_collector
+    if collector is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Leaderboard collector not available (service may be initializing)",
+        )
+
+    result = await collector.evaluate_promotions()
+    return result

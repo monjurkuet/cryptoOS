@@ -2281,6 +2281,69 @@ class MongoRepository(DataRepository):
         except Exception as e:
             raise StorageError(f"Failed to get active trader addresses: {e}") from e
 
+    async def update_trader_metadata(
+        self,
+        eth: str,
+        metadata: dict[str, Any],
+    ) -> bool:
+        """Update arbitrary metadata fields on a tracked trader document.
+
+        Uses $set to merge the provided metadata dict into the existing doc.
+        Typically used for cadence_tier updates during promotion evaluation.
+
+        Args:
+            eth: Trader address
+            metadata: Dict of fields to set (e.g. {"cadence_tier": "gold"})
+
+        Returns:
+            True if a document was modified, False otherwise
+        """
+        if self._sync_db is None:
+            raise StorageError("Not connected to MongoDB")
+
+        def _sync_update() -> bool:
+            collection = self._sync_db[CollectionName.TRACKED_TRADERS]
+            result = collection.update_one(
+                {"eth": eth.lower()},
+                {"$set": metadata},
+            )
+            return result.modified_count > 0
+
+        return await self._db_to_thread(_sync_update)
+
+    async def get_tier_breakdown(self) -> list[dict[str, Any]]:
+        """Get breakdown of tracked traders by cadence_tier.
+
+        Returns a list of dicts with keys: tier, count, avg_acct_val, avg_score.
+        """
+        if self._db is None:
+            raise StorageError("Not connected to MongoDB")
+        try:
+            pipeline = [
+                {"$match": {"active": True}},
+                {
+                    "$group": {
+                        "_id": "$cadence_tier",
+                        "count": {"$sum": 1},
+                        "avg_acct_val": {"$avg": "$acct_val"},
+                        "avg_score": {"$avg": "$score"},
+                    }
+                },
+            ]
+            cursor = self._db[CollectionName.TRACKED_TRADERS].aggregate(pipeline)
+            results = await cursor.to_list(length=50)
+            return [
+                {
+                    "tier": r.get("_id", "unknown"),
+                    "count": r.get("count", 0),
+                    "avg_acct_val": round(float(r.get("avg_acct_val", 0)), 2),
+                    "avg_score": round(float(r.get("avg_score", 0)), 2),
+                }
+                for r in sorted(results, key=lambda x: -x.get("count", 0))
+            ]
+        except Exception as e:
+            raise StorageError(f"Failed to get tier breakdown: {e}") from e
+
     async def upsert_trader_current_state(
         self,
         address: str,

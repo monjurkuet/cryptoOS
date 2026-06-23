@@ -191,6 +191,8 @@ class LeaderboardCollector:
                     "fetch_time": self._last_fetch.isoformat(),
                     "min_score": self._market_config.filters.min_score,
                     "max_count": self._market_config.filters.max_count,
+                    "tiered_enabled": self._market_config.filters.tiered_enabled,
+                    "cadence_enabled": self._market_config.tracking_cadence.enabled,
                 },
                 )
 
@@ -362,28 +364,38 @@ class LeaderboardCollector:
     def _apply_filters(self, scored: list[dict]) -> list[dict]:
         """Apply configurable filters to scored traders.
 
+        When tiered_enabled is True, uses the multi-tier filter to allocate
+        max_count slots across different trader pools (Whales, Alpha, Grinders,
+        Momentum). Otherwise falls back to the original single-score approach.
+
         Args:
             scored: List of scored traders
 
         Returns:
-            Filtered list of traders
+            Filtered list of traders with tier info attached
         """
         filters = self._market_config.filters
-        min_score = float(filters.min_score or 0)
+
+        # Common exclusions applied in both modes
+        exclude_addresses = {
+            str(a).lower() for a in filters.exclude.get("addresses", []) if a
+        }
+        exclude_tags = {str(t).lower() for t in filters.exclude.get("tags", []) if t}
+        include_addresses = {
+            str(a).lower() for a in filters.include.get("addresses", []) if a
+        }
         min_account_value = float(filters.min_account_value or 0)
         max_count = int(filters.max_count or 0)
+
+        if filters.tiered_enabled and filters.tiers:
+            return self._apply_multi_tier_filter(
+                scored, exclude_addresses, exclude_tags,
+                include_addresses, min_account_value, max_count,
+            )
+
+        # --- Legacy single-score fallback ---
+        min_score = float(filters.min_score or 0)
         whale_threshold = float(self._market_config.tags.whale.get("threshold", 10_000_000))
-        include_addresses = {
-            str(address).lower()
-            for address in filters.include.get("addresses", [])
-            if address
-        }
-        exclude_addresses = {
-            str(address).lower()
-            for address in filters.exclude.get("addresses", [])
-            if address
-        }
-        exclude_tags = {str(tag).lower() for tag in filters.exclude.get("tags", []) if tag}
         require_positive = filters.require_positive or {}
 
         candidates: list[dict[str, Any]] = []
@@ -395,8 +407,8 @@ class LeaderboardCollector:
                 continue
             if float(trader.get("acct_val", 0) or 0) < min_account_value:
                 continue
-            trader_tags = [str(tag).lower() for tag in trader.get("tags", [])]
-            if exclude_tags and any(tag in exclude_tags for tag in trader_tags):
+            trader_tags = [str(t).lower() for t in trader.get("tags", [])]
+            if exclude_tags and any(t in exclude_tags for t in trader_tags):
                 continue
 
             performances = trader.get("performances", {})
@@ -435,6 +447,199 @@ class LeaderboardCollector:
         if max_count > 0:
             return candidates[:max_count]
         return candidates
+
+    def _tier_perf_check(
+        self,
+        perfs: dict,
+        tier: Any,
+    ) -> bool:
+        """Check if a trader's performances match a tier's criteria."""
+        # require_positive
+        if tier.require_positive:
+            for tf in tier.require_positive:
+                if perfs.get(tf, {}).get("roi", 0) <= 0:
+                    return False
+
+        # Numeric ROI thresholds
+        if tier.min_roi_all_time is not None:
+            if perfs.get("allTime", {}).get("roi", 0) < tier.min_roi_all_time:
+                return False
+        if tier.min_roi_month is not None:
+            if perfs.get("month", {}).get("roi", 0) < tier.min_roi_month:
+                return False
+        if tier.min_roi_week is not None:
+            if perfs.get("week", {}).get("roi", 0) < tier.min_roi_week:
+                return False
+        if tier.min_roi_day is not None:
+            if perfs.get("day", {}).get("roi", 0) < tier.min_roi_day:
+                return False
+        if tier.min_volume_month is not None:
+            if perfs.get("month", {}).get("vlm", 0) < tier.min_volume_month:
+                return False
+
+        return True
+
+    def _apply_multi_tier_filter(
+        self,
+        scored: list[dict],
+        exclude_addresses: set[str],
+        exclude_tags: set[str],
+        include_addresses: set[str],
+        min_account_value: float,
+        max_count: int,
+    ) -> list[dict]:
+        """Multi-tier filter that allocates slots across different trader pools.
+
+        Each tier definition specifies criteria (min_account_value, min_roi_*,
+        require_positive, etc.). Traders are evaluated against tiers in order,
+        and assigned to the first matching tier. A trader assigned to one tier
+        is removed from subsequent tiers.
+
+        Args:
+            scored: List of scored/full traders from the API
+            exclude_addresses: Set of addresses to always exclude
+            exclude_tags: Set of tags to always exclude
+            include_addresses: Set of addresses to force-include
+            min_account_value: Global minimum account value
+            max_count: Total max tracked traders
+
+        Returns:
+            Filtered list of traders with tier info
+        """
+        tier_configs = self._market_config.filters.tiers
+        assigned: dict[str, list[dict]] = {}
+        used_addresses: set[str] = set()
+
+        # Build a lookup for fast access
+        trader_map: dict[str, dict] = {}
+        for trader in scored:
+            address = str(trader.get("eth", "")).lower()
+            if not address:
+                continue
+            # Common exclusions
+            if address in exclude_addresses:
+                continue
+            if float(trader.get("acct_val", 0) or 0) < min_account_value:
+                continue
+            t_tags = [str(t).lower() for t in trader.get("tags", [])]
+            if exclude_tags and any(t in exclude_tags for t in t_tags):
+                continue
+            trader_map[address] = trader
+
+        # Force-include addresses first
+        for addr in include_addresses:
+            if addr in trader_map:
+                t = dict(trader_map[addr])
+                t["address"] = addr
+                t["tracked_reason"] = ["manual_include"]
+                t["tier"] = "manual"
+                assigned.setdefault("manual", []).append(t)
+                used_addresses.add(addr)
+
+        # Evaluate tiers in order
+        for tier_cfg in tier_configs:
+            tier_name = tier_cfg.name
+            slot_count = tier_cfg.max_slots
+            tier_results: list[dict] = []
+
+            for address, trader in trader_map.items():
+                if address in used_addresses:
+                    continue
+
+                if float(trader.get("acct_val", 0) or 0) < tier_cfg.min_account_value:
+                    continue
+
+                if float(trader.get("score", 0) or 0) < tier_cfg.min_score:
+                    continue
+
+                perfs = trader.get("performances", {})
+                if not self._tier_perf_check(perfs, tier_cfg):
+                    continue
+
+                tier_results.append(dict(trader))
+                used_addresses.add(address)
+
+            # Sort tier results by acct_val + score descending
+            tier_results.sort(
+                key=lambda t: (
+                    float(t.get("acct_val", 0) or 0),
+                    float(t.get("score", 0) or 0),
+                ),
+                reverse=True,
+            )
+
+            capped = tier_results[:slot_count]
+            for t in capped:
+                t["address"] = str(t.get("eth", "")).lower()
+                t["tracked_reason"] = [f"tier_{tier_name}"]
+                t["tier"] = tier_name
+
+            assigned[tier_name] = capped
+            # Un-mark overflow so they can fall to next tier
+            for overflow in tier_results[slot_count:]:
+                used_addresses.discard(str(overflow.get("eth", "")).lower())
+
+        # Assemble final result in tier order
+        manual_traders = assigned.pop("manual", [])
+        result: list[dict] = []
+        for tier_name in [t.name for t in tier_configs]:
+            result.extend(assigned.get(tier_name, []))
+            if len(result) >= max_count:
+                result = result[:max_count]
+                logger.info(
+                    "multi_tier_filter_capped",
+                    total=len(result),
+                    max_count=max_count,
+                )
+                return result + manual_traders[:max_count - len(result)]
+
+        result = result[:max_count]
+        remaining = max_count - len(result)
+        if remaining > 0:
+            result.extend(manual_traders[:remaining])
+
+        logger.info(
+            "multi_tier_filter_result",
+            total=len(result),
+            tier_counts={tn: len(assigned.get(tn, [])) for tn in [t.name for t in tier_configs]},
+            manual=len(manual_traders),
+        )
+        return result
+
+    def _assign_cadence_tier(self, trader: dict) -> tuple[str, int]:
+        """Assign a cadence tier to a trader based on config criteria.
+
+        Evaluates trader against cadence tier configs in priority order
+        (tightest interval first) and returns the best match.
+
+        Args:
+            trader: A trader dict with 'performances' sub-dict
+
+        Returns:
+            Tuple of (tier_name, check_interval_seconds)
+        """
+        cadence = self._market_config.tracking_cadence
+        if not cadence.enabled:
+            return ("all", cadence.check_interval_base)
+
+        perfs = trader.get("performances", {})
+        month_roi = perfs.get("month", {}).get("roi", 0) if perfs else 0
+        acct_val = float(trader.get("acct_val", 0) or 0)
+        score = float(trader.get("score", 0) or 0)
+
+        # Evaluate tiers in priority: most restrictive first
+        sorted_tiers = sorted(
+            cadence.tiers.items(),
+            key=lambda x: (-x[1].max_traders, x[1].check_interval_seconds),
+        )
+
+        for tier_name, tier_cfg in sorted_tiers:
+            if (acct_val >= tier_cfg.min_acct_val
+                    and month_roi >= tier_cfg.min_month_roi
+                    and score >= tier_cfg.min_score):
+                return (tier_name, tier_cfg.check_interval_seconds)
+
+        return ("default", cadence.check_interval_base)
 
     async def _store_derived_data(
         self,
@@ -486,6 +691,10 @@ class LeaderboardCollector:
                 if not address:
                     continue
                 selected_addresses.append(address)
+
+                # Assign cadence tier
+                tier_name, _ = self._assign_cadence_tier(trader)
+                trader["cadence_tier"] = tier_name
 
                 if self._market_config.storage.keep_score_history:
                     performances = trader.get("performances") or {}
@@ -651,3 +860,79 @@ class LeaderboardCollector:
         except Exception as e:
             logger.error("get_tracked_addresses_error", error=str(e), exc_info=True)
             return []
+
+    async def evaluate_promotions(self) -> dict[str, Any]:
+        """Evaluate existing tracked traders and promote/demote based on performance.
+
+        Fetches fresh leaderboard data, scores each tracked trader against tier
+        criteria, and updates their cadence_tier if they qualify for a different tier.
+        Degraded traders keep Watchlist or default tier rather than being dropped.
+
+        Returns:
+            Dict with promotion/demotion summary
+        """
+        cadence = self._market_config.tracking_cadence
+        if not cadence.enabled or not self._market_config.filters.tiered_enabled:
+            return {"enabled": False, "reason": "cadence_or_tiering_disabled"}
+
+        try:
+            leaderboard = await self._fetch_leaderboard()
+            if not leaderboard:
+                return {"error": "leaderboard_fetch_failed"}
+
+            rows = leaderboard.get("leaderboardRows", [])
+            trader_map: dict[str, dict] = {}
+            for row in rows:
+                addr = str(row.get("eth", "")).lower()
+                if addr:
+                    perfs = parse_window_performances(row.get("windowPerformances", []))
+                    trader_map[addr] = {
+                        "eth": addr,
+                        "acct_val": row.get("acctVal", 0),
+                        "performances": perfs,
+                        "name": row.get("name"),
+                    }
+
+            tracked = await self._repository.get_tracked_traders(limit=500)
+            promotions = 0
+            demotions = 0
+            unchanged = 0
+
+            for t in tracked:
+                addr = str(t.get("eth", "")).lower()
+                api_trader = trader_map.get(addr)
+                if not api_trader:
+                    continue
+
+                old_tier = t.get("cadence_tier", "default")
+                new_tier, _ = self._assign_cadence_tier(api_trader)
+
+                if new_tier != old_tier:
+                    if new_tier in ("gold", "silver"):
+                        promotions += 1
+                    else:
+                        demotions += 1
+
+                    await self._repository.update_trader_metadata(
+                        eth=addr,
+                        metadata={"cadence_tier": new_tier},
+                    )
+
+            logger.info(
+                "promotion_evaluation",
+                total_evaluated=len(tracked),
+                promotions=promotions,
+                demotions=demotions,
+                unchanged=unchanged,
+            )
+
+            return {
+                "evaluated": len(tracked),
+                "promotions": promotions,
+                "demotions": demotions,
+                "unchanged": unchanged,
+            }
+
+        except Exception as e:
+            logger.error("promotion_evaluation_error", error=str(e), exc_info=True)
+            return {"error": str(e)}

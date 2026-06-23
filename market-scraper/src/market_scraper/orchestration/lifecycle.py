@@ -128,6 +128,22 @@ class LifecycleManager:
         return self._startup_complete and self._started
 
     @property
+    def repository(self) -> DataRepository | None:
+        """Get the active data repository instance."""
+        return self._repository
+
+    @property
+    def leaderboard_collector(self) -> Any | None:
+        """Get the active leaderboard collector instance."""
+        return self._leaderboard_collector
+
+    @property
+    def market_config(self) -> Any | None:
+        """Get the current market config (lazy-loaded)."""
+        from market_scraper.config.market_config import load_market_config
+        return load_market_config()
+
+    @property
     def startup_error(self) -> Exception | None:
         """Get any error that occurred during startup."""
         return self._startup_error

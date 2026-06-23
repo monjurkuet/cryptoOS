@@ -46,10 +46,40 @@ volume_tiers:
     points: 0
 
 # Filter Criteria - Traders must match ALL filters
+# When tiered_enabled is true, the multi-tier filter replaces the single-score
+# approach, allocating max_count slots across different trader pools.
 filters:
-  min_score: 50              # Minimum score to be tracked (0-100+)
-  max_count: 200             # Active tracked universe size (WS coverage rotates across this set)
+  min_score: 50              # Fallback when tiered_enabled=false
+  max_count: 200             # Total active tracked universe size
   min_account_value: 10000   # Minimum account value ($10K)
+  tiered_enabled: true       # Use multi-tier filtering
+
+  # Multi-tier definitions (evaluated in order)
+  # Each tier fills independently from the scored universe.
+  # A trader assigned to one tier is removed from subsequent tiers.
+  tiers:
+    - name: whale
+      max_slots: 50
+      min_account_value: 1000000      # $1M+
+      require_positive: ["month"]     # Must be green this month
+    - name: alpha
+      max_slots: 50
+      min_account_value: 100000       # $100K+
+      min_roi_month: 0.05             # 5%+ month ROI
+      min_roi_all_time: 0.20          # 20%+ all-time
+      require_positive: ["week", "month"]
+    - name: grinder
+      max_slots: 50
+      min_account_value: 10000        # $10K+
+      min_roi_month: 0.10             # 10%+ month ROI
+      min_roi_all_time: 0.50          # 50%+ all-time
+      require_positive: ["week", "month"]
+    - name: momentum
+      max_slots: 50
+      min_account_value: 10000        # $10K+
+      min_roi_day: 0.01               # 1%+ day ROI (hot this week)
+      min_roi_week: 0.03              # 3%+ week ROI
+      require_positive: ["day", "week"]
 
   # Optional: Require specific performance
   require_positive:
@@ -105,6 +135,39 @@ tags:
     monthly_volume: 100000000  # $100M+ monthly volume
   medium_volume:
     monthly_volume: 10000000   # $10M+ monthly volume
+
+# Tracking Cadence - Traders are grouped into cadence tiers with different update
+# frequencies to avoid wasting API calls on inactive or low-signal traders.
+tracking_cadence:
+  enabled: false
+  check_interval_base: 60           # Base check interval (seconds)
+  tiers:
+    gold:
+      max_traders: 20
+      check_interval_seconds: 30     # Every 30s — real-time position tracking
+      min_acct_val: 1000000          # $1M minimum
+      min_month_roi: 5.0             # 5% monthly ROI
+      min_score: 70
+    silver:
+      max_traders: 50
+      check_interval_seconds: 120    # Every 2min — position updates, PnL alerts
+      min_acct_val: 100000           # $100K minimum
+      min_month_roi: 3.0             # 3% monthly ROI
+      min_score: 50
+    watchlist:
+      max_traders: 100
+      check_interval_seconds: 300    # Every 5min — score changes only
+      min_acct_val: 10000            # $10K minimum
+      min_month_roi: 0.0             # Any positive ROI
+      min_score: 30
+
+# Promoter - Evaluates tracked traders each cycle for promotion/demotion
+promoter:
+  enabled: false
+  stale_cycles: 10                   # Drop traders after N cycles without improvement
+  min_demote_score: 20               # Traders below this score are evicted
+  promotion_warmup_cycles: 3         # New traders must survive N cycles before Gold
+  max_evictions_per_cycle: 10
 
 # Position Inference Configuration
 position_inference:
