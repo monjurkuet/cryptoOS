@@ -874,14 +874,15 @@ class LeaderboardCollector:
             return {"enabled": False, "reason": "cadence_or_tiering_disabled"}
 
         try:
-            leaderboard = await self._fetch_leaderboard()
+            # Use cached leaderboard from periodic refresh — avoids re-fetching 39K rows
+            leaderboard = self._last_leaderboard
             if not leaderboard:
                 return {"error": "leaderboard_fetch_failed"}
 
             rows = leaderboard.get("leaderboardRows", [])
             trader_map: dict[str, dict] = {}
             for row in rows:
-                addr = str(row.get("eth", "")).lower()
+                addr = str(row.get("ethAddress", "")).lower()
                 if addr:
                     perfs = parse_window_performances(row.get("windowPerformances", []))
                     trader_map[addr] = {
