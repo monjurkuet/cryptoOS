@@ -139,20 +139,20 @@ tags:
 # Tracking Cadence - Traders are grouped into cadence tiers with different update
 # frequencies to avoid wasting API calls on inactive or low-signal traders.
 tracking_cadence:
-  enabled: false
+  enabled: true
   check_interval_base: 60           # Base check interval (seconds)
   tiers:
     gold:
       max_traders: 20
       check_interval_seconds: 30     # Every 30s — real-time position tracking
       min_acct_val: 1000000          # $1M minimum
-      min_month_roi: 5.0             # 5% monthly ROI
+      min_month_roi: 0.05             # 5% monthly ROI
       min_score: 70
     silver:
       max_traders: 50
       check_interval_seconds: 120    # Every 2min — position updates, PnL alerts
       min_acct_val: 100000           # $100K minimum
-      min_month_roi: 3.0             # 3% monthly ROI
+      min_month_roi: 0.03            # 3% monthly ROI
       min_score: 50
     watchlist:
       max_traders: 100
@@ -163,7 +163,7 @@ tracking_cadence:
 
 # Promoter - Evaluates tracked traders each cycle for promotion/demotion
 promoter:
-  enabled: false
+  enabled: true
   stale_cycles: 10                   # Drop traders after N cycles without improvement
   min_demote_score: 20               # Traders below this score are evicted
   promotion_warmup_cycles: 3         # New traders must survive N cycles before Gold

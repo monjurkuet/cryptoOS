@@ -626,8 +626,6 @@ class LeaderboardCollector:
         month_roi = perfs.get("month", {}).get("roi", 0) if perfs else 0
         acct_val = float(trader.get("acct_val", 0) or 0)
         score = float(trader.get("score", 0) or 0)
-
-        # Evaluate tiers in priority: most restrictive first
         sorted_tiers = sorted(
             cadence.tiers.items(),
             key=lambda x: (-x[1].max_traders, x[1].check_interval_seconds),
@@ -889,6 +887,7 @@ class LeaderboardCollector:
                     trader_map[addr] = {
                         "eth": addr,
                         "acct_val": row.get("acctVal", 0),
+                        "score": row.get("score", 0),
                         "performances": perfs,
                         "name": row.get("name"),
                     }
