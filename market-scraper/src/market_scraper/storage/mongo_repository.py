@@ -274,6 +274,16 @@ class MongoRepository(DataRepository):
             await self._db[CollectionName.TRACKED_TRADERS].create_index([("eth", 1)], unique=True)
             await self._db[CollectionName.TRACKED_TRADERS].create_index([("score", -1)])
             await self._db[CollectionName.TRACKED_TRADERS].create_index([("active", 1)])
+            # Compound indexes for performance-field filtering via dot-notation
+            await self._db[CollectionName.TRACKED_TRADERS].create_index(
+                [("active", 1), ("performances.allTime.roi", -1)],
+            )
+            await self._db[CollectionName.TRACKED_TRADERS].create_index(
+                [("active", 1), ("performances.month.roi", -1)],
+            )
+            await self._db[CollectionName.TRACKED_TRADERS].create_index(
+                [("active", 1), ("performances.month.vlm", -1)],
+            )
 
             # Trader current state - latest materialized snapshot per trader/symbol
             await self._db[CollectionName.TRADER_CURRENT_STATE].create_index(
@@ -496,6 +506,9 @@ class MongoRepository(DataRepository):
             "all_roi": float(data.get("all_roi", 0) or 0),
             "month_roi": float(data.get("month_roi", 0) or 0),
             "week_roi": float(data.get("week_roi", 0) or 0),
+            "day_roi": float(data.get("day_roi", 0) or 0),
+            "pnl": float(data.get("pnl", 0) or 0),
+            "volume": float(data.get("volume", 0) or 0),
         }
 
     async def store(self, event: StandardEvent) -> bool:
@@ -1427,14 +1440,57 @@ class MongoRepository(DataRepository):
         active_only: bool = True,
         limit: int = 100,
         include_performances: bool = False,
+        # Performance-based filter params (applied via MongoDB dot-notation queries)
+        max_score: float | None = None,
+        account_value_min: float | None = None,
+        account_value_max: float | None = None,
+        tags_any: list[str] | None = None,
+        tags_all: list[str] | None = None,
+        tags_exclude: list[str] | None = None,
+        roi_day_min: float | None = None,
+        roi_day_max: float | None = None,
+        roi_week_min: float | None = None,
+        roi_week_max: float | None = None,
+        roi_month_min: float | None = None,
+        roi_month_max: float | None = None,
+        roi_all_time_min: float | None = None,
+        roi_all_time_max: float | None = None,
+        volume_day_min: float | None = None,
+        volume_day_max: float | None = None,
+        volume_week_min: float | None = None,
+        volume_week_max: float | None = None,
+        volume_month_min: float | None = None,
+        volume_month_max: float | None = None,
+        profitable_windows: list[str] | None = None,
+        addresses: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Get tracked traders with filtering.
+
+        Supports both basic filters (score, tag) and MongoDB-level
+        performance field filters via dot-notation queries on the
+        nested ``performances`` sub-document (e.g. ``performances.allTime.roi``).
 
         Args:
             min_score: Minimum score filter.
             tag: Filter by tag.
             active_only: Only return active traders.
             limit: Maximum results.
+            include_performances: Include the full ``performances`` dict in results.
+            max_score: Maximum score filter.
+            account_value_min: Minimum account value filter.
+            account_value_max: Maximum account value filter.
+            tags_any: Must match at least one of these tags.
+            tags_all: Must match all of these tags.
+            tags_exclude: Must not match any of these tags.
+            roi_day_min/max: Filter by ``performances.day.roi``.
+            roi_week_min/max: Filter by ``performances.week.roi``.
+            roi_month_min/max: Filter by ``performances.month.roi``.
+            roi_all_time_min/max: Filter by ``performances.allTime.roi``.
+            volume_day_min/max: Filter by ``performances.day.vlm``.
+            volume_week_min/max: Filter by ``performances.week.vlm``.
+            volume_month_min/max: Filter by ``performances.month.vlm``.
+            profitable_windows: Must have positive ROI in all specified windows.
+            addresses: Only include these exact addresses.
 
         Returns:
             List of trader dictionaries.
@@ -1460,15 +1516,74 @@ class MongoRepository(DataRepository):
                 "accountValue": 1,
                 "active": 1,
             }
-            if include_performances:
+
+            needs_perf_in_projection = include_performances or any(
+                v is not None
+                for v in (
+                    roi_day_min, roi_day_max,
+                    roi_week_min, roi_week_max,
+                    roi_month_min, roi_month_max,
+                    roi_all_time_min, roi_all_time_max,
+                    volume_day_min, volume_day_max,
+                    volume_week_min, volume_week_max,
+                    volume_month_min, volume_month_max,
+                    profitable_windows,
+                )
+            )
+            if needs_perf_in_projection:
                 projection["performances"] = 1
 
+            # === Basic filters ===
             if active_only:
                 query["active"] = True
             if min_score > 0:
                 query["score"] = {"$gte": min_score}
+            if max_score is not None:
+                query.setdefault("score", {})
+                query["score"]["$lte"] = max_score
             if tag:
                 query["tags"] = tag
+            if account_value_min is not None:
+                query["acct_val"] = {"$gte": account_value_min}
+            if account_value_max is not None:
+                query.setdefault("acct_val", {})
+                query["acct_val"]["$lte"] = account_value_max
+
+            # === Address filter ===
+            if addresses:
+                normalized = [a.lower() for a in addresses if a]
+                if normalized:
+                    query["eth"] = {"$in": normalized}
+
+            # === Tag filters (MongoDB-level) ===
+            if tags_any:
+                query["tags"] = {"$in": tags_any}
+            if tags_all:
+                query["tags"] = {"$all": tags_all}
+            if tags_exclude:
+                query["tags"] = {"$nin": tags_exclude}
+
+            # === Performance field filters (dot-notation) ===
+            def _perf_filter(field: str, window: str, min_val: float | None, max_val: float | None) -> None:
+                key = f"performances.{window}.{field}"
+                if min_val is not None:
+                    query[key] = {"$gte": min_val}
+                if max_val is not None:
+                    query.setdefault(key, {})
+                    query[key]["$lte"] = max_val  # type: ignore[attr-defined]
+
+            _perf_filter("roi", "day", roi_day_min, roi_day_max)
+            _perf_filter("roi", "week", roi_week_min, roi_week_max)
+            _perf_filter("roi", "month", roi_month_min, roi_month_max)
+            _perf_filter("roi", "allTime", roi_all_time_min, roi_all_time_max)
+            _perf_filter("vlm", "day", volume_day_min, volume_day_max)
+            _perf_filter("vlm", "week", volume_week_min, volume_week_max)
+            _perf_filter("vlm", "month", volume_month_min, volume_month_max)
+
+            if profitable_windows:
+                for window in profitable_windows:
+                    w = "allTime" if window == "all_time" else window
+                    query[f"performances.{w}.roi"] = {"$gt": 0}
 
             cursor = (
                 collection.find(query, projection, max_time_ms=3000)
@@ -1491,13 +1606,41 @@ class MongoRepository(DataRepository):
         tag: str | None = None,
         active_only: bool = True,
         include_exact_count: bool = True,
+        # Performance-based filter params (symmetric with get_tracked_traders)
+        max_score: float | None = None,
+        account_value_min: float | None = None,
+        account_value_max: float | None = None,
+        tags_any: list[str] | None = None,
+        tags_all: list[str] | None = None,
+        tags_exclude: list[str] | None = None,
+        roi_day_min: float | None = None,
+        roi_day_max: float | None = None,
+        roi_week_min: float | None = None,
+        roi_week_max: float | None = None,
+        roi_month_min: float | None = None,
+        roi_month_max: float | None = None,
+        roi_all_time_min: float | None = None,
+        roi_all_time_max: float | None = None,
+        volume_day_min: float | None = None,
+        volume_day_max: float | None = None,
+        volume_week_min: float | None = None,
+        volume_week_max: float | None = None,
+        volume_month_min: float | None = None,
+        volume_month_max: float | None = None,
+        profitable_windows: list[str] | None = None,
+        addresses: list[str] | None = None,
     ) -> int:
         """Count tracked traders.
+
+        Supports the same performance-based filter params as
+        :meth:`get_tracked_traders` for consistent count accuracy.
 
         Args:
             min_score: Minimum score filter.
             tag: Filter by tag.
             active_only: Only count active traders.
+            include_exact_count: If False, returns 0 immediately (optimisation).
+            (All other params mirror get_tracked_traders.)
 
         Returns:
             Number of matching traders.
@@ -1519,8 +1662,48 @@ class MongoRepository(DataRepository):
                 query["active"] = True
             if min_score > 0:
                 query["score"] = {"$gte": min_score}
+            if max_score is not None:
+                query.setdefault("score", {})
+                query["score"]["$lte"] = max_score
             if tag:
                 query["tags"] = tag
+            if account_value_min is not None:
+                query["acct_val"] = {"$gte": account_value_min}
+            if account_value_max is not None:
+                query.setdefault("acct_val", {})
+                query["acct_val"]["$lte"] = account_value_max
+
+            if addresses:
+                normalized = [a.lower() for a in addresses if a]
+                if normalized:
+                    query["eth"] = {"$in": normalized}
+            if tags_any:
+                query["tags"] = {"$in": tags_any}
+            if tags_all:
+                query["tags"] = {"$all": tags_all}
+            if tags_exclude:
+                query["tags"] = {"$nin": tags_exclude}
+
+            def _count_perf_filter(field: str, window: str, min_val: float | None, max_val: float | None) -> None:
+                key = f"performances.{window}.{field}"
+                if min_val is not None:
+                    query[key] = {"$gte": min_val}
+                if max_val is not None:
+                    query.setdefault(key, {})
+                    query[key]["$lte"] = max_val
+
+            _count_perf_filter("roi", "day", roi_day_min, roi_day_max)
+            _count_perf_filter("roi", "week", roi_week_min, roi_week_max)
+            _count_perf_filter("roi", "month", roi_month_min, roi_month_max)
+            _count_perf_filter("roi", "allTime", roi_all_time_min, roi_all_time_max)
+            _count_perf_filter("vlm", "day", volume_day_min, volume_day_max)
+            _count_perf_filter("vlm", "week", volume_week_min, volume_week_max)
+            _count_perf_filter("vlm", "month", volume_month_min, volume_month_max)
+
+            if profitable_windows:
+                for window in profitable_windows:
+                    w = "allTime" if window == "all_time" else window
+                    query[f"performances.{w}.roi"] = {"$gt": 0}
 
             return await collection.count_documents(query, maxTimeMS=3000)
         except Exception as e:

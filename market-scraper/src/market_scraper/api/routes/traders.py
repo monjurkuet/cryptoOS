@@ -376,7 +376,6 @@ async def list_traders(
         tags_exclude_list = parse_csv(tags_exclude)
         profitable_window_list = parse_csv(profitable_windows)
         selected_addresses = parse_addresses_csv(addresses)
-        selected_address_set = set(selected_addresses)
         valid_profitable_windows = {"day", "week", "month", "all_time"}
         profitable_window_list = [w for w in profitable_window_list if w in valid_profitable_windows]
 
@@ -393,53 +392,54 @@ async def list_traders(
                 max_score,
                 account_value_min,
                 account_value_max,
-                roi_day_min,
-                roi_day_max,
-                roi_week_min,
-                roi_week_max,
-                roi_month_min,
-                roi_month_max,
-                roi_all_time_min,
-                roi_all_time_max,
-                volume_day_min,
-                volume_day_max,
-                volume_week_min,
-                volume_week_max,
-                volume_month_min,
-                volume_month_max,
             )
         ) or bool(tags_any_list or tags_all_list or tags_exclude_list or profitable_window_list)
-        needs_performance_fields = include_metrics or any(
-            value is not None
-            for value in (
-                roi_day_min,
-                roi_day_max,
-                roi_week_min,
-                roi_week_max,
-                roi_month_min,
-                roi_month_max,
-                roi_all_time_min,
-                roi_all_time_max,
-                volume_day_min,
-                volume_day_max,
-                volume_week_min,
-                volume_week_max,
-                volume_month_min,
-                volume_month_max,
-            )
-        ) or bool(profitable_window_list)
 
+        # Performance filters that can now be pushed to MongoDB
+        perf_filters = {
+            "max_score": max_score,
+            "account_value_min": account_value_min,
+            "account_value_max": account_value_max,
+            "tags_any": tags_any_list if tags_any_list else None,
+            "tags_all": tags_all_list if tags_all_list else None,
+            "tags_exclude": tags_exclude_list if tags_exclude_list else None,
+            "roi_day_min": roi_day_min,
+            "roi_day_max": roi_day_max,
+            "roi_week_min": roi_week_min,
+            "roi_week_max": roi_week_max,
+            "roi_month_min": roi_month_min,
+            "roi_month_max": roi_month_max,
+            "roi_all_time_min": roi_all_time_min,
+            "roi_all_time_max": roi_all_time_max,
+            "volume_day_min": volume_day_min,
+            "volume_day_max": volume_day_max,
+            "volume_week_min": volume_week_min,
+            "volume_week_max": volume_week_max,
+            "volume_month_min": volume_month_min,
+            "volume_month_max": volume_month_max,
+            "profitable_windows": profitable_window_list if profitable_window_list else None,
+            "addresses": selected_addresses if selected_addresses else None,
+        }
+
+        needs_performance_fields = include_metrics or any(
+            v is not None for v in perf_filters.values()
+        )
+
+        # Determine prefetch limit: now that perf filters are MongoDB-level,
+        # we only need a wider prefetch for position-state filters
+        # (has_positions, position_status, has_open_orders, updated_within_hours)
+        # which are computed from the trader_current_state collection.
+        position_filters_active = any(
+            value is not None
+            for value in (has_positions, has_open_orders, position_status, updated_within_hours)
+        )
         prefetch_limit = limit
-        if has_extended_filters or any(
-            value is not None for value in (has_positions, has_open_orders, position_status, updated_within_hours)
-        ):
-            # Keep the hot path bounded for low-resource VPS deployments.
+        if has_extended_filters or position_filters_active:
             prefetch_limit = min(120, max(30, limit * 3))
         if selected_addresses:
-            # Exact-address mode needs a wider prefetch window than score-ranked pages.
             prefetch_limit = max(prefetch_limit, min(5000, max(200, len(selected_addresses) * 4)))
 
-        # Get traders from tracked_traders collection
+        # Get traders from tracked_traders collection — perf filters applied at MongoDB level
         tracked_kwargs: dict[str, Any] = {
             "min_score": min_score,
             "tag": tag,
@@ -448,6 +448,10 @@ async def list_traders(
         }
         if needs_performance_fields:
             tracked_kwargs["include_performances"] = True
+        # Pass all performance filters to the repository method
+        for key, value in perf_filters.items():
+            if value is not None:
+                tracked_kwargs[key] = value
         tracked_traders_call = repository.get_tracked_traders(**tracked_kwargs)
 
         traders = await asyncio.wait_for(
@@ -456,13 +460,30 @@ async def list_traders(
         )
         total = None
         if include_exact_count:
+            count_kwargs: dict[str, Any] = {
+                "min_score": min_score,
+                "tag": tag,
+                "active_only": True,
+                "include_exact_count": True,
+            }
+            # Include the same performance filters for accurate count
+            for key in (
+                "max_score", "account_value_min", "account_value_max",
+                "tags_any", "tags_all", "tags_exclude",
+                "roi_day_min", "roi_day_max",
+                "roi_week_min", "roi_week_max",
+                "roi_month_min", "roi_month_max",
+                "roi_all_time_min", "roi_all_time_max",
+                "volume_day_min", "volume_day_max",
+                "volume_week_min", "volume_week_max",
+                "volume_month_min", "volume_month_max",
+                "profitable_windows", "addresses",
+            ):
+                value = tracked_kwargs.get(key)
+                if value is not None:
+                    count_kwargs[key] = value
             total = await asyncio.wait_for(
-                repository.count_tracked_traders(
-                    min_score=min_score,
-                    tag=tag,
-                    active_only=True,
-                    include_exact_count=True,
-                ),
+                repository.count_tracked_traders(**count_kwargs),
                 timeout=_TRADERS_HARD_TIMEOUT_SECONDS,
             )
 
@@ -538,15 +559,8 @@ async def list_traders(
             else:
                 pos_status = "unknown"
 
-            # Apply filters
-            if score_value < min_score:
-                continue
-            if max_score is not None and score_value > max_score:
-                continue
-            if account_value_min is not None and account_value < account_value_min:
-                continue
-            if account_value_max is not None and account_value > account_value_max:
-                continue
+            # Apply position-state and text-match filters only
+            # (performance filters are now handled at MongoDB level)
             if has_positions is not None and has_pos != has_positions:
                 continue
             if has_open_orders is not None and has_orders != has_open_orders:
@@ -559,57 +573,10 @@ async def list_traders(
                 display_name_value = str(display_name or "").lower()
                 if display_name_contains.lower() not in display_name_value:
                     continue
-            if tags_any_list and not any(item in normalized_tags for item in tags_any_list):
-                continue
-            if tags_all_list and not all(item in normalized_tags for item in tags_all_list):
-                continue
-            if tags_exclude_list and any(item in normalized_tags for item in tags_exclude_list):
-                continue
-            if roi_day_min is not None and (not metrics or metrics["roi"]["day"] < roi_day_min):
-                continue
-            if roi_day_max is not None and (not metrics or metrics["roi"]["day"] > roi_day_max):
-                continue
-            if roi_week_min is not None and (not metrics or metrics["roi"]["week"] < roi_week_min):
-                continue
-            if roi_week_max is not None and (not metrics or metrics["roi"]["week"] > roi_week_max):
-                continue
-            if roi_month_min is not None and (not metrics or metrics["roi"]["month"] < roi_month_min):
-                continue
-            if roi_month_max is not None and (not metrics or metrics["roi"]["month"] > roi_month_max):
-                continue
-            if roi_all_time_min is not None and (not metrics or metrics["roi"]["all_time"] < roi_all_time_min):
-                continue
-            if roi_all_time_max is not None and (not metrics or metrics["roi"]["all_time"] > roi_all_time_max):
-                continue
-            if volume_day_min is not None and (not metrics or metrics["volume"]["day"] < volume_day_min):
-                continue
-            if volume_day_max is not None and (not metrics or metrics["volume"]["day"] > volume_day_max):
-                continue
-            if volume_week_min is not None and (not metrics or metrics["volume"]["week"] < volume_week_min):
-                continue
-            if volume_week_max is not None and (not metrics or metrics["volume"]["week"] > volume_week_max):
-                continue
-            if volume_month_min is not None and (not metrics or metrics["volume"]["month"] < volume_month_min):
-                continue
-            if volume_month_max is not None and (not metrics or metrics["volume"]["month"] > volume_month_max):
-                continue
-            if profitable_window_list:
-                if not metrics:
-                    continue
-                profitable_map = {
-                    "day": metrics["roi"]["day"] > 0,
-                    "week": metrics["roi"]["week"] > 0,
-                    "month": metrics["roi"]["month"] > 0,
-                    "all_time": metrics["roi"]["all_time"] > 0,
-                }
-                if not all(profitable_map.get(window, False) for window in profitable_window_list):
-                    continue
             if updated_within_hours is not None and last_update:
                 cutoff = datetime.now(UTC) - timedelta(hours=updated_within_hours)
                 if last_update < cutoff:
                     continue
-            if selected_address_set and address not in selected_address_set:
-                continue
 
             trader_responses.append(
                 TraderResponse(

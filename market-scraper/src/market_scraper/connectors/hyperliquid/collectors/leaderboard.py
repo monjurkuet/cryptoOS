@@ -488,6 +488,7 @@ class LeaderboardCollector:
                             all_roi=float((performances.get("allTime") or {}).get("roi", 0) or 0),
                             month_roi=float((performances.get("month") or {}).get("roi", 0) or 0),
                             week_roi=float((performances.get("week") or {}).get("roi", 0) or 0),
+                            day_roi=float((performances.get("day") or {}).get("roi", 0) or 0),
                         )
                     )
 

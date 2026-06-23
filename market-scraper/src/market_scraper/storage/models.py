@@ -78,6 +78,9 @@ class TraderScore(BaseModel):
     all_roi: float = Field(default=0, description="All-time ROI")
     month_roi: float = Field(default=0, description="Month ROI")
     week_roi: float = Field(default=0, description="Week ROI")
+    day_roi: float = Field(default=0, description="Day ROI")
+    pnl: float = Field(default=0, description="Aggregate PnL across all windows")
+    volume: float = Field(default=0, description="Aggregate volume across all windows")
 
 
 class TraderClosedTrade(BaseModel):
