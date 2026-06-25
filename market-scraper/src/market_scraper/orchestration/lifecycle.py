@@ -97,11 +97,11 @@ class LifecycleManager:
         self._scheduler: Scheduler | None = None
         self._health_monitor: HealthMonitor | None = None
         self._last_event_timestamps: dict[str, datetime] = {}
-        self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(20)  # Increased from 6 — was bottlenecking all writes
+        self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(20)  # Increased from 12 — 6 storage workers + position buffer flush + signal gen + GC all compete for slots
         self._position_write_buffer: list[dict] = []
         self._position_buffer_lock = asyncio.Lock()
         self._position_buffer_flush_interval: float = 5.0
-        self._position_buffer_max_size: int = 50
+        self._position_buffer_max_size: int = 200  # Increased from 50 — fewer flushes, less MongoDB round-trips
         self._position_buffer_flush_event: asyncio.Event = asyncio.Event()
         self._position_flush_task: asyncio.Task | None = None
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
@@ -111,8 +111,8 @@ class LifecycleManager:
         # Bounded queues + workers for storage operations.
         # Only N worker tasks exist per queue — prevents 1000+ create_task calls
         # from flooding the event loop's task queue (the root cause of lag spikes).
-        self._ohlcv_queue: asyncio.Queue[tuple[StandardEvent, ...]] = asyncio.Queue(maxsize=200)
-        self._trader_pos_queue: asyncio.Queue[tuple[StandardEvent, ...]] = asyncio.Queue(maxsize=200)
+        self._ohlcv_queue: asyncio.Queue[tuple[StandardEvent, ...]] = asyncio.Queue(maxsize=500)  # Increased from 200 — absorbs burst from slow connector startup
+        self._trader_pos_queue: asyncio.Queue[tuple[StandardEvent, ...]] = asyncio.Queue(maxsize=500)  # Increased from 200 — absorbs burst from slow connector startup
         self._ohlcv_workers: list[asyncio.Task] = []
         self._trader_pos_workers: list[asyncio.Task] = []
         self._storage_workers_started = False
@@ -221,12 +221,14 @@ class LifecycleManager:
             self._started = True
 
             # Create dedicated thread pools:
-            # 1. MongoDB writes (4 threads) — isolated to prevent slow Atlas writes
-            #    from starving other to_thread callers (CBBI fetch, GC, Motor reads)
-            self._db_write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mongowrite")
-            # 2. General-purpose (8 threads) — for asyncio.to_thread() calls that
-            #    don't specify an explicit executor (CBBI, GC, normalization, etc.)
-            self._general_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="general")
+            # 1. MongoDB writes (8 threads) — isolated pool for sync pymongo calls
+            #    from repository._db_to_thread() and storage worker bulk operations.
+            #    Size must accommodate: 6 storage workers (OHLCV, trader_pos, _gc,
+            #    signal_gen, position_flush, candle_backfill) all doing bulk writes.
+            self._db_write_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mongowrite")
+            # 2. General-purpose (16 threads) — for asyncio.to_thread() calls that
+            #    don't specify an explicit executor (CBBI fetch, GC, normalization, etc.)
+            self._general_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="general")
             loop = asyncio.get_running_loop()
             loop.set_default_executor(self._general_executor)
             logger.info("executors_configured", db_write_workers=self._db_write_executor._max_workers, general_workers=self._general_executor._max_workers)
@@ -341,14 +343,14 @@ class LifecycleManager:
                 item_models = item.get("position_models", [])
                 all_position_models.extend(item_models)
 
-            # Batch upsert states
+            # Batch upsert states (own semaphore slot — not nested inside position slot)
             if state_items:
                 await self._retry_repository_op(
                     repo.bulk_upsert_trader_states, state_items,
                     operation_name="bulk_upsert_trader_states",
                 )
 
-            # Batch insert positions
+            # Batch insert positions (separate semaphore slot from state upsert)
             if all_position_models and hasattr(repo, "store_trader_position_bulk"):
                 await self._retry_repository_op(
                     repo.store_trader_position_bulk, all_position_models,
@@ -551,6 +553,7 @@ class LifecycleManager:
                 self._repository = MongoRepository(
                     connection_string=mongo_url,
                     database_name=self._settings.mongo.database,
+                    write_executor=self._db_write_executor,
                 )
                 await self._repository.connect()
                 return
@@ -741,10 +744,10 @@ class LifecycleManager:
                 finally:
                     self._trader_pos_queue.task_done()
 
-        for _ in range(2):
+        for _ in range(4):  # Increased from 2 — 4 workers absorb burst from slow connector startup better
             self._ohlcv_workers.append(asyncio.create_task(_ohlcv_worker()))
             self._trader_pos_workers.append(asyncio.create_task(_trader_pos_worker()))
-        logger.info("storage_workers_started", ohlcv_workers=2, trader_pos_workers=2)
+        logger.info("storage_workers_started", ohlcv_workers=4, trader_pos_workers=4)
 
     async def _enqueue_ohlcv(self, event: StandardEvent) -> None:
         """Enqueue OHLCV event for bounded storage (non-blocking)."""

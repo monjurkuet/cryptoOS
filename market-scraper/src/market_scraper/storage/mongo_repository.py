@@ -46,18 +46,26 @@ class MongoRepository(DataRepository):
         self,
         connection_string: str,
         database_name: str = "market_scraper",
+        write_executor: ThreadPoolExecutor | None = None,
     ) -> None:
         """Initialize MongoDB repository.
 
         Args:
             connection_string: MongoDB connection string.
             database_name: Name of the database to use.
+            write_executor: Optional shared ThreadPoolExecutor for writes. When
+                provided, the lifecycle's dedicated pool is used (ensuring writes
+                route through the isolated pool instead of the default executor).
+                When omitted, creates a private 4-thread pool.
         """
         super().__init__(connection_string)
         self._database_name = database_name
-        # Dedicated thread pool for MongoDB writes (isolated from default executor)
-        # Prevents slow Atlas writes from starving CBBI fetches, GC, etc.
-        self._write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mongowrite")
+        # Use provided executor if given (lifecycle manages the pool), otherwise own pool.
+        # The executor must have >= 8 workers to handle all storage workers + repo writes.
+        if write_executor is not None:
+            self._write_executor = write_executor
+        else:
+            self._write_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mongowrite")
         # Async Motor client (for reads and index creation)
         self._client: motor.motor_asyncio.AsyncIOMotorClient | None = None
         self._db: motor.motor_asyncio.AsyncIOMotorDatabase | None = None
@@ -1888,17 +1896,17 @@ class MongoRepository(DataRepository):
         rows: list[dict],
         fetch_time: datetime | None = None,
     ) -> bool:
-        """Sync implementation of store_raw_leaderboard for thread pool."""
+        """Sync implementation of store_raw_leaderboard for thread pool.
+
+        Each row is stored as an individual document (not a single monolithic doc)
+        to stay well under MongoDB's 16MB document limit. A 39K-row snapshot
+        at ~400 bytes/row ≈ 16MB when stored as a single doc; as individual docs
+        each is ≈ 400 bytes — well within limits.
+        """
         now = fetch_time or datetime.now(UTC)
         collection = self._sync_db[CollectionName.LEADERBOARD_RAW]
-        collection.insert_one(
-            {
-                "created_at": now,
-                "symbol": symbol,
-                "row_count": len(rows),
-                "rows": rows,
-            }
-        )
+        docs = [{"created_at": now, "symbol": symbol, **row} for row in rows]
+        collection.insert_many(docs, ordered=False)
         return True
 
     async def store_leaderboard_snapshot(
@@ -2024,6 +2032,7 @@ class MongoRepository(DataRepository):
         try:
             return await self._db_to_thread(
                 self._sync_get_raw_leaderboard,
+                symbol=symbol,
                 limit=min(limit, 500),
                 offset=offset,
                 sort_by=sort_by,
@@ -2052,6 +2061,7 @@ class MongoRepository(DataRepository):
     def _sync_get_raw_leaderboard(
         self,
         *,
+        symbol: str,
         limit: int = 50,
         offset: int = 0,
         sort_by: str | None = None,
@@ -2080,18 +2090,29 @@ class MongoRepository(DataRepository):
         """
         collection = self._sync_db[CollectionName.LEADERBOARD_RAW]
 
-        # Step 1: Find the target snapshot document
-        match_snapshot: dict[str, Any] = {}
+        # Step 1: Find the latest snapshot timestamp (if no fetch_time specified)
+        # With per-row docs, we find the max created_at per symbol as the "latest snapshot"
         if fetch_time:
-            match_snapshot["created_at"] = fetch_time
+            latest_created_at = fetch_time
+        else:
+            latest_doc = collection.find_one(
+                {"symbol": symbol},
+                sort=[("created_at", -1)],
+                projection={"created_at": 1},
+            )
+            if not latest_doc:
+                return {"traders": [], "total": 0, "offset": offset, "limit": limit}
+            latest_created_at = latest_doc["created_at"]
 
-        # Step 2: Build aggregation pipeline
+        # Step 2: Build match criteria for snapshot identification
+        match_snapshot: dict[str, Any] = {
+            "symbol": symbol,
+            "created_at": latest_created_at,
+        }
+
+        # Step 3: Build aggregation pipeline for per-row docs
         pipeline: list[dict[str, Any]] = [
             {"$match": match_snapshot},
-            {"$sort": {"created_at": -1}},
-            {"$limit": 1},
-            {"$unwind": "$rows"},
-            {"$replaceRoot": {"newRoot": "$rows"}},
         ]
 
         # Build performance filter matchers
