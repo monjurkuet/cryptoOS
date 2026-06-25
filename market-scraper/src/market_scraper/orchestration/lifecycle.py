@@ -688,7 +688,7 @@ class LifecycleManager:
                     asyncio.create_task(self._store_trading_signal(event))
 
                 if event.event_type == "ohlcv":
-                    asyncio.create_task(self._enqueue_ohlcv(event))
+                    asyncio.create_task(self._store_ohlcv_candle(event))
 
                 if event.event_type == "trader_positions":
                     asyncio.create_task(self._enqueue_trader_positions(event))
