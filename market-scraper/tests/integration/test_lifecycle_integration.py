@@ -11,8 +11,8 @@ from httpx import ASGITransport, AsyncClient
 
 from market_scraper.api.routes.traders import router as traders_router
 from market_scraper.config.market_config import CandleBackfillConfig, MarketConfig, SchedulerConfig
-from market_scraper.core.events import StandardEvent
 from market_scraper.core.config import HyperliquidSettings, MongoConfig, RedisConfig, Settings
+from market_scraper.core.events import StandardEvent
 from market_scraper.orchestration.lifecycle import LifecycleManager
 from market_scraper.storage.base import QueryFilter
 

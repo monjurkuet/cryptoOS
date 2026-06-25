@@ -2,7 +2,6 @@
 
 import os
 
-
 # Keep test imports resilient when local .env uses non-boolean DEBUG values.
 os.environ["DEBUG"] = "false"
 

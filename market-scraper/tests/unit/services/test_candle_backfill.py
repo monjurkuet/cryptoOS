@@ -1,12 +1,13 @@
 """Tests for CandleBackfillService."""
 
-import pytest
-from datetime import datetime, date, UTC, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from market_scraper.services.candle_backfill import CandleBackfillService
+import pytest
+
 from market_scraper.config.market_config import CandleBackfillConfig
 from market_scraper.connectors.hyperliquid.client import HyperliquidClient
+from market_scraper.services.candle_backfill import CandleBackfillService
 
 
 @pytest.fixture
@@ -131,19 +132,18 @@ class TestCandleBackfillService:
             "_get_start_time",
             new_callable=AsyncMock,
             return_value=datetime.now(UTC) - timedelta(hours=1),
+        ), patch.object(
+            service,
+            "_backfill_timeframe",
+            new_callable=AsyncMock,
+            return_value=100,
         ):
-            with patch.object(
-                service,
-                "_backfill_timeframe",
-                new_callable=AsyncMock,
-                return_value=100,
-            ):
-                result = await service.run_backfill()
+            result = await service.run_backfill()
 
-                assert "1h" in result
-                assert "4h" in result
-                assert "1d" in result
-                assert result["1h"] == 100
+            assert "1h" in result
+            assert "4h" in result
+            assert "1d" in result
+            assert result["1h"] == 100
 
     @pytest.mark.asyncio
     async def test_get_start_time_incremental_no_data(
@@ -234,7 +234,7 @@ class TestCandleBackfillDateHandling:
             symbol="BTC",
         )
 
-        assert service.HYPERLIQUID_EARLIEST == date(2023, 3, 1)
+        assert date(2023, 3, 1) == service.HYPERLIQUID_EARLIEST
 
     @pytest.mark.asyncio
     async def test_start_date_from_config(

@@ -241,7 +241,8 @@ class TestListTraders:
     @pytest.mark.asyncio
     async def test_list_traders_filters_profitable_windows(self, app, mock_repository) -> None:
         """Profitable-window filter should require all requested ROI windows > 0."""
-        mock_repository.get_tracked_traders.return_value = [
+        # Mock must filter by profitable_windows just like MongoDB does
+        all_traders = [
             {
                 "eth": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "name": "Profitable",
@@ -269,6 +270,16 @@ class TestListTraders:
                 },
             },
         ]
+
+        def mock_get_traders(profitable_windows=None, **kwargs):
+            if profitable_windows:
+                return [
+                    t for t in all_traders
+                    if all(t.get("performances", {}).get(w, {}).get("roi", 0) > 0 for w in profitable_windows)
+                ]
+            return all_traders
+
+        mock_repository.get_tracked_traders.side_effect = mock_get_traders
         mock_repository.get_trader_current_states.return_value = {}
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

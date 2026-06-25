@@ -302,7 +302,7 @@ class TestLeaderboardCollector:
             {"eth": "0xABCDEFabcdefABCDEFabcdefABCDEFabcdef0002", "score": 75, "acct_val": 15000},
         ]
 
-        await collector._store_derived_data(traders=tracked, total_count=42)
+        await collector._store_derived_data(traders=tracked, raw_rows=[], total_count=42)
 
         assert mock_repository.upsert_tracked_trader_data.await_count == 2
         first_payload = mock_repository.upsert_tracked_trader_data.await_args_list[0].args[0]
@@ -361,7 +361,7 @@ class TestLeaderboardCollector:
             }
         ]
 
-        await collector._store_derived_data(traders=tracked, total_count=42)
+        await collector._store_derived_data(traders=tracked, raw_rows=[], total_count=42)
 
         mock_repository.store_trader_score.assert_awaited_once()
         score_model = mock_repository.store_trader_score.await_args.args[0]

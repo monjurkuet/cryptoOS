@@ -20,6 +20,7 @@ __all__ = [
     "auth",
     "binance_account",
     "health",
+    "leaderboard_raw",
     "markets",
     "connectors",
     "traders",

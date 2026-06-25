@@ -143,7 +143,7 @@ class TrackingCadenceConfig(BaseModel):
     to avoid wasting API calls on low-signal traders.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     check_interval_base: int = 60
     tiers: dict[str, CadenceTierConfig] = {
         "gold": CadenceTierConfig(max_traders=20, check_interval_seconds=30,
@@ -162,7 +162,7 @@ class PromoterConfig(BaseModel):
     between cadence tiers based on performance.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     stale_cycles: int = 10
     min_demote_score: float = 20.0
     promotion_warmup_cycles: int = 3
@@ -223,11 +223,11 @@ class BufferConfig(BaseModel):
     """
 
     flush_interval: float = Field(
-        default=60.0,  # Changed from 5.0 to 60.0 for reduced resource usage
-        description="Seconds between automatic buffer flushes to database (60s = 1 min latency)",
+        default=10.0,  # Changed from 60.0 — 60s was causing stale data accumulation
+        description="Seconds between automatic buffer flushes to database (10s = reduced latency)",
     )
     max_size: int = Field(
-        default=500,  # Increased from 100 to allow larger batches
+        default=2000,  # Increased from 500 — more headroom before forced flush
         description="Maximum events to buffer before forced flush",
     )
     broadcast_batch_size: int = Field(

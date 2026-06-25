@@ -91,10 +91,10 @@ async def query_raw_leaderboard(
             if parsed_fetch_time.tzinfo is None:
                 parsed_fetch_time = parsed_fetch_time.replace(tzinfo=UTC)
         except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid fetch_time format: {fetch_time}. Use ISO format (e.g. '2026-06-23T12:00:00Z')",
-            )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid fetch_time format: {fetch_time}. Use ISO format (e.g. '2026-06-23T12:00:00Z')",
+                ) from None
 
     result = await repository.get_raw_leaderboard(
         limit=limit,
@@ -127,8 +127,10 @@ async def query_raw_leaderboard(
 async def get_tier_distribution(
     lifecycle: LifecycleManager = Depends(get_lifecycle),
 ) -> dict[str, Any]:
-    """Get the distribution of tracked traders across cadence tiers
-    and the current tier configuration from market_config."""
+    """Get the distribution of tracked traders across cadence tiers.
+
+    and the current tier configuration from market_config.
+    """
     repository = lifecycle.repository
     config = lifecycle.market_config
 
@@ -181,7 +183,7 @@ async def get_tier_distribution(
             },
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get tier distribution: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get tier distribution: {e}") from None
 
 
 @router.post("/run-promotions")

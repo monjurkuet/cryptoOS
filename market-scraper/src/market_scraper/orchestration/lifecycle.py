@@ -97,7 +97,7 @@ class LifecycleManager:
         self._scheduler: Scheduler | None = None
         self._health_monitor: HealthMonitor | None = None
         self._last_event_timestamps: dict[str, datetime] = {}
-        self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(6)  # Reduced for memory pressure
+        self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(20)  # Increased from 6 — was bottlenecking all writes
         self._position_write_buffer: list[dict] = []
         self._position_buffer_lock = asyncio.Lock()
         self._position_buffer_flush_interval: float = 5.0
@@ -107,7 +107,7 @@ class LifecycleManager:
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
         self._db_write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
         self._general_executor: ThreadPoolExecutor | None = None  # General pool for non-DB to_thread calls
-        self._max_active_writes: int = 8  # Cap total concurrent write tasks (reduced for memory pressure)
+        self._max_active_writes: int = 30  # Increased from 8 — was dropping bursts
         # Bounded queues + workers for storage operations.
         # Only N worker tasks exist per queue — prevents 1000+ create_task calls
         # from flooding the event loop's task queue (the root cause of lag spikes).
@@ -1789,19 +1789,9 @@ class LifecycleManager:
         return self._event_bus
 
     @property
-    def repository(self) -> DataRepository | None:
-        """Get the repository instance."""
-        return self._repository
-
-    @property
     def collector_manager(self) -> CollectorManager | None:
         """Get the collector manager instance."""
         return self._collector_manager
-
-    @property
-    def leaderboard_collector(self) -> LeaderboardCollector | None:
-        """Get the leaderboard collector instance."""
-        return self._leaderboard_collector
 
     @property
     def trader_ws_collector(self) -> TraderWebSocketCollector | None:

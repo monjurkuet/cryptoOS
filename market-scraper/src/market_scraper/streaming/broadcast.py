@@ -253,7 +253,7 @@ class BroadcastManager:
                 "batch_flushing",
                 batch_size=len(batch),
             )
-            for msg in batch:
+            for _msg in batch:
                 self._metrics["messages_sent"] += 1
 
     def get_client_limiter(self, client_id: str) -> RateLimiter:

@@ -512,7 +512,6 @@ async def list_traders(
             display_name = t.get("name", t.get("displayName"))
             score_value = float(t.get("score", 0) or 0)
             account_value = float(t.get("acct_val", t.get("accountValue", 0)) or 0)
-            normalized_tags = [str(item).lower() for item in (t.get("tags", []) or [])]
             metrics = None
             if needs_performance_fields:
                 metrics = _build_metrics_from_performances(t)

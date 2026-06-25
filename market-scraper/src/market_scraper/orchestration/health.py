@@ -1,6 +1,5 @@
 # src/market_scraper/orchestration/health.py
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any

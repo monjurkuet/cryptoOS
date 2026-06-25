@@ -12,8 +12,7 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from market_scraper.api.dependencies import get_settings_dependency
-from market_scraper.api.dependencies import get_lifecycle
+from market_scraper.api.dependencies import get_lifecycle, get_settings_dependency
 from market_scraper.api.routes.auth import router
 from market_scraper.auth.security import hash_token
 from market_scraper.core.config import Settings
@@ -142,7 +141,7 @@ async def test_me_accepts_naive_expiry_datetime(app: FastAPI) -> None:
         "token_hash": hash_token(session_token),
         "csrf_hash": hash_token("csrf-old"),
         # Deliberately timezone-naive, as can happen with legacy BSON codecs.
-        "expires_at": datetime.utcnow() + timedelta(hours=1),
+        "expires_at": datetime.now(UTC) + timedelta(hours=1),
     }
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

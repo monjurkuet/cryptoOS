@@ -2,14 +2,14 @@
 
 import json
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
-from market_scraper.archival.compressor import Compressor
 from market_scraper.archival.archiver import Archiver
+from market_scraper.archival.compressor import Compressor
 
 
 class TestCompressorIntegration:
@@ -22,7 +22,7 @@ class TestCompressorIntegration:
         original_data = {
             "metadata": {
                 "collection": "test_collection",
-                "archived_at": datetime.now(timezone.utc).isoformat(),
+                "archived_at": datetime.now(UTC).isoformat(),
             },
             "documents": [
                 {"id": 1, "name": "test", "value": 123.45},
@@ -89,7 +89,7 @@ class TestCompressorIntegration:
         compressor = Compressor()
 
         data = {
-            "timestamp": datetime(2024, 1, 15, 12, 30, 0, tzinfo=timezone.utc),
+            "timestamp": datetime(2024, 1, 15, 12, 30, 0, tzinfo=UTC),
         }
 
         compressed = compressor.compress(data)
@@ -114,13 +114,13 @@ class TestArchiverIntegration:
                 "_id": "doc1",
                 "address": "0xtest1",
                 "positions": [{"coin": "BTC", "szi": 1.0}],
-                "created_at": datetime.now(timezone.utc),
+                "created_at": datetime.now(UTC),
             },
             {
                 "_id": "doc2",
                 "address": "0xtest2",
                 "positions": [{"coin": "BTC", "szi": -0.5}],
-                "created_at": datetime.now(timezone.utc),
+                "created_at": datetime.now(UTC),
             },
         ]
 
@@ -187,9 +187,11 @@ class AsyncIteratorMock:
         self._index = 0
 
     def __aiter__(self) -> "AsyncIteratorMock":
+        """Return async iterator."""
         return self
 
     async def __anext__(self) -> dict:
+        """Return next item."""
         if self._index >= len(self._items):
             raise StopAsyncIteration
         item = self._items[self._index]

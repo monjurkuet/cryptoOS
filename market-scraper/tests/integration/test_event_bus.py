@@ -191,12 +191,6 @@ class TestMemoryEventBus:
         # After context exit, no more events should be processed
         received_events.clear()
 
-        event2 = StandardEvent.create(
-            event_type="ctx_event",
-            source="test",
-            payload={"data": "test2"},
-        )
-
         # Should not process since disconnected
         await asyncio.sleep(0.1)
         assert len(received_events) == 0

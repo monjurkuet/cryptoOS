@@ -134,22 +134,17 @@ class TestHyperliquidConnectorLive:
         await connector.connect()
         try:
             events = []
-            timeout = asyncio.Timeout(5)
+            async with asyncio.timeout(5):
+                async for event in connector.stream_realtime(["BTC"]):
+                    if event:
+                        events.append(event)
+                    if len(events) >= 3:
+                        break
+        except TimeoutError:
+            pass  # Expected if no events received
 
-            try:
-                async with asyncio.timeout(5):
-                    async for event in connector.stream_realtime(["BTC"]):
-                        if event:
-                            events.append(event)
-                            if len(events) >= 3:
-                                break
-            except TimeoutError:
-                pass  # Expected if no events received
-
-            print(f"Received {len(events)} events via WebSocket")
-
-        finally:
-            await connector.disconnect()
+        print(f"Received {len(events)} events via WebSocket")
+        await connector.disconnect()
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(10)

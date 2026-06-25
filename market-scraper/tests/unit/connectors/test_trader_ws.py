@@ -5,6 +5,7 @@ import hashlib
 import time
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 
 from market_scraper.config.market_config import BufferConfig
@@ -582,6 +583,7 @@ class TestTraderWebSocketCollector:
             session=_MockSession(),
             sem=asyncio.Semaphore(1),
             address="0xabc",
+            req_timeout=aiohttp.ClientTimeout(total=30),
         )
 
         assert event is not None
