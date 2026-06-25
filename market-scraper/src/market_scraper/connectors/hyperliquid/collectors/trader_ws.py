@@ -421,17 +421,19 @@ class TraderWebSocketCollector:
 
         # Reduced concurrency: max 5 concurrent traders (10 HTTP requests)
         sem = asyncio.Semaphore(5)
-        timeout = aiohttp.ClientTimeout(total=3)  # Reduced from 25s — per-trader timeout prevents hung requests
-        # Per-request timeout: 3s — prevent one slow request from blocking
-        # the semaphore slot for 25s (B-B6 fix)
-        req_timeout = aiohttp.ClientTimeout(total=3)
+        # Long session timeout — bootstrapping 200 traders takes ~50s at 5 concurrent.
+        # A short session timeout cancels the session mid-bootstrap, leaving
+        # _fetch_bootstrap_event tasks in a broken state that consume semaphore
+        # slots indefinitely (root cause of event-loop saturation).
+        session_timeout = aiohttp.ClientTimeout(total=120)
+        req_timeout = aiohttp.ClientTimeout(total=10)  # Per-request: 10s to handle slow Hyperliquid API
 
         # Process traders in chunks with a pause between them to avoid API flood
         CHUNK_SIZE = 25
         all_events: list[StandardEvent] = []
         total_errors = 0
 
-        async with aiohttp.ClientSession(trust_env=True, timeout=timeout) as session:
+        async with aiohttp.ClientSession(trust_env=True, timeout=session_timeout) as session:
             for chunk_start in range(0, len(normalized), CHUNK_SIZE):
                 chunk = normalized[chunk_start : chunk_start + CHUNK_SIZE]
                 if chunk_start > 0:
