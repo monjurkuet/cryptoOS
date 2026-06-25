@@ -79,7 +79,7 @@ class TraderWebSocketCollector:
     # TTL for position state (1 hour)
     POSITION_STATE_TTL = 3600
     # Max tracked positions (reduced from 200 to 150 for VPS memory pressure)
-    MAX_TRACKED_POSITIONS = 150
+    MAX_TRACKED_POSITIONS = 50
 
     # Global rate limiter: caps HTTP POST requests to ~10/s for the Hyperliquid API
     _api_rate_limiter = _RateLimiter(max_rate=10.0, window=1.0)
@@ -153,6 +153,8 @@ class TraderWebSocketCollector:
         self._positions_saved = 0
         self._positions_skipped = 0
         self._quick_hash_skips = 0  # Phase 2A: messages skipped by quick hash
+        self._reconnect_count = 0
+        self._last_reconnect_time = 0.0
 
         # Error channel rate-limiting — prevents log flooding from Hyperliquid
         # "Cannot track more than 10 total users" errors which can arrive at
@@ -419,19 +421,22 @@ class TraderWebSocketCollector:
 
         # Reduced concurrency: max 5 concurrent traders (10 HTTP requests)
         sem = asyncio.Semaphore(5)
-        timeout = aiohttp.ClientTimeout(total=25)
+        timeout = aiohttp.ClientTimeout(total=3)  # Reduced from 25s — per-trader timeout prevents hung requests
+        # Per-request timeout: 3s — prevent one slow request from blocking
+        # the semaphore slot for 25s (B-B6 fix)
+        req_timeout = aiohttp.ClientTimeout(total=3)
 
         # Process traders in chunks with a pause between them to avoid API flood
         CHUNK_SIZE = 25
         all_events: list[StandardEvent] = []
         total_errors = 0
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(trust_env=True, timeout=timeout) as session:
             for chunk_start in range(0, len(normalized), CHUNK_SIZE):
                 chunk = normalized[chunk_start : chunk_start + CHUNK_SIZE]
                 if chunk_start > 0:
                     await asyncio.sleep(2)  # Pause between chunks to avoid 429 flood
-                tasks = [self._fetch_bootstrap_event(session, sem, address) for address in chunk]
+                tasks = [self._fetch_bootstrap_event(session, sem, address, req_timeout) for address in chunk]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 for result in results:
@@ -468,10 +473,11 @@ class TraderWebSocketCollector:
             logger.info("trader_ws_bootstrap_no_events", errors=total_errors)
 
     async def _fetch_bootstrap_event(
-        self,
-        session: aiohttp.ClientSession,
-        sem: asyncio.Semaphore,
-        address: str,
+            self,
+            session: aiohttp.ClientSession,
+            sem: asyncio.Semaphore,
+            address: str,
+            req_timeout: aiohttp.ClientTimeout,
     ) -> StandardEvent | None:
         """Fetch one trader state snapshot from Hyperliquid info API.
 
@@ -487,7 +493,8 @@ class TraderWebSocketCollector:
                     # Rate-limit: wait for a slot before issuing the request
                     await self._api_rate_limiter.acquire()
                     async with session.post(
-                        "https://api.hyperliquid.xyz/info", json=payload
+                        "https://api.hyperliquid.xyz/info", json=payload,
+                        timeout=req_timeout,
                     ) as response:
                         if response.status == 429:
                             retry_after = float(response.headers.get("Retry-After", 0))
@@ -511,6 +518,7 @@ class TraderWebSocketCollector:
                     async with session.post(
                         "https://api.hyperliquid.xyz/info",
                         json={"type": "openOrders", "user": address},
+                        timeout=req_timeout,
                     ) as response:
                         if response.status == 429:
                             retry_after = float(response.headers.get("Retry-After", 0))
@@ -629,6 +637,24 @@ class TraderWebSocketCollector:
     async def _replace_disconnected_client(self, client_id: int) -> None:
         """Replace a disconnected client with a fresh one (background task)."""
         try:
+            # Reconnect debounce: if we've reconnected 3x in 60s, back off
+            # to prevent cascade reconnect → re-bootstrap → event loop death
+            now = asyncio.get_event_loop().time()
+            if now - self._last_reconnect_time < 60:
+                self._reconnect_count += 1
+            else:
+                self._reconnect_count = 1
+            self._last_reconnect_time = now
+
+            if self._reconnect_count > 3:
+                logger.warning(
+                    "trader_ws_reconnect_flood_detected",
+                    count=self._reconnect_count,
+                    backing_off_s=60,
+                )
+                await asyncio.sleep(60)
+                self._reconnect_count = 0
+
             # Find the client in our list
             for i, client in enumerate(self._clients):
                 if client.client_id == client_id:
@@ -1369,7 +1395,7 @@ class TraderWSClient:
         """
         try:
             self._running = True
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(trust_env=True)
             self._session_closed = False
 
             self._ws = await self._session.ws_connect(
