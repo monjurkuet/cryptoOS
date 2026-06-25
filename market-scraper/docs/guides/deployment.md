@@ -9,53 +9,9 @@ This guide covers deploying the Market Scraper Framework in production.
 - Redis 7+
 - uv (Python package manager)
 
-## Deployment Options
+## Deployment Methods
 
-| Method | Use Case | Complexity |
-|--------|----------|------------|
-| **Bash Scripts** | Development, testing | Low |
-| **systemd Services** | Production servers | Medium |
-| **Manual** | One-off runs, debugging | Low |
-
-## Quick Start
-
-### Option 1: Bash Scripts (Recommended for Development)
-
-From the project root directory:
-
-```bash
-# Start both servers in background
-./scripts/start-all.sh --background
-
-# Check status
-./scripts/status.sh
-
-# View logs
-tail -f logs/market-scraper.log
-
-# Stop all servers
-./scripts/stop-all.sh
-```
-
-### Option 2: systemd Services (Recommended for Production)
-
-```bash
-# Install service files
-sudo cp systemd/market-scraper.service /etc/systemd/system/
-sudo cp systemd/signal-system.service /etc/systemd/system/
-
-# Reload systemd
-sudo systemctl daemon-reload
-
-# Enable and start
-sudo systemctl enable market-scraper.service signal-system.service
-sudo systemctl start market-scraper.service
-
-# Check status
-sudo systemctl status market-scraper.service
-```
-
-### Option 3: Manual Start
+### Manual Start
 
 ```bash
 cd market-scraper
@@ -96,68 +52,6 @@ API_PORT=3845
 
 ## Production Deployment
 
-### Using systemd (Recommended)
-
-Pre-configured systemd service files are provided in the `systemd/` directory:
-
-```bash
-# Copy service files
-sudo cp systemd/market-scraper.service /etc/systemd/system/
-sudo cp systemd/signal-system.service /etc/systemd/system/
-
-# Review and customize if needed
-sudo vim /etc/systemd/system/market-scraper.service
-
-# Reload systemd daemon
-sudo systemctl daemon-reload
-
-# Enable services (start on boot)
-sudo systemctl enable market-scraper.service
-sudo systemctl enable signal-system.service
-
-# Start services
-sudo systemctl start market-scraper.service
-sudo systemctl start signal-system.service
-
-# Check status
-sudo systemctl status market-scraper.service
-sudo systemctl status signal-system.service
-```
-
-#### Service Configuration
-
-The default service files include:
-
-- **Auto-restart** on failure (5 second delay)
-- **Resource limits**: 1GB memory, 80% CPU for market-scraper
-- **Logging**: stdout/stderr to journal and log files
-- **Graceful shutdown**: 30 second timeout
-- **Security hardening**: Read-only home, restricted privileges
-
-To customize, edit the service files before copying or use systemd overrides:
-
-```bash
-sudo systemctl edit market-scraper.service
-```
-
-#### Managing Services
-
-```bash
-# Restart
-sudo systemctl restart market-scraper.service
-
-# Stop
-sudo systemctl stop market-scraper.service
-
-# View logs
-sudo journalctl -u market-scraper.service -f
-
-# View recent errors
-sudo journalctl -u market-scraper.service -p err -n 50
-```
-
-See [systemd/README.md](../../systemd/README.md) for complete documentation.
-
 ## Monitoring
 
 ### Health Checks
@@ -186,11 +80,11 @@ Configure your system-level Prometheus deployment to scrape the application and 
 Logs are written to stdout/stderr. View with:
 
 ```bash
-# systemd logs
-journalctl -u market-scraper -f
+# Running directly
+uv run python -m market_scraper server 2>&1 | tee server.log
 
-# Or if running directly
-uv run uvicorn market_scraper.api.main:app 2>&1 | tee server.log
+# Or redirect to file
+uv run python -m market_scraper server > logs/market-scraper.log 2>&1 &
 ```
 
 ## Troubleshooting
@@ -198,22 +92,16 @@ uv run uvicorn market_scraper.api.main:app 2>&1 | tee server.log
 ### Service Won't Start
 
 ```bash
-# Check logs
-journalctl -u market-scraper -n 100
-
 # Check if ports are in use
 ss -tulpn | grep 3845
+
+# Check if process is already running
+ps aux | grep market_scraper
 ```
 
 ### Can't Connect to Services
 
 ```bash
-# Verify MongoDB is running
-systemctl status mongodb
-
-# Verify Redis is running
-systemctl status redis
-
 # Test connections
 redis-cli ping
 mongosh --eval "db.adminCommand('ping')"

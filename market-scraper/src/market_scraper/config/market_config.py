@@ -18,7 +18,7 @@ class ScoringWeights(BaseModel):
     """Scoring weight configuration.
 
     Weights determine how much each factor contributes to the overall score.
-    Should ideally sum to 100 for proper percentage weighting.
+    Must sum to 100 for proper percentage weighting.
     """
 
     all_time_roi: float = 30
@@ -26,6 +26,20 @@ class ScoringWeights(BaseModel):
     week_roi: float = 20
     account_value: float = 15
     volume: float = 10
+
+    @property
+    def total(self) -> float:
+        """Return sum of all weight components."""
+        return self.all_time_roi + self.month_roi + self.week_roi + self.account_value + self.volume
+
+    def model_post_init(self, _context: object) -> None:
+        """Validate that weights sum to 100."""
+        if abs(self.total - 100.0) > 0.01:
+            raise ValueError(
+                f"ScoringWeights must sum to 100, got {self.total} "
+                f"(all_time_roi={self.all_time_roi}, month_roi={self.month_roi}, "
+                f"week_roi={self.week_roi}, account_value={self.account_value}, volume={self.volume})"
+            )
 
 
 class ScoringConfig(BaseModel):

@@ -43,24 +43,24 @@ tests/
 
 ```bash
 # Run all tests
-pytest
+uv run pytest
 
 # Run with coverage
-pytest --cov=src/market_scraper --cov-report=html
+uv run pytest --cov=src/market_scraper --cov-report=html
 
 # Run specific test types
-pytest -m unit
-pytest -m integration
-pytest -m e2e
+uv run pytest -m unit
+uv run pytest -m integration
+uv run pytest -m e2e
 
 # Run specific test file
-pytest tests/unit/core/test_events.py
+uv run pytest tests/unit/core/test_events.py
 
 # Run with verbose output
-pytest -v
+uv run pytest -v
 
 # Run in parallel (requires pytest-xdist)
-pytest -n auto
+uv run pytest -n auto
 ```
 
 ### Test Markers
