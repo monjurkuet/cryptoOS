@@ -413,7 +413,14 @@ async def test_trading_signal_remains_in_raw_events_and_signals_collection(test_
 
 @pytest.mark.asyncio
 async def test_live_ohlcv_events_are_materialized_without_raw_event_duplication(test_settings):
-    """Live OHLCV events should be persisted to candle storage instead of raw events."""
+    """OHLCV events are firehose-only — not stored in MongoDB or raw events.
+
+    Candles are streamed from Hyperliquid WebSocket and consumed by the signal
+    generator. They are intentionally not persisted since no API endpoint reads
+    from the candles collection, and storing them was saturating the write
+    semaphore during bootstrap (200 traders × many intervals = thousands of
+    candle writes/sec competing with all other storage ops).
+    """
     manager = LifecycleManager(settings=test_settings)
     await manager.startup()
 
@@ -441,11 +448,13 @@ async def test_live_ohlcv_events_are_materialized_without_raw_event_duplication(
         await event_bus.publish(event)
         await asyncio.sleep(0.05)
 
+        # OHLCV is firehose-only: not stored as candle, not stored in raw_events
         latest_candle = await repository.get_latest_candle("BTC", "1h")
         raw_events = await repository.query(QueryFilter(event_type="ohlcv"))
 
-        assert latest_candle is not None
-        assert latest_candle["c"] == 60500
+        # Candle storage is disabled (firehose-only)
+        assert latest_candle is None
+        # OHLCV filtered out by _should_store_raw_event policy
         assert raw_events == []
     finally:
         await manager.shutdown()

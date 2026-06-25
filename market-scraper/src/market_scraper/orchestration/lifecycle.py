@@ -687,8 +687,10 @@ class LifecycleManager:
                 if event.event_type == "trading_signal":
                     asyncio.create_task(self._store_trading_signal(event))
 
-                if event.event_type == "ohlcv":
-                    asyncio.create_task(self._store_ohlcv_candle(event))
+                # ohlcv storage disabled — candles are firehose-only, not consumed by any
+                # API endpoint. Re-enable by uncommenting the line below.
+                # if event.event_type == "ohlcv":
+                #     asyncio.create_task(self._store_ohlcv_candle(event))
 
                 if event.event_type == "trader_positions":
                     asyncio.create_task(self._enqueue_trader_positions(event))
