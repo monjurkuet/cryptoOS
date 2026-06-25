@@ -201,8 +201,9 @@ class RedisEventBus(EventBus):
         """Dispatch a batch of events to local subscribers.
 
         Uses a bounded semaphore to limit concurrent handler executions to 20.
-        Tasks are created for all (handler, event) pairs but the semaphore
-        ensures only 20 run concurrently, preventing event loop starvation.
+        Tasks are created in waves (not all at once) to prevent event loop
+        saturation when processing large batches (e.g., bootstrap with 500+
+        events creating 1000+ handler tasks simultaneously).
 
         Dispatch is fire-and-forget: this method creates a single background
         task that processes all dispatches, then returns immediately so the
@@ -230,15 +231,22 @@ class RedisEventBus(EventBus):
                     )
 
         async def _run_all_dispatches() -> None:
-            tasks = []
+            # Build all (handler, event) pairs first
+            pairs: list[tuple[EventHandler, StandardEvent]] = []
             for event in events:
                 event_type_str = str(event.event_type)
                 handlers = self._get_local_handlers(event_type_str)
                 for _priority, handler in handlers:
-                    tasks.append(asyncio.create_task(
-                        _safe_dispatch(handler, event)
-                    ))
-            if tasks:
+                    pairs.append((handler, event))
+
+            if not pairs:
+                return
+
+            # Process in waves of 50 to avoid event loop task-saturation
+            WAVE_SIZE = 50
+            for i in range(0, len(pairs), WAVE_SIZE):
+                wave = pairs[i : i + WAVE_SIZE]
+                tasks = [asyncio.create_task(_safe_dispatch(h, e)) for h, e in wave]
                 await asyncio.gather(*tasks, return_exceptions=True)
 
         # Fire-and-forget: run all dispatches in a single background task
