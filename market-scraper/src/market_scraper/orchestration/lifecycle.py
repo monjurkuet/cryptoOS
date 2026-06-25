@@ -98,12 +98,20 @@ class LifecycleManager:
         self._health_monitor: HealthMonitor | None = None
         self._last_event_timestamps: dict[str, datetime] = {}
         self._write_semaphore: asyncio.Semaphore = asyncio.Semaphore(20)  # Increased from 12 — 6 storage workers + position buffer flush + signal gen + GC all compete for slots
+        # OHLCV write buffer — batches candles to reduce MongoDB round-trips
+        self._ohlcv_buffer: dict[tuple[str, str], list[Candle]] = {}  # (symbol, interval) -> candles
+        self._ohlcv_buffer_lock = asyncio.Lock()
+        self._ohlcv_buffer_flush_interval: float = 2.0  # Flush every 2s (batches writes)
+        self._ohlcv_buffer_max_size: int = 100  # Flush immediately if a symbol/interval hits 100 candles
+        self._ohlcv_buffer_flush_event: asyncio.Event = asyncio.Event()
+        # Position write buffer
         self._position_write_buffer: list[dict] = []
         self._position_buffer_lock = asyncio.Lock()
         self._position_buffer_flush_interval: float = 5.0
         self._position_buffer_max_size: int = 200  # Increased from 50 — fewer flushes, less MongoDB round-trips
         self._position_buffer_flush_event: asyncio.Event = asyncio.Event()
         self._position_flush_task: asyncio.Task | None = None
+        self._ohlcv_flush_task: asyncio.Task | None = None  # OHLCV buffer flush
         self._active_write_count: int = 0  # Track in-flight fire-and-forget writes
         self._db_write_executor: ThreadPoolExecutor | None = None  # Dedicated pool for MongoDB writes
         self._general_executor: ThreadPoolExecutor | None = None  # General pool for non-DB to_thread calls
@@ -242,6 +250,13 @@ class LifecycleManager:
                 )
                 logger.info("position_buffer_flush_task_started")
 
+            # Phase 2C: Start periodic OHLCV buffer flush task
+            if hasattr(self._repository, "store_candles_bulk"):
+                self._ohlcv_flush_task = asyncio.create_task(
+                    self._ohlcv_buffer_flush_loop()
+                )
+                logger.info("ohlcv_buffer_flush_task_started")
+
             duration_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info("lifecycle_startup_complete", duration_ms=round(duration_ms, 2))
 
@@ -304,6 +319,70 @@ class LifecycleManager:
             raise
         except Exception as e:
             logger.error("position_buffer_flush_loop_error", error=str(e), exc_info=True)
+
+    async def _ohlcv_buffer_flush_loop(self) -> None:
+        """Periodically flush the OHLCV write buffer to MongoDB using bulk insert."""
+        try:
+            while self._started:
+                try:
+                    await asyncio.wait_for(
+                        self._ohlcv_buffer_flush_event.wait(),
+                        timeout=self._ohlcv_buffer_flush_interval,
+                    )
+                    self._ohlcv_buffer_flush_event.clear()
+                except TimeoutError:
+                    pass  # periodic flush interval
+                async with self._ohlcv_buffer_lock:
+                    if self._ohlcv_buffer:
+                        await self._flush_ohlcv_buffer_unlocked()
+        except asyncio.CancelledError:
+            # Final flush on cancellation
+            async with self._ohlcv_buffer_lock:
+                if self._ohlcv_buffer:
+                    await self._flush_ohlcv_buffer_unlocked()
+            raise
+        except Exception as e:
+            logger.error("ohlcv_buffer_flush_loop_error", error=str(e), exc_info=True)
+
+    async def _flush_ohlcv_buffer_unlocked(self) -> None:
+        """Flush accumulated OHLCV candles to MongoDB in bulk. Caller holds _ohlcv_buffer_lock."""
+        if not self._ohlcv_buffer:
+            return
+
+        buffer = self._ohlcv_buffer
+        self._ohlcv_buffer = {}
+
+        if not buffer:
+            return
+
+        repo = self._repository
+        if not hasattr(repo, "store_candles_bulk"):
+            return
+
+        for (symbol, interval), candles in buffer.items():
+            if not candles:
+                continue
+            try:
+                await self._retry_repository_op(
+                    repo.store_candles_bulk,
+                    candles,
+                    symbol,
+                    interval,
+                    operation_name="store_candles_bulk",
+                )
+                logger.debug(
+                    "ohlcv_buffer_flushed",
+                    symbol=symbol,
+                    interval=interval,
+                    count=len(candles),
+                )
+            except Exception as e:
+                logger.error(
+                    "ohlcv_buffer_flush_error",
+                    symbol=symbol,
+                    interval=interval,
+                    error=str(e),
+                )
 
     async def _flush_position_buffer(self) -> None:
         """Flush accumulated position writes to MongoDB in batch."""
@@ -429,6 +508,18 @@ class LifecycleManager:
             except asyncio.CancelledError:
                 pass
             self._position_flush_task = None
+
+        # Phase 2C: Final flush of OHLCV buffer before shutdown
+        if self._ohlcv_buffer:
+            logger.info("ohlcv_buffer_final_flush", buffer_keys=len(self._ohlcv_buffer))
+            self._ohlcv_buffer_flush_event.set()
+        if self._ohlcv_flush_task:
+            self._ohlcv_flush_task.cancel()
+            try:
+                await self._ohlcv_flush_task
+            except asyncio.CancelledError:
+                pass
+            self._ohlcv_flush_task = None
 
         # Stop health monitor
         if self._health_monitor:
@@ -672,8 +763,14 @@ class LifecycleManager:
         return event_type in self._raw_event_allowlist
 
     async def _store_ohlcv_candle(self, event: StandardEvent) -> None:
-        """Persist live OHLCV events into canonical candle collections."""
-        if not self._repository or not hasattr(self._repository, "store_candle"):
+        """Buffer live OHLCV candle for batch MongoDB write.
+
+        Candles are buffered by (symbol, interval) key and flushed
+        every _ohlcv_buffer_flush_interval (2s) or when a key hits
+        _ohlcv_buffer_max_size (100 candles), whichever comes first.
+        Falls back to individual store_candle for non-MongoDB repositories.
+        """
+        if not self._repository:
             return
 
         payload = event.payload
@@ -694,29 +791,43 @@ class LifecycleManager:
             except ValueError:
                 logger.debug("ohlcv_timestamp_parse_failed", value=payload_timestamp)
 
-        try:
-            candle = Candle(
-                t=timestamp,
-                o=float(payload.get("open", 0) or 0),
-                h=float(payload.get("high", 0) or 0),
-                l=float(payload.get("low", 0) or 0),
-                c=float(payload.get("close", 0) or 0),
-                v=float(payload.get("volume", 0) or 0),
-            )
-            await self._fire_and_forget_write(
+        candle = Candle(
+            t=timestamp,
+            o=float(payload.get("open", 0) or 0),
+            h=float(payload.get("high", 0) or 0),
+            l=float(payload.get("low", 0) or 0),
+            c=float(payload.get("close", 0) or 0),
+            v=float(payload.get("volume", 0) or 0),
+        )
+
+        # Use buffered bulk write for MongoDB, individual write for memory repo
+        if hasattr(self._repository, "store_candles_bulk"):
+            key = (symbol, interval)
+            async with self._ohlcv_buffer_lock:
+                if key not in self._ohlcv_buffer:
+                    self._ohlcv_buffer[key] = []
+                self._ohlcv_buffer[key].append(candle)
+                should_flush = len(self._ohlcv_buffer[key]) >= self._ohlcv_buffer_max_size
+
+            if should_flush:
+                self._ohlcv_buffer_flush_event.set()
+        elif hasattr(self._repository, "store_candle"):
+            # Fallback: direct write for memory repository
+            try:
+                await self._fire_and_forget_write(
                     self._repository.store_candle,
                     candle,
                     symbol,
                     interval,
                     operation_name="store_candle",
                 )
-        except Exception as e:
-            logger.error("ohlcv_store_error", error=str(e), event_id=event.event_id)
-            self._store_dead_letter(
-                event=event,
-                reason="ohlcv_persistence_failed",
-                error=e,
-            )
+            except Exception as e:
+                logger.error("ohlcv_store_error", error=str(e), event_id=event.event_id)
+                self._store_dead_letter(
+                    event=event,
+                    reason="ohlcv_persistence_failed",
+                    error=e,
+                )
 
     def _ensure_storage_workers(self) -> None:
         """Start background worker tasks for storage queues (idempotent)."""
@@ -726,23 +837,37 @@ class LifecycleManager:
 
         async def _ohlcv_worker() -> None:
             while True:
+                args = None
                 try:
                     args = await self._ohlcv_queue.get()
                     await self._store_ohlcv_candle(args[0])
+                    self._ohlcv_queue.task_done()  # Only on success — get() also calls it on Cancel
+                except asyncio.CancelledError:
+                    # Task cancelled — task_done already called by queue.get() on cancel path
+                    raise
                 except Exception as e:
                     logger.error("ohlcv_worker_error", error=str(e))
-                finally:
-                    self._ohlcv_queue.task_done()
+                    try:
+                        self._ohlcv_queue.task_done()
+                    except ValueError:
+                        pass  # Already called by get() on error
 
         async def _trader_pos_worker() -> None:
             while True:
+                args = None
                 try:
                     args = await self._trader_pos_queue.get()
                     await self._store_trader_positions_state(args[0])
+                    self._trader_pos_queue.task_done()  # Only on success — get() also calls it on Cancel
+                except asyncio.CancelledError:
+                    # Task cancelled — task_done already called by queue.get() on cancel path
+                    raise
                 except Exception as e:
                     logger.error("trader_pos_worker_error", error=str(e))
-                finally:
-                    self._trader_pos_queue.task_done()
+                    try:
+                        self._trader_pos_queue.task_done()
+                    except ValueError:
+                        pass  # Already called by get() on error
 
         for _ in range(4):  # Increased from 2 — 4 workers absorb burst from slow connector startup better
             self._ohlcv_workers.append(asyncio.create_task(_ohlcv_worker()))
