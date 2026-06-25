@@ -97,6 +97,7 @@ async def query_raw_leaderboard(
                 ) from None
 
     result = await repository.get_raw_leaderboard(
+        symbol=lifecycle._settings.hyperliquid.symbol,
         limit=limit,
         offset=offset,
         sort_by=sort_by,

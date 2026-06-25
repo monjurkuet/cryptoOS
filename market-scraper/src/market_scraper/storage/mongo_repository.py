@@ -1983,6 +1983,7 @@ class MongoRepository(DataRepository):
     async def get_raw_leaderboard(
         self,
         *,
+        symbol: str,
         limit: int = 50,
         offset: int = 0,
         sort_by: str | None = None,
