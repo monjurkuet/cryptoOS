@@ -173,8 +173,8 @@ class LeaderboardCollector:
 
                 self._last_tracked_count = len(filtered)
 
-                # Store derived data via repository if available
-                if self._repository is not None:
+                # Check if repository supports raw leaderboard storage
+                if hasattr(self._repository, 'store_raw_leaderboard'):
                     asyncio.create_task(self._store_derived_data(filtered, rows, total_traders))
 
                 # Emit canonical leaderboard event consumed by processors.
