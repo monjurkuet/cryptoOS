@@ -1,8 +1,8 @@
 # cryptoOS
 
-Cryptocurrency market data collection, whale-tracking, and trading signal platform with a new reinforcement-learning loop for live signal tuning.
+Cryptocurrency market data collection, whale-tracking, and trading signal platform.
 
-## Projects
+## Active Project
 
 ### [market-scraper](market-scraper/)
 Real-time cryptocurrency market data collection system for Hyperliquid.
@@ -13,16 +13,18 @@ Real-time cryptocurrency market data collection system for Hyperliquid.
 - Signal generation (BUY/SELL/NEUTRAL)
 - Bitcoin on-chain metrics (CBBI, Fear & Greed, MVRV, SOPR, NUPL)
 - REST API + WebSocket streaming (port 3845)
+- Managed via systemd (`market-scraper.service`)
+
+## Research / Code-Only
 
 ### [smart-money-signal-system](smart-money-signal-system/)
-Real-time trading signal generation from whale position tracking.
+Trading signal generation from whale position tracking — source code and tests, **not deployed**.
 
 - Subscribes to Redis events from market-scraper
 - Whale alert detection with priority levels
 - Multi-dimensional trader weighting engine
 - ML-based market regime detection
-- RL outcome tracking, checkpoint loading, and offline retraining
-- REST API (port 4341)
+- RL outcome tracking and offline retraining
 
 ### [data-sources](data-sources/)
 API documentation and scripts for cryptocurrency data providers.
@@ -37,29 +39,21 @@ API documentation and scripts for cryptocurrency data providers.
 ## Architecture
 
 ```
-┌─────────────────┐     Redis Pub/Sub     ┌──────────────────────────┐
-│ market-scraper  │ ────────────────────► │ smart-money-signal-system│
-│                 │                       │                          │
-│ - Collectors    │ trader_positions      │ - Whale Detector         │
-│ - Processors    │ scored_traders        │ - Signal Generator       │
-│ - On-chain      │ candles               │ - Regime Detection       │
-│                 │ mark_price            │ - Outcome Tracker        │
-│  :3845 API      │                       │ - RL Param Server        │
-│  :3845 WS       │                       │ - Retraining API         │
-└─────────────────┘                       └──────────────────────────┘
-        │                                             │
-        ▼                                             ▼
-   MongoDB                                      MongoDB + checkpoints
-   market_scraper                               signal_system / `checkpoints/`
+┌─────────────────┐     Redis Pub/Sub
+│ market-scraper  │ ────────────────────►  (signal-system — code only, not deployed)
+│                 │
+│ - Collectors    │ trader_positions
+│ - Processors    │ scored_traders
+│ - On-chain      │ candles
+│                 │ mark_price
+│  :3845 API      │
+│  :3845 WS       │
+└─────────────────┘
+        │
+        ▼
+   MongoDB
+   market_scraper
 ```
-
-### Data Flow
-
-1. **market-scraper** collects trader positions, candles, and mark prices → publishes to Redis
-2. **smart-money-signal-system** subscribes to those events
-3. Signal generation produces BUY/SELL/NEUTRAL outputs using trader bias plus RL-tuned thresholds
-4. Mark-price events resolve historical outcomes and persist them for RL training
-5. Offline retraining writes checkpoints that are loaded on startup or pushed via API
 
 ## Quick Start
 
@@ -70,55 +64,37 @@ API documentation and scripts for cryptocurrency data providers.
 - Redis
 - uv package manager
 
-### Option 1: Quick Start (Development)
-
-Start both servers with a single command:
+### Development
 
 ```bash
-# Start both servers in background
-./scripts/start-all.sh --background
-
-# Check status
-./scripts/status.sh
-
-# View logs
-tail -f logs/market-scraper.log
-tail -f logs/signal-system.log
-
-# Stop all servers
-./scripts/stop-all.sh
-```
-
-### Option 2: Manual Start
-
-```bash
-# Terminal 1 - market-scraper
+# Start market-scraper
 cd market-scraper
 uv sync
 uv run python -m market_scraper server
-
-# Terminal 2 - signal-system
-cd smart-money-signal-system
-uv sync
-uv run python -m signal_system server
 ```
 
-### Option 3: Production (systemd)
+### Production (systemd)
 
 ```bash
-# Install systemd services
-sudo cp systemd/*.service /etc/systemd/system/
+# Install systemd service
+sudo cp systemd/market-scraper.service /etc/systemd/system/
 sudo systemctl daemon-reload
 
 # Enable and start
-sudo systemctl enable market-scraper.service signal-system.service
+sudo systemctl enable market-scraper.service
 sudo systemctl start market-scraper.service
 
 # Check status
-sudo systemctl status market-scraper.service signal-system.service
+sudo systemctl status market-scraper.service
 ```
 
 See [systemd/README.md](systemd/README.md) for detailed instructions.
+
+## Verification
+
+```bash
+curl http://localhost:3845/health/live
+```
 
 ## Technologies
 
@@ -140,24 +116,24 @@ See [systemd/README.md](systemd/README.md) for detailed instructions.
 
 ```
 cryptoOS/
-├── market-scraper/              # Market data collection
+├── market-scraper/              # Market data collection (active)
 │   ├── src/market_scraper/      # Main source code
-│   ├── scripts/                 # Utility scripts
-│   ├── tests/                   # Test suite
+│   ├── config/                  # Configuration files
+│   ├── tests/                   # Test suite (335 passed, 11 skipped)
 │   └── docs/                    # Documentation
-├── smart-money-signal-system/   # Signal generation + RL tuning
-│   ├── src/signal_system/       # Main source code
-│   ├── checkpoints/             # RL checkpoints (generated)
+├── smart-money-signal-system/   # Signal generation + RL (code only)
+│   ├── src/signal_system/       # Source code
 │   └── tests/                   # Test suite
-├── docs/                        # Plans and reports
-├── data-sources/                # API documentation
-├── scripts/                     # Deployment scripts
-│   ├── start-all.sh             # Start all servers
+├── shared/                      # Shared Pydantic/config utilities
+├── data-sources/                # Data provider API documentation
+├── scripts/                     # Utility scripts
+│   ├── start-market-scraper.sh  # Start market-scraper
 │   ├── stop-all.sh              # Stop all servers
 │   └── status.sh                # Check server status
-└── systemd/                     # Production services
-    ├── market-scraper.service   # systemd unit file
-    └── signal-system.service    # systemd unit file
+├── systemd/                     # Production services
+│   └── market-scraper.service   # systemd unit file
+├── docs/                        # Documentation and reports
+└── logs/                        # Runtime logs (gitignored)
 ```
 
 ## Documentation
@@ -167,7 +143,7 @@ cryptoOS/
 | [market-scraper/README.md](market-scraper/README.md) | Market scraper features and API |
 | [docs/binance-account-positions.md](docs/binance-account-positions.md) | Saved Binance account position setup and API |
 | [smart-money-signal-system/README.md](smart-money-signal-system/README.md) | Signal system, RL flow, and API |
-| [docs/README.md](docs/README.md) | Top-level docs inventory and archival policy |
+| [docs/hybrid-compute-deployment.md](docs/hybrid-compute-deployment.md) | Current deployment status |
 | [systemd/README.md](systemd/README.md) | Production deployment with systemd |
 | [market-scraper/docs/guides/deployment.md](market-scraper/docs/guides/deployment.md) | Detailed deployment guide |
 
