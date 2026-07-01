@@ -263,6 +263,10 @@ class TraderWsConfig(BaseModel):
     subscriptions_per_client: int = Field(default=10, ge=1, le=10)
     # Rotate the tracked WS subset through the active universe at this interval.
     rotation_interval_seconds: int = Field(default=900, ge=60, le=86400)
+    # Serial mode: only one client active at a time, rotating through batches.
+    serial_mode: bool = Field(default=False)
+    # How long each client stays connected in serial mode before rotating.
+    client_dwell_seconds: int = Field(default=60, ge=10, le=3600)
 
 
 class CandleBackfillConfig(BaseModel):

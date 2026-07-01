@@ -1333,6 +1333,8 @@ class LifecycleManager:
             buffer_config=market_config.buffer,
             max_clients=ws_config.max_clients,
             subscriptions_per_client=ws_config.subscriptions_per_client,
+            serial_mode=ws_config.serial_mode,
+            client_dwell_seconds=ws_config.client_dwell_seconds,
         )
 
         async def sync_trader_ws_from_repository(reason: str) -> None:

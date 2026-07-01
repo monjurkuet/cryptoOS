@@ -93,6 +93,8 @@ class TraderWebSocketCollector:
         buffer_config: BufferConfig | None = None,
         max_clients: int = 5,
         subscriptions_per_client: int = HL_SUBSCRIPTIONS_PER_CONNECTION,
+        serial_mode: bool = False,
+        client_dwell_seconds: int = 60,
     ) -> None:
         """Initialize the trader WebSocket collector.
 
@@ -115,6 +117,12 @@ class TraderWebSocketCollector:
         self._batch_size = max(1, min(int(subscriptions_per_client), HL_SUBSCRIPTIONS_PER_CONNECTION))
         # Keep a hard cap on WS clients for system stability.
         self._max_clients = max(1, min(int(max_clients), 30))
+
+        # Serial mode: one client at a time, rotating through batches
+        self._serial_mode = serial_mode
+        self._client_dwell = client_dwell_seconds
+        self._rotation_task: asyncio.Task | None = None
+        self._current_client_idx: int = 0
 
         # State
         self._running = False
@@ -203,7 +211,20 @@ class TraderWebSocketCollector:
             logger.warning("no_traders_to_track")
             return
 
-        # Split traders among clients (10 per WS connection per Hyperliquid limit)
+        if self._serial_mode:
+            # Serial mode: launch background round-robin — one client connects,
+            # collects for client_dwell_seconds, disconnects, then next batch.
+            self._rotation_task = asyncio.create_task(self._serial_round_robin())
+            logger.info(
+                "trader_ws_serial_started",
+                num_traders=len(self._tracked_traders),
+                batch_size=self._batch_size,
+                total_batches=(len(self._tracked_traders) + self._batch_size - 1) // self._batch_size,
+                dwell_s=self._client_dwell,
+            )
+            return
+
+        # Parallel mode (original behaviour): split traders among concurrent clients
         trader_batches = [
           self._tracked_traders[i : i + self._batch_size]
           for i in range(0, len(self._tracked_traders), self._batch_size)
@@ -252,6 +273,14 @@ class TraderWebSocketCollector:
         """Stop all WebSocket connections."""
         logger.info("trader_ws_stopping")
         self._running = False
+
+        # Cancel serial rotation task
+        if self._rotation_task:
+            self._rotation_task.cancel()
+            try:
+                await asyncio.wait_for(self._rotation_task, timeout=5.0)
+            except (TimeoutError, asyncio.CancelledError):
+                pass
 
         # Stop flush task
         if self._flush_task:
@@ -319,6 +348,12 @@ class TraderWebSocketCollector:
             self._flush_task = asyncio.create_task(self._flush_loop())
 
         self._tracked_traders.append(address)
+        # In serial mode, the round-robin picks up the new trader on its next cycle.
+        # No per-client subscription needed -- the single active client handles its
+        # existing batch and the updated list propagates on the next rotation.
+        if self._serial_mode:
+            self._schedule_bootstrap([address])
+            return
 
         # Add to first available client with space
         for client in self._clients:
@@ -349,6 +384,12 @@ class TraderWebSocketCollector:
         address = str(address).lower()
         if address in self._tracked_traders:
             self._tracked_traders.remove(address)
+
+        # In serial mode the round-robin picks up the updated list on its next cycle.
+        # The current client may still track this address for its dwell, but that's
+        # harmless -- we just don't reconnect it in the next rotation.
+        if self._serial_mode:
+            return
 
         # Remove from clients
         for client in self._clients:
@@ -1356,8 +1397,95 @@ class TraderWebSocketCollector:
         """Return fixed WS capacity (#clients * subscriptions per client)."""
         return self._max_clients * self._batch_size
 
+    async def _serial_round_robin(self) -> None:
+        """Process traders one client at a time, rotating through all batches.
+
+        In serial mode, only one WS client is active at any moment.  The client
+        subscribes to a batch of traders, collects data for `_client_dwell`
+        seconds, disconnects, then the next batch connects.  This repeats
+        indefinitely — when the full list is exhausted, it loops back to the
+        start.  The tracked-traders list is re-read at the top of each cycle so
+        adds / removes take effect without restarting.
+        """
+        while self._running:
+            traders = list(self._tracked_traders)
+            if not traders:
+                logger.info("trader_ws_serial_no_traders", waiting_s=self._client_dwell)
+                await asyncio.sleep(self._client_dwell)
+                continue
+
+            batches = [
+                traders[i : i + self._batch_size]
+                for i in range(0, len(traders), self._batch_size)
+            ]
+
+            logger.info(
+                "trader_ws_serial_cycle_start",
+                total_traders=len(traders),
+                total_batches=len(batches),
+                batch_size=self._batch_size,
+                dwell_s=self._client_dwell,
+            )
+
+            for batch in batches:
+                if not self._running:
+                    return
+
+                logger.info(
+                    "trader_ws_serial_connecting_batch",
+                    batch_num=self._current_client_idx + 1,
+                    total_batches=len(batches),
+                    traders=len(batch),
+                )
+
+                client = TraderWSClient(
+                    client_id=0,
+                    traders=list(batch),
+                    on_message=self._handle_message,
+                    on_disconnect=self._handle_disconnect,
+                    config=self.config,
+                )
+                self._clients = [client]
+
+                try:
+                    await client.start()
+                    self._current_client_idx += 1
+
+                    logger.info(
+                        "trader_ws_serial_dwelling",
+                        batch_num=self._current_client_idx,
+                        dwell_s=self._client_dwell,
+                    )
+                    await asyncio.sleep(self._client_dwell)
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(
+                        "trader_ws_serial_batch_error",
+                        batch_num=self._current_client_idx,
+                        error=str(e),
+                    )
+                finally:
+                    try:
+                        await asyncio.wait_for(client.stop(), timeout=10.0)
+                    except TimeoutError:
+                        logger.warning("trader_ws_serial_stop_timeout")
+                    except Exception:
+                        pass
+
+                self._clients.clear()
+
+            logger.info(
+                "trader_ws_serial_cycle_complete",
+                batches_processed=len(batches),
+                traders_tracked=len(self._tracked_traders),
+            )
+            await asyncio.sleep(1.0)
+
+
 class TraderWSClient:
-    """Single WebSocket client for a batch of traders."""
+    """Single WebSocket connection to Hyperliquid for a subset of trader addresses."""
 
     def __init__(
         self,

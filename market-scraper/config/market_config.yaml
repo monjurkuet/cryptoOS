@@ -224,6 +224,8 @@ trader_ws:
   max_clients: 5
   subscriptions_per_client: 10
   rotation_interval_seconds: 900
+  serial_mode: true
+  client_dwell_seconds: 60
 
 # Candle Backfill Configuration
 candle_backfill:
