@@ -754,30 +754,18 @@ class TraderWebSocketCollector:
                     coro = task.get_coro()
                     if coro and not task.done():
                         name = getattr(coro, '__qualname__', getattr(coro, '__name__', str(coro)))
-                        # Check if the task is currently suspended (waiting) or has a ready callback
                         task_info.append(name)
 
-                # Deduplicate and sort by frequency
                 task_summary = dict(sorted(
                     ((n, task_info.count(n)) for n in set(task_info)),
                     key=lambda x: -x[1],
-                )[:15])  # Top 15 most frequent
-
-                # Check thread pool saturation
-                db_exec = getattr(self, '_lifecycle', None)
-                gen_exec_info = ""
-                if db_exec:
-                    gen_exec = getattr(db_exec, '_general_executor', None)
-                    if gen_exec:
-                        gen_exec_info = f" gen_queue={len(gen_exec._threads)}"
+                )[:15])
 
                 logger.error(
                     "event_loop_lag_critical",
                     lag_ms=round(lag * 1000, 1),
                     running_tasks=task_summary,
-                    general_executor_info=gen_exec_info,
                     norm_executor_threads=len(self._executor._threads) if self._executor else 0,
-                    norm_executor_queue=self._executor._work_queue.qsize() if self._executor and hasattr(self._executor, '_work_queue') else -1,
                 )
             elif lag > 0.5:
                 logger.warning(
@@ -863,48 +851,16 @@ class TraderWebSocketCollector:
         open_orders: list[dict] | None = None,
         margin_summary: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, str]]:
-        """Check if positions have changed significantly.
+        """Check if positions changed — normalizes then delegates to normalized path.
 
-        Args:
-            address: Trader address
-            positions: Current positions
-            open_orders: Current open orders
-            margin_summary: Latest margin summary
-
-        Returns:
-            Tuple of (should_save, computed_values) where computed_values
-            contains pre-computed normalized strings for reuse.
+        Kept for backward compatibility with tests.
         """
-        # Compute normalized strings once for both comparison and caching
-        current_normalized = self._normalize_positions(positions)
-        current_open_orders = self._normalize_open_orders(open_orders)
-        current_margin_summary = self._normalize_margin_summary(margin_summary)
-
-        last_saved = self._last_positions.get(address, {})
-
-
-        # Compute SHA-256 hash once for both comparison and storage
-        current_hash = hashlib.sha256(
-            (current_normalized + current_open_orders + current_margin_summary).encode()
-        ).hexdigest()
-        last_hash = last_saved.get("hash", "")
-        now = time.time()
-        last_timestamp = float(last_saved.get("timestamp", 0) or 0)
-
-        computed = {
-            "hash": current_hash,
-            "normalized": current_normalized,
-            "open_orders": current_open_orders,
-            "margin_summary": current_margin_summary,
-        }
-
-        if last_timestamp and (now - last_timestamp) >= self._position_max_interval:
-            return True, computed
-
-        if last_hash != current_hash:
-            return True, computed
-
-        return False, {}
+        norm_pos = self._normalize_positions(positions)
+        norm_ords = self._normalize_open_orders(open_orders)
+        norm_margin = self._normalize_margin_summary(margin_summary)
+        return self._has_significant_change_normalized(
+            address, norm_pos, norm_ords, norm_margin
+        )
 
     def _process_webdata_batch(
         self,
@@ -973,21 +929,6 @@ class TraderWebSocketCollector:
                  quick_hash, norm_pos, norm_ords, norm_margin)
             )
         return results
-
-    def _normalize_batch(self, items: list[tuple[list, list, dict]]) -> list[tuple[str, str, str]]:
-        """Normalize a batch of (positions, open_orders, margin_summary) tuples.
-
-        CPU-bound work meant to run in a thread pool executor.
-        Returns list of (normalized_pos, normalized_orders, normalized_margin) strings.
-        """
-        return [
-            (
-                self._normalize_positions(pos),
-                self._normalize_open_orders(ords),
-                self._normalize_margin_summary(marg),
-            )
-            for pos, ords, marg in items
-        ]
 
     def _cleanup_stale_positions(self) -> None:
         """Remove stale position entries to prevent unbounded memory growth."""
@@ -1308,8 +1249,8 @@ class TraderWebSocketCollector:
     def _process_webdata2(self, msg: dict[str, Any]) -> StandardEvent | None:
         """Process a single webData2 message into a trader_positions event.
 
-        This method exists for unit-test compatibility and is also used by
-        low-volume code paths where one-off processing is needed.
+        For unit-test compatibility and one-off processing. Delegates to
+        the normalized path used by the batch flush pipeline.
         """
         if msg.get("channel") != "webData2":
             return None
@@ -1319,11 +1260,18 @@ class TraderWebSocketCollector:
             return None
 
         address, symbol_positions, symbol_open_orders, margin_summary = extracted
-        return self._create_trader_positions_event(
+        # Normalize once and delegate to the normalized codepath
+        norm_pos = self._normalize_positions(symbol_positions)
+        norm_ords = self._normalize_open_orders(symbol_open_orders)
+        norm_margin = self._normalize_margin_summary(margin_summary)
+        return self._create_trader_positions_event_normalized(
             address=address,
             symbol_positions=symbol_positions,
             open_orders=symbol_open_orders,
             margin_summary=margin_summary,
+            norm_positions=norm_pos,
+            norm_open_orders=norm_ords,
+            norm_margin=norm_margin,
             allow_empty=(address in self._last_positions),
         )
 
@@ -1335,43 +1283,22 @@ class TraderWebSocketCollector:
         margin_summary: dict[str, Any],
         allow_empty: bool,
     ) -> StandardEvent | None:
-        """Create trader position event with change detection and state tracking."""
-        if not symbol_positions and not open_orders and not allow_empty and address not in self._last_positions:
-            self._positions_skipped += 1
-            return None
+        """Create trader position event — normalizes then delegates to normalized path.
 
-        changed, computed = self._has_significant_change(address, symbol_positions, open_orders, margin_summary)
-        if not changed:
-            self._positions_skipped += 1
-            return None
-
-        self._positions_saved += 1
-        logger.debug(
-            "trader_ws_position_saved",
-            address=address[:10],
-            symbol=self.config.symbol,
-            position_count=len(symbol_positions),
-        )
-
-        # Store only the SHA-256 hash (no longer storing full normalized strings)
-        combined_hash = computed.get("hash", "")
-
-        self._last_positions[address] = {
-            "hash": combined_hash,
-            "timestamp": time.time(),
-        }
-
-        return StandardEvent.create(
-            event_type="trader_positions",
-            source="hyperliquid_trader_ws",
-            payload={
-                "address": address,
-                "symbol": self.config.symbol,
-                "positions": symbol_positions,
-                "openOrders": open_orders,
-                "marginSummary": margin_summary,
-                "timestamp": datetime.now(UTC).isoformat(),
-            },
+        Kept for backward compatibility with bootstrap code and tests.
+        """
+        norm_pos = self._normalize_positions(symbol_positions)
+        norm_ords = self._normalize_open_orders(open_orders)
+        norm_margin = self._normalize_margin_summary(margin_summary)
+        return self._create_trader_positions_event_normalized(
+            address=address,
+            symbol_positions=symbol_positions,
+            open_orders=open_orders,
+            margin_summary=margin_summary,
+            norm_positions=norm_pos,
+            norm_open_orders=norm_ords,
+            norm_margin=norm_margin,
+            allow_empty=allow_empty,
         )
 
     def get_stats(self) -> dict[str, Any]:
@@ -1394,7 +1321,13 @@ class TraderWebSocketCollector:
         }
 
     def get_capacity(self) -> int:
-        """Return fixed WS capacity (#clients * subscriptions per client)."""
+        """Return effective WS subscription capacity.
+
+        In serial mode, only one batch-size slot is active at a time.
+        In parallel mode, max_clients * batch_size.
+        """
+        if self._serial_mode:
+            return self._batch_size
         return self._max_clients * self._batch_size
 
     async def _serial_round_robin(self) -> None:

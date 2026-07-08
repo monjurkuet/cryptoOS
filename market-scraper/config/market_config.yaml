@@ -242,7 +242,7 @@ candle_backfill:
 
 # Scheduler Configuration
 scheduler:
-  enabled: false
+  enabled: true
 
   tasks:
     leaderboard_refresh:
