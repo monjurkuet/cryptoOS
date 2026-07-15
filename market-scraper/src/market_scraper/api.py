@@ -20,6 +20,12 @@ async def health() -> dict[str, str]:
         raise HTTPException(status_code=503, detail=f"MongoDB unreachable: {e}")
 
 
+@router.get("/health/live")
+async def health_live() -> dict[str, str]:
+    """Lightweight liveness check for reverse-proxy & monitoring."""
+    return {"status": "alive"}
+
+
 @router.get("/api/v1/traders")
 async def list_traders(
     limit: int = Query(50, ge=1, le=1000),

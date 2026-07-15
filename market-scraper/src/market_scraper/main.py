@@ -1,6 +1,7 @@
 """Market scraper entry point — runs position monitor + API server."""
 import asyncio
 import logging
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
@@ -76,6 +77,22 @@ def main() -> int:
         _configure_logging()
         settings = get_settings()
         await connect_mongo(settings.mongo_url, settings.mongo_db)
+
+        # Start systemd watchdog ping task
+        async def _watchdog_ping() -> None:
+            """Send WATCHDOG=1 every 30s to prevent systemd watchdog kill."""
+            while True:
+                try:
+                    subprocess.run(
+                        ["systemd-notify", "WATCHDOG=1"],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+                await asyncio.sleep(30)
+
+        watchdog_task = asyncio.create_task(_watchdog_ping())
 
         monitor = PositionMonitor()
         task = asyncio.create_task(monitor.run_forever())
