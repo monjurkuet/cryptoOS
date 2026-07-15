@@ -1,4 +1,4 @@
-"""Serial WebSocket position monitor — 5 traders at a time."""
+"""Serial REST position monitor — polls clearinghouseState for each trader."""
 import asyncio
 import hashlib
 import json
@@ -6,29 +6,30 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import structlog
-import websockets
 
 from market_scraper.config import get_settings
 from market_scraper.db import get_db
 
 logger = structlog.get_logger(__name__)
 
+CLEARINGHOUSE_URL = "https://api.hyperliquid.xyz/info"
+
 
 class PositionMonitor:
-    """Single WebSocket, 5 traders per batch, 60s dwell, ascending ROI order."""
+    """REST polling: 5 traders at a time, 60s dwell, ascending ROI order."""
 
     def __init__(self):
         self.settings = get_settings()
         self._running = True
 
     async def run_forever(self) -> None:
-        """Main loop: fetch tracked traders, cycle through batches."""
+        """Main loop: fetch tracked traders, poll positions."""
         while self._running:
             try:
                 db = get_db()
                 # Ascending ROI: lowest first, highest last
-                # Highest-ROI traders get sampled most frequently (cycle restarts)
                 cursor = db.tracked_traders.find({}).sort("roi_all_time", 1)
                 traders = await cursor.to_list(length=1000)
 
@@ -58,119 +59,61 @@ class PositionMonitor:
         self._running = False
 
     async def _process_batch(self, traders: list[dict[str, Any]]) -> None:
-        """Connect WS, subscribe, listen for dwell seconds, store positions."""
-        addresses = [t["eth"].lower() for t in traders if t.get("eth")]
-        if not addresses:
-            return
-
+        """Poll clearinghouseState for each trader, store positions."""
         symbol = self.settings.monitor.symbol.upper()
 
         try:
-            async with websockets.connect(
-                self.settings.monitor.ws_url,
-                ping_interval=30,
-                ping_timeout=10,
-                close_timeout=5,
-            ) as ws:
-                # Subscribe all traders in batch
-                for addr in addresses:
-                    await ws.send(json.dumps({
-                        "method": "subscribe",
-                        "subscription": {"type": "webData2", "user": addr},
-                    }))
-                    await asyncio.sleep(0.05)
-
-                logger.info("monitor_batch_subscribed", addresses=len(addresses))
-
-                # Listen for dwell seconds
-                end_time = time.monotonic() + self.settings.monitor.dwell_seconds
-                messages = 0
-                while time.monotonic() < end_time:
-                    try:
-                        remaining = end_time - time.monotonic()
-                        msg = await asyncio.wait_for(ws.recv(), timeout=min(1.0, max(0.1, remaining)))
-                        await self._handle_message(msg, symbol)
-                        messages += 1
-                    except asyncio.TimeoutError:
-                        continue
-                    except websockets.ConnectionClosed:
+            async with httpx.AsyncClient(timeout=15) as client:
+                for trader in traders:
+                    if not self._running:
                         break
+                    addr = trader.get("eth", "").lower()
+                    if not addr:
+                        continue
 
-                # Clean unsubscribe before closing
-                for addr in addresses:
                     try:
-                        await ws.send(json.dumps({
-                            "method": "unsubscribe",
-                            "subscription": {"type": "webData2", "user": addr},
-                        }))
-                    except Exception:
-                        pass
+                        resp = await client.post(
+                            CLEARINGHOUSE_URL,
+                            json={"type": "clearinghouseState", "user": addr},
+                        )
+                        if resp.status_code != 200:
+                            continue
+                        data = resp.json()
+                        await self._store_state(addr, data, symbol)
+                    except httpx.HTTPError as e:
+                        logger.warning("monitor_poll_error", addr=addr[:10], error=str(e))
+                    # Small delay to avoid rate limits
+                    await asyncio.sleep(0.1)
 
-                logger.info("monitor_batch_complete", messages=messages)
+            # Dwell between batches
+            await asyncio.sleep(max(1, self.settings.monitor.dwell_seconds - 0.5))
 
         except Exception as e:
             logger.error("monitor_batch_error", error=str(e))
 
-    async def _handle_message(self, msg: str, symbol: str) -> None:
-        """Parse webData2, normalize, dedup, store to MongoDB."""
-        try:
-            data = json.loads(msg)
-        except json.JSONDecodeError:
-            return
-
-        if data.get("channel") != "webData2":
-            return
-
-        payload = data.get("data", {})
-        if not isinstance(payload, dict):
-            return
-
-        eth = str(payload.get("user", "")).lower()
-        if not eth:
-            return
-
-        ch = payload.get("clearinghouseState", {})
-        if not isinstance(ch, dict):
-            return
-
-        # Filter to configured symbol only
-        raw_positions = ch.get("assetPositions", [])
+    async def _store_state(self, eth: str, data: dict[str, Any], symbol: str) -> None:
+        """Parse clearinghouseState, dedup, store to MongoDB."""
+        # Filter positions to configured symbol only
+        raw_positions = data.get("assetPositions", [])
         if not isinstance(raw_positions, list):
             raw_positions = []
 
-        positions = []
-        for raw_pos in raw_positions:
-            pos = raw_pos.get("position", {})
-            if not isinstance(pos, dict):
-                continue
-            if pos.get("coin", "").upper() != symbol:
-                continue
-            try:
-                if float(pos.get("szi", 0)) != 0:
-                    positions.append(raw_pos)
-            except (TypeError, ValueError):
-                pass
-
-        # Open orders for this symbol
-        raw_orders = payload.get("openOrders", [])
-        if not isinstance(raw_orders, list):
-            raw_orders = []
-        open_orders = [
-            o for o in raw_orders
-            if isinstance(o, dict)
-            and o.get("coin", "").upper() == symbol
+        positions = [
+            p for p in raw_positions
+            if isinstance(p, dict)
+            and p.get("position", {}).get("coin", "").upper() == symbol
+            and float(p.get("position", {}).get("szi", 0) or 0) != 0
         ]
 
-        margin_summary = ch.get("marginSummary", {})
+        margin_summary = data.get("marginSummary", {})
         if not isinstance(margin_summary, dict):
             margin_summary = {}
 
         # Hash for dedup
         pos_str = json.dumps(positions, sort_keys=True, separators=(",", ":"))
-        ord_str = json.dumps(open_orders, sort_keys=True, separators=(",", ":"))
         marg_str = json.dumps(margin_summary, sort_keys=True, separators=(",", ":"))
         position_hash = hashlib.sha256(
-            (pos_str + ord_str + marg_str).encode()
+            (pos_str + marg_str).encode()
         ).hexdigest()
 
         # Dedup check
@@ -190,7 +133,6 @@ class PositionMonitor:
                 "eth": eth,
                 "symbol": symbol,
                 "positions": positions,
-                "open_orders": open_orders,
                 "margin_summary": margin_summary,
                 "position_hash": position_hash,
                 "updated_at": now,
@@ -213,11 +155,13 @@ class PositionMonitor:
                 "t": now,
             })
 
-        # Update tracked trader's last position timestamp
+        # Update tracked trader
         await db.tracked_traders.update_one(
             {"eth": eth},
             {"$set": {"last_position_update": now, "position_hash": position_hash}},
         )
+
+        logger.debug("monitor_stored", addr=eth[:10], positions=len(positions), hash=position_hash[:16])
 
 
 def _parse_leverage(val: Any) -> float:

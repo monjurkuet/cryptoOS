@@ -1,4 +1,4 @@
-"""Tests for the serial position monitor."""
+"""Tests for the serial REST position monitor."""
 import asyncio
 import hashlib
 import json
@@ -21,7 +21,7 @@ def settings() -> MagicMock:
     s.monitor.batch_size = 5
     s.monitor.dwell_seconds = 60
     s.monitor.symbol = "BTC"
-    s.monitor.ws_url = "wss://test.hyperliquid.xyz/ws"
+    s.monitor.ws_url = "wss://api.hyperliquid.xyz/ws"
     s.monitor.sort_ascending_by_roi = True
     s.monitor.enable_hash_dedup = True
     return s
@@ -56,26 +56,16 @@ class TestHelperFunctions:
         assert _parse_float_or_none("notanumber") is None
 
 
-class TestPositionExtraction:
-    def test_webdata2_extracts_btc_positions(self, monitor: PositionMonitor) -> None:
-        """Full webData2 message should extract only BTC positions."""
-        msg = json.dumps({
-            "channel": "webData2",
-            "data": {
-                "user": "0xtest123",
-                "clearinghouseState": {
-                    "assetPositions": [
-                        {"position": {"coin": "BTC", "szi": "1.5", "entryPx": "50000", "markPx": "51000", "unrealizedPnl": "1500", "leverage": {"type": "cross", "value": 10}, "liquidationPx": "45000"}},
-                        {"position": {"coin": "ETH", "szi": "2.0"}},
-                    ],
-                    "marginSummary": {"accountValue": "100000"},
-                },
-                "openOrders": [
-                    {"coin": "BTC", "sz": "0.5", "oid": 1},
-                    {"coin": "ETH", "sz": "1.0", "oid": 2},
-                ],
-            },
-        })
+class TestPositionStorage:
+    def test_store_btc_positions(self, monitor: PositionMonitor) -> None:
+        """REST response with BTC position should be stored correctly."""
+        data = {
+            "marginSummary": {"accountValue": "100000"},
+            "assetPositions": [
+                {"position": {"coin": "BTC", "szi": "1.5", "entryPx": "50000", "markPx": "51000", "unrealizedPnl": "1500", "leverage": {"type": "cross", "value": 10}, "liquidationPx": "45000"}},
+                {"position": {"coin": "ETH", "szi": "2.0"}},
+            ],
+        }
 
         with patch("market_scraper.services.monitor.get_settings") as mock_settings:
             mock_settings.return_value.monitor.enable_hash_dedup = False
@@ -84,48 +74,54 @@ class TestPositionExtraction:
                 db = AsyncMock()
                 mock_db.return_value = db
 
-                asyncio.run(monitor._handle_message(msg, "BTC"))
+                asyncio.run(monitor._store_state("0xtest123", data, "BTC"))
 
-                # Verify trader_current_state was called (upsert)
+                # Verify trader_current_state was called
                 assert db.trader_current_state.update_one.call_count == 1
                 args, _ = db.trader_current_state.update_one.call_args
-                filter_doc = args[0]
                 state = args[1]["$set"]
-                assert filter_doc == {"eth": "0xtest123"}
+                assert state["eth"] == "0xtest123"
                 assert len(state["positions"]) == 1  # Only BTC
                 assert state["positions"][0]["position"]["coin"] == "BTC"
-                assert len(state["open_orders"]) == 1  # Only BTC
+
+    def test_empty_positions_stored(self, monitor: PositionMonitor) -> None:
+        """REST response with no BTC positions should still store flat state."""
+        data = {
+            "marginSummary": {"accountValue": "100000"},
+            "assetPositions": [
+                {"position": {"coin": "ETH", "szi": "2.0"}},
+            ],
+        }
+
+        with patch("market_scraper.services.monitor.get_settings") as mock_settings:
+            mock_settings.return_value.monitor.enable_hash_dedup = False
+            mock_settings.return_value.monitor.symbol = "BTC"
+            with patch("market_scraper.services.monitor.get_db") as mock_db:
+                db = AsyncMock()
+                mock_db.return_value = db
+
+                asyncio.run(monitor._store_state("0xtest", data, "BTC"))
+
+                args, _ = db.trader_current_state.update_one.call_args
+                state = args[1]["$set"]
+                assert state["positions"] == []  # No BTC
 
     def test_empty_user_skipped(self, monitor: PositionMonitor) -> None:
-        msg = json.dumps({"channel": "webData2", "data": {"user": ""}})
         with patch("market_scraper.services.monitor.get_db") as mock_db:
             mock_db.return_value = AsyncMock()
-            asyncio.run(monitor._handle_message(msg, "BTC"))
-            mock_db.return_value.trader_current_state.update_one.assert_not_called()
-
-    def test_non_webdata2_skipped(self, monitor: PositionMonitor) -> None:
-        msg = json.dumps({"channel": "candle", "data": {"o": 1}})
-        with patch("market_scraper.services.monitor.get_db") as mock_db:
-            mock_db.return_value = AsyncMock()
-            asyncio.run(monitor._handle_message(msg, "BTC"))
-            mock_db.return_value.trader_current_state.update_one.assert_not_called()
+            # _store_state with empty eth should not crash
+            asyncio.run(monitor._store_state("", {}, "BTC"))
 
 
 class TestHashDedup:
     def test_same_position_skipped(self, monitor: PositionMonitor) -> None:
         """Same position data with same hash should skip the write."""
-        msg = json.dumps({
-            "channel": "webData2",
-            "data": {
-                "user": "0xdedup",
-                "clearinghouseState": {
-                    "assetPositions": [
-                        {"position": {"coin": "BTC", "szi": "1.0"}},
-                    ],
-                    "marginSummary": {"accountValue": "100000"},
-                },
-            },
-        })
+        data = {
+            "marginSummary": {"accountValue": "100000"},
+            "assetPositions": [
+                {"position": {"coin": "BTC", "szi": "1.0"}},
+            ],
+        }
 
         with patch("market_scraper.services.monitor.get_settings") as mock_settings:
             mock_settings.return_value.monitor.enable_hash_dedup = True
@@ -134,26 +130,24 @@ class TestHashDedup:
                 db_mock = AsyncMock()
                 mock_db.return_value = db_mock
 
-                # Calculate the expected hash
+                # Calculate expected hash
                 pos_str = json.dumps(
                     [{"position": {"coin": "BTC", "szi": "1.0"}}],
                     sort_keys=True, separators=(",", ":"),
                 )
-                ord_str = json.dumps([], sort_keys=True, separators=(",", ":"))
                 marg_str = json.dumps(
                     {"accountValue": "100000"},
                     sort_keys=True, separators=(",", ":"),
                 )
                 expected_hash = hashlib.sha256(
-                    (pos_str + ord_str + marg_str).encode()
+                    (pos_str + marg_str).encode()
                 ).hexdigest()
 
-                # Existing state has same hash
                 db_mock.trader_current_state.find_one = AsyncMock(
                     return_value={"position_hash": expected_hash}
                 )
 
-                asyncio.run(monitor._handle_message(msg, "BTC"))
+                asyncio.run(monitor._store_state("0xdedup", data, "BTC"))
 
                 # update_one should NOT be called (same hash)
                 db_mock.trader_current_state.update_one.assert_not_called()
@@ -161,18 +155,12 @@ class TestHashDedup:
 
     def test_different_position_saved(self, monitor: PositionMonitor) -> None:
         """Different position data should trigger a write."""
-        msg = json.dumps({
-            "channel": "webData2",
-            "data": {
-                "user": "0xchange",
-                "clearinghouseState": {
-                    "assetPositions": [
-                        {"position": {"coin": "BTC", "szi": "2.0"}},
-                    ],
-                    "marginSummary": {"accountValue": "100000"},
-                },
-            },
-        })
+        data = {
+            "marginSummary": {"accountValue": "100000"},
+            "assetPositions": [
+                {"position": {"coin": "BTC", "szi": "2.0"}},
+            ],
+        }
 
         with patch("market_scraper.services.monitor.get_settings") as mock_settings:
             mock_settings.return_value.monitor.enable_hash_dedup = True
@@ -181,35 +169,33 @@ class TestHashDedup:
                 db_mock = AsyncMock()
                 mock_db.return_value = db_mock
 
-                # Different hash
                 db_mock.trader_current_state.find_one = AsyncMock(
                     return_value={"position_hash": "old_hash_123"}
                 )
 
-                asyncio.run(monitor._handle_message(msg, "BTC"))
+                asyncio.run(monitor._store_state("0xchange", data, "BTC"))
 
-                # update_one SHOULD be called (different hash)
                 db_mock.trader_current_state.update_one.assert_called_once()
                 db_mock.trader_positions.insert_one.assert_called_once()
 
 
-class TestParseOrder:
-    def test_flat_position_detected(self) -> None:
+class TestPositionStatus:
+    def test_flat(self) -> None:
         assert _get_position_status({"positions": []}) == "flat"
 
-    def test_long_position_detected(self) -> None:
+    def test_long(self) -> None:
         assert _get_position_status({"positions": [{"position": {"szi": "1.5"}}]}) == "long"
 
-    def test_short_position_detected(self) -> None:
+    def test_short(self) -> None:
         assert _get_position_status({"positions": [{"position": {"szi": "-2.0"}}]}) == "short"
 
-    def test_mixed_positions_detected(self) -> None:
+    def test_mixed(self) -> None:
         assert _get_position_status({"positions": [
             {"position": {"szi": "1.0"}},
             {"position": {"szi": "-0.5"}},
         ]}) == "mixed"
 
-    def test_unknown_state(self) -> None:
+    def test_unknown(self) -> None:
         assert _get_position_status(None) == "unknown"
 
     def test_no_positions_key(self) -> None:

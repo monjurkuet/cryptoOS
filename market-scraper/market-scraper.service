@@ -20,9 +20,6 @@ MemoryMax=768M
 MemoryHigh=600M
 CPUQuota=70%
 
-# Watchdog
-WatchdogSec=300s
-
 # Logging
 StandardOutput=journal
 StandardError=journal
