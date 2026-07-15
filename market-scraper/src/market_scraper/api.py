@@ -20,12 +20,6 @@ async def health() -> dict[str, str]:
         raise HTTPException(status_code=503, detail=f"MongoDB unreachable: {e}")
 
 
-@router.get("/health/live")
-async def health_live() -> dict[str, str]:
-    """Lightweight liveness check for reverse-proxy & monitoring."""
-    return {"status": "alive"}
-
-
 @router.get("/api/v1/traders")
 async def list_traders(
     limit: int = Query(50, ge=1, le=1000),
@@ -41,32 +35,50 @@ async def list_traders(
     db = get_db()
     sort_order = -1 if sort_dir == "desc" else 1
 
-    # Fetch extra when filtering by position — top scored may not be polled yet
-    fetch_limit = limit * 5 if has_positions is not None else limit
-    cursor = (
-        db.tracked_traders.find(
+    if has_positions is not None:
+        # Flip query: find traders with/without positions first, then join
+        state_filter = {"positions.0": {"$exists": True}} if has_positions \
+            else {"$or": [{"positions": {"$size": 0}}, {"positions": {"$exists": False}}]}
+
+        # Get eth addresses that match position filter
+        state_eths = set()
+        state_cursor = db.trader_current_state.find(state_filter, {"eth": 1, "_id": 0})
+        async for s in state_cursor:
+            state_eths.add(s["eth"])
+
+        if not state_eths:
+            return {"traders": [], "count": 0}
+
+        # Now get trader details, sorted and limited
+        trader_filter = {"eth": {"$in": list(state_eths)}, "score": {"$gte": min_score}}
+        cursor = db.tracked_traders.find(
+            trader_filter, {"_id": 0}, sort=[(sort_by, sort_order)]
+        ).limit(limit)
+        traders = await cursor.to_list(length=limit)
+
+        # Get states for result set
+        result_eths = [t.get("eth") for t in traders]
+        states = {}
+        if result_eths:
+            async for s in db.trader_current_state.find(
+                {"eth": {"$in": result_eths}}, {"_id": 0}
+            ):
+                states[s["eth"]] = s
+    else:
+        cursor = db.tracked_traders.find(
             {"score": {"$gte": min_score}},
             {"_id": 0},
             sort=[(sort_by, sort_order)],
-        ).limit(fetch_limit)
-    )
-    traders = await cursor.to_list(length=fetch_limit)
+        ).limit(limit)
+        traders = await cursor.to_list(length=limit)
 
-    # Filter by position status if requested
-    eths = [t.get("eth") for t in traders]
-    states = {}
-    if eths:
-        state_cursor = db.trader_current_state.find({"eth": {"$in": eths}})
-        async for s in state_cursor:
-            states[s["eth"]] = s
-
-    if has_positions is not None:
-        traders = [
-            t for t in traders
-            if (has_positions and states.get(t.get("eth"), {}).get("positions"))
-            or (not has_positions and not states.get(t.get("eth"), {}).get("positions"))
-        ]
-        traders = traders[:limit]
+        eths = [t.get("eth") for t in traders]
+        states = {}
+        if eths:
+            async for s in db.trader_current_state.find(
+                {"eth": {"$in": eths}}, {"_id": 0}
+            ):
+                states[s["eth"]] = s
 
     result = []
     for t in traders:
@@ -94,13 +106,10 @@ async def get_trader(address: str) -> dict[str, Any]:
     """Get single trader detail with current state."""
     db = get_db()
     addr = address.lower()
-    trader = await db.tracked_traders.find_one({"eth": addr})
+    trader = await db.tracked_traders.find_one({"eth": addr}, {"_id": 0})
     if not trader:
         raise HTTPException(status_code=404, detail="Trader not found")
-    state = await db.trader_current_state.find_one({"eth": addr})
-    trader.pop("_id", None)
-    if state:
-        state.pop("_id", None)
+    state = await db.trader_current_state.find_one({"eth": addr}, {"_id": 0})
     return {
         **trader,
         "current_state": state or {},
@@ -116,6 +125,7 @@ async def list_leaderboard(
     db = get_db()
     doc = await db.leaderboard_daily.find_one(
         {},
+        {"_id": 0},
         sort=[("date", -1)],
     )
     if not doc:
