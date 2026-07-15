@@ -41,13 +41,16 @@ async def list_traders(
     db = get_db()
     sort_order = -1 if sort_dir == "desc" else 1
 
+    # Fetch extra when filtering by position — top scored may not be polled yet
+    fetch_limit = limit * 5 if has_positions is not None else limit
     cursor = (
         db.tracked_traders.find(
             {"score": {"$gte": min_score}},
+            {"_id": 0},
             sort=[(sort_by, sort_order)],
-        ).limit(limit)
+        ).limit(fetch_limit)
     )
-    traders = await cursor.to_list(length=limit)
+    traders = await cursor.to_list(length=fetch_limit)
 
     # Filter by position status if requested
     eths = [t.get("eth") for t in traders]
@@ -63,6 +66,7 @@ async def list_traders(
             if (has_positions and states.get(t.get("eth"), {}).get("positions"))
             or (not has_positions and not states.get(t.get("eth"), {}).get("positions"))
         ]
+        traders = traders[:limit]
 
     result = []
     for t in traders:
@@ -94,6 +98,9 @@ async def get_trader(address: str) -> dict[str, Any]:
     if not trader:
         raise HTTPException(status_code=404, detail="Trader not found")
     state = await db.trader_current_state.find_one({"eth": addr})
+    trader.pop("_id", None)
+    if state:
+        state.pop("_id", None)
     return {
         **trader,
         "current_state": state or {},
@@ -140,6 +147,7 @@ async def get_position_history(
     since = datetime.now(UTC) - timedelta(hours=hours)
     cursor = db.trader_positions.find(
         {"eth": addr, "t": {"$gte": since}},
+        {"_id": 0},
         sort=[("t", -1)],
     ).limit(limit)
     return {"positions": await cursor.to_list(length=limit)}
