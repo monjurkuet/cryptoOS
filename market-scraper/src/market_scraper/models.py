@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class LeaderboardRow(BaseModel):
+    """Leaderboard row entry."""
     eth: str = ""
     name: str | None = None
     acct_val: float = 0.0
@@ -22,6 +23,7 @@ class LeaderboardRow(BaseModel):
 
 
 class TrackedTrader(BaseModel):
+    """Tracked trader from leaderboard."""
     eth: str
     name: str | None = None
     acct_val: float = 0.0
@@ -37,6 +39,7 @@ class TrackedTrader(BaseModel):
 
 
 class Position(BaseModel):
+    """Position entry."""
     eth: str
     symbol: str
     size: float = 0.0
@@ -49,6 +52,7 @@ class Position(BaseModel):
 
 
 class TraderState(BaseModel):
+    """Current trader state with positions."""
     eth: str
     symbol: str
     positions: list[dict[str, Any]] = Field(default_factory=list)

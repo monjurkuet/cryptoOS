@@ -4,7 +4,6 @@ import logging
 import subprocess
 import sys
 from contextlib import asynccontextmanager
-from typing import Any
 
 import structlog
 import uvicorn
@@ -92,7 +91,7 @@ def main() -> int:
                     pass
                 await asyncio.sleep(30)
 
-        watchdog_task = asyncio.create_task(_watchdog_ping())
+        _watchdog_task = asyncio.create_task(_watchdog_ping())
 
         monitor = PositionMonitor()
         task = asyncio.create_task(monitor.run_forever())

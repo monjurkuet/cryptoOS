@@ -18,7 +18,7 @@ async def health() -> dict[str, str]:
         await db.command("ping")
         return {"status": "ok", "mongo": "connected"}
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"MongoDB unreachable: {e}")
+        raise HTTPException(status_code=503, detail=f"MongoDB unreachable: {e}") from e
 
 
 @router.get("/health/live")
@@ -237,7 +237,6 @@ async def btc_candles(
     """Historical BTC candles — live from Kraken + fallback to DB if available."""
     db = get_db()
     col_name = f"btc_candles_{interval}"
-    candles: list[dict[str, Any]] = []
     # Try DB first (if has recent data within 2 days)
     try:
         col = db[col_name]

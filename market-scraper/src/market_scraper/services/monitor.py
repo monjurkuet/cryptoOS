@@ -2,7 +2,6 @@
 import asyncio
 import hashlib
 import json
-import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -56,6 +55,7 @@ class PositionMonitor:
                 await asyncio.sleep(30)
 
     def stop(self) -> None:
+        """Stop the monitor loop."""
         self._running = False
 
     async def _process_batch(self, traders: list[dict[str, Any]]) -> None:
@@ -120,7 +120,7 @@ class PositionMonitor:
         if self.settings.monitor.enable_hash_dedup:
             db = get_db()
             existing = await db.trader_current_state.find_one({"eth": eth})
-            if existing and existing.get("position_hash") == position_hash:
+            if isinstance(existing, dict) and existing.get("position_hash") == position_hash:
                 return  # No change
 
         now = datetime.now(UTC)

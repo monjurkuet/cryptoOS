@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from market_scraper.models import LeaderboardRow
 from market_scraper.services.leaderboard import LeaderboardService
 
 

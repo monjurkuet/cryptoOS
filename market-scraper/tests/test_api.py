@@ -1,6 +1,6 @@
 """Tests for the REST API endpoints."""
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,8 +15,9 @@ def mock_db() -> AsyncMock:
 
 @pytest.fixture
 def client(mock_db: AsyncMock):
-    import market_scraper.db as db_mod
     from unittest.mock import Mock
+
+    import market_scraper.db as db_mod
     db_mod._db = mock_db
     # tracked_traders and trader_current_state collections need sync find()
     mock_db.tracked_traders = Mock()

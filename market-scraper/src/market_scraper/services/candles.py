@@ -1,7 +1,7 @@
 """BTC candle fetcher and price service — uses Kraken + Hyperliquid + Coingecko fallbacks."""
 import json
-import urllib.request
 import urllib.parse
+import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
@@ -28,7 +28,7 @@ async def fetch_kraken_candles(interval: str = "1h", limit: int = 100) -> list[d
         if payload.get("error"):
             raise RuntimeError(f"Kraken error: {payload['error']}")
         result = payload["result"]
-        key = next(k for k in result.keys() if k != "last")
+        key = next(k for k in result if k != "last")
         rows = result[key][-limit:]
         out = []
         for r in rows:

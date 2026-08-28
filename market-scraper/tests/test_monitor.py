@@ -2,17 +2,16 @@
 import asyncio
 import hashlib
 import json
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from market_scraper.api import _get_position_status
 from market_scraper.services.monitor import (
     PositionMonitor,
-    _parse_leverage,
     _parse_float_or_none,
+    _parse_leverage,
 )
-from market_scraper.api import _get_position_status
 
 
 @pytest.fixture
@@ -67,9 +66,9 @@ class TestPositionStorage:
             ],
         }
 
-        with patch("market_scraper.services.monitor.get_settings") as mock_settings:
-            mock_settings.return_value.monitor.enable_hash_dedup = False
-            mock_settings.return_value.monitor.symbol = "BTC"
+        orig_dedup = monitor.settings.monitor.enable_hash_dedup
+        monitor.settings.monitor.enable_hash_dedup = False
+        try:
             with patch("market_scraper.services.monitor.get_db") as mock_db:
                 db = AsyncMock()
                 mock_db.return_value = db
@@ -83,6 +82,8 @@ class TestPositionStorage:
                 assert state["eth"] == "0xtest123"
                 assert len(state["positions"]) == 1  # Only BTC
                 assert state["positions"][0]["position"]["coin"] == "BTC"
+        finally:
+            monitor.settings.monitor.enable_hash_dedup = orig_dedup
 
     def test_empty_positions_stored(self, monitor: PositionMonitor) -> None:
         """REST response with no BTC positions should still store flat state."""
@@ -93,9 +94,9 @@ class TestPositionStorage:
             ],
         }
 
-        with patch("market_scraper.services.monitor.get_settings") as mock_settings:
-            mock_settings.return_value.monitor.enable_hash_dedup = False
-            mock_settings.return_value.monitor.symbol = "BTC"
+        orig_dedup = monitor.settings.monitor.enable_hash_dedup
+        monitor.settings.monitor.enable_hash_dedup = False
+        try:
             with patch("market_scraper.services.monitor.get_db") as mock_db:
                 db = AsyncMock()
                 mock_db.return_value = db
@@ -105,6 +106,8 @@ class TestPositionStorage:
                 args, _ = db.trader_current_state.update_one.call_args
                 state = args[1]["$set"]
                 assert state["positions"] == []  # No BTC
+        finally:
+            monitor.settings.monitor.enable_hash_dedup = orig_dedup
 
     def test_empty_user_skipped(self, monitor: PositionMonitor) -> None:
         with patch("market_scraper.services.monitor.get_db") as mock_db:

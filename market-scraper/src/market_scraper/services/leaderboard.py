@@ -1,6 +1,5 @@
 """Daily leaderboard fetch, score, filter, and store."""
-import asyncio
-from datetime import date, datetime, UTC
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -8,7 +7,7 @@ import structlog
 
 from market_scraper.config import get_settings
 from market_scraper.db import get_db
-from market_scraper.models import LeaderboardRow, TrackedTrader
+from market_scraper.models import LeaderboardRow
 
 logger = structlog.get_logger(__name__)
 
