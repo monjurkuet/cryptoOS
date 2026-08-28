@@ -6,13 +6,13 @@ The Trader Position API provides access to tracked trader data from Hyperliquid,
 
 ## Important: Position Data Behavior
 
-### WebSocket-Driven Updates
+### REST Polling Updates
 
-Position data is **only available when traders have open positions**. This is due to how Hyperliquid's WebSocket API works:
+Position data is **only available when traders have open positions**. This is via REST polling of clearinghouseState:
 
-- Hyperliquid WebSocket only sends position updates when a trader **has an open position**
-- When a trader closes all positions, updates stop flowing for that address
-- Historical position data is retained, but no new updates are sent
+- Positions are polled via POST /info {type: clearinghouseState} for each tracked trader
+- When a trader closes all positions, the next poll returns empty positions
+- Historical position data is retained in trader_positions collection
 
 ### Position Status Values
 
@@ -29,8 +29,8 @@ The API returns a `position_status` field with the following values:
 
 An `unknown` status indicates one of:
 
-1. Trader was recently added to tracking and no position data has been received yet
-2. WebSocket connection issues prevented data collection
+1. Trader was recently added and poll has not yet cycled (~3h per full scan)
+2. Temporary API error or rate limit
 3. Trader has never had an open position since tracking began
 
 ## API Endpoints

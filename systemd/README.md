@@ -1,13 +1,13 @@
 # systemd Service Files
 
-Production systemd service definitions for CryptoData platform.
+Production systemd service definitions for cryptoOS platform.
 
 ## Overview
 
-This directory contains systemd service files for running the CryptoData platform in production:
+This directory contains systemd service files for running the cryptoOS platform in production:
 
 - **market-scraper.service**: Real-time market data collection and API (port 3845)
-- **signal-system.service**: Smart money signal generation (port 4341)
+- **market-scraper-daily.service/.timer**: Daily leaderboard refresh (00:00 UTC)
 
 ### Features
 
@@ -23,8 +23,8 @@ This directory contains systemd service files for running the CryptoData platfor
 ### 1. Copy service files
 
 ```bash
-sudo cp /home/administrator/githubrepo/cryptoOS/systemd/market-scraper.service /etc/systemd/system/
-sudo cp /home/administrator/githubrepo/cryptoOS/systemd/signal-system.service /etc/systemd/system/
+sudo cp /home/administrator/githubrepo/cryptoOS/market-scraper/market-scraper.service /etc/systemd/system/
+sudo cp /etc/systemd/system/market-scraper-daily.* /etc/systemd/system/  # already installed
 ```
 
 ### 2. Reload systemd daemon
@@ -37,21 +37,20 @@ sudo systemctl daemon-reload
 
 ```bash
 cd /home/administrator/githubrepo/cryptoOS
-./scripts/bootstrap-services.sh
+systemctl status market-scraper
 ```
 
 ### 3. Enable services (start on boot)
 
 ```bash
 sudo systemctl enable market-scraper.service
-sudo systemctl enable signal-system.service
+sudo systemctl enable market-scraper-daily.timer
 ```
 
 ### 4. Start services
 
 ```bash
-sudo systemctl start market-scraper.service
-sudo systemctl start signal-system.service
+sudo systemctl start market-scraper.service  # daily timer already enabled
 ```
 
 ### 5. Verify installation
@@ -59,11 +58,10 @@ sudo systemctl start signal-system.service
 ```bash
 # Check status
 sudo systemctl status market-scraper.service
-sudo systemctl status signal-system.service
 
 # Test API endpoints
-curl http://localhost:3845/health/status
-curl http://localhost:4341/health
+curl http://localhost:3845/health/live
+curl http://localhost:3845/api/v1/btc/price
 ```
 
 ## Management Commands
@@ -71,14 +69,13 @@ curl http://localhost:4341/health
 ### Check status
 ```bash
 sudo systemctl status market-scraper.service
-sudo systemctl status signal-system.service
 ```
 
 ### View logs
 ```bash
 # Using journalctl
 sudo journalctl -u market-scraper.service -f
-sudo journalctl -u signal-system.service -f
+sudo journalctl -u market-scraper-daily.timer -f
 
 # Or view log files directly
 tail -f /home/administrator/githubrepo/cryptoOS/logs/market-scraper.log

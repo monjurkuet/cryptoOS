@@ -7,12 +7,10 @@ Cryptocurrency market data collection, whale-tracking, and trading signal platfo
 ### [market-scraper](market-scraper/)
 Real-time cryptocurrency market data collection system for Hyperliquid.
 
-- Event-driven architecture with WebSocket data collection
+- REST polling of Hyperliquid clearinghouseState (1000 traders, 3.3h cycle)
 - Trader scoring and position tracking
-- Saved Binance.com account positions from user-provided read-only API keys
-- Signal generation (BUY/SELL/NEUTRAL)
-- Bitcoin on-chain metrics (CBBI, Fear & Greed, MVRV, SOPR, NUPL)
-- REST API + WebSocket streaming (port 3845)
+- REST API + live BTC price/candles via Kraken (port 3845)
+- Historical BTC candles + trader position history
 - Managed via systemd (`market-scraper.service`)
 
 ## Research / Code-Only
@@ -39,15 +37,15 @@ API documentation and scripts for cryptocurrency data providers.
 ## Architecture
 
 ```
-┌─────────────────┐     Redis Pub/Sub
-│ market-scraper  │ ────────────────────►  (signal-system — code only, not deployed)
+┌─────────────────┐
+│ market-scraper  │  (standalone, no Redis)
 │                 │
-│ - Collectors    │ trader_positions
-│ - Processors    │ scored_traders
-│ - On-chain      │ candles
+│ - REST poller   │ trader_positions
+│ - Scorer        │ scored_traders
+│ - BTC price     │ candles (Kraken)
 │                 │ mark_price
 │  :3845 API      │
-│  :3845 WS       │
+│  :3845 BTC API  │
 └─────────────────┘
         │
         ▼
@@ -61,7 +59,6 @@ API documentation and scripts for cryptocurrency data providers.
 
 - Python 3.11+
 - MongoDB
-- Redis
 - uv package manager
 
 ### Development
@@ -70,7 +67,7 @@ API documentation and scripts for cryptocurrency data providers.
 # Start market-scraper
 cd market-scraper
 uv sync
-uv run python -m market_scraper server
+uv run python -m market_scraper.main
 ```
 
 ### Production (systemd)
