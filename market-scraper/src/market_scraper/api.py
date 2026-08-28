@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from market_scraper.db import get_db
+from market_scraper.services.candles import fetch_kraken_candles, get_btc_price
 
 router = APIRouter()
 
@@ -107,6 +108,37 @@ async def list_traders(
     return {"traders": result, "count": len(result)}
 
 
+@router.get("/api/v1/traders/profitable")
+async def profitable_traders(
+    limit: int = Query(50, ge=1, le=200),
+    min_roi_month: float = Query(0.1, ge=-1),
+    min_roi_all: float = Query(0.2, ge=-1),
+    require_consistent: bool = Query(True),
+) -> dict[str, Any]:
+    """Consistently profitable traders — strict filter + returns live position summary."""
+    db = get_db()
+    filt: dict[str, Any] = {"roi_all_time": {"$gte": min_roi_all}, "roi_month": {"$gte": min_roi_month}}
+    if require_consistent:
+        filt["roi_week"] = {"$gt": 0}
+        filt["roi_day"] = {"$gt": 0}
+    cursor = db.tracked_traders.find(filt, {"_id": 0}, sort=[("score", -1)]).limit(limit)
+    traders = await cursor.to_list(length=limit)
+    eths = [t["eth"] for t in traders]
+    states = {}
+    if eths:
+        async for s in db.trader_current_state.find({"eth": {"$in": eths}}, {"_id": 0}):
+            states[s["eth"]] = s
+    result = []
+    for t in traders:
+        s = states.get(t["eth"], {})
+        result.append({
+            **{k: t[k] for k in ["eth", "name", "score", "acct_val", "roi_all_time", "roi_month", "roi_week", "roi_day", "tags"]},
+            "position_status": _get_position_status(s),
+            "position_count": len(s.get("positions", [])) if s else 0,
+            "last_position_update": s.get("updated_at").isoformat() if s and s.get("updated_at") else None,
+        })
+    return {"traders": result, "count": len(result), "filter": {"min_roi_month": min_roi_month, "min_roi_all": min_roi_all, "consistent": require_consistent}}
+
 @router.get("/api/v1/traders/{address}")
 async def get_trader(address: str) -> dict[str, Any]:
     """Get single trader detail with current state."""
@@ -188,3 +220,64 @@ def _get_position_status(state: dict | None) -> str:
     if has_long and has_short:
         return "mixed"
     return "long" if has_long else "short"
+
+
+# ---- BTC historical & live data ----
+@router.get("/api/v1/btc/price")
+async def btc_price() -> dict[str, Any]:
+    """Live BTC price (Kraken -> Coingecko fallback)."""
+    return await get_btc_price()
+
+
+@router.get("/api/v1/btc/candles")
+async def btc_candles(
+    interval: str = Query("1h", pattern="^(1m|5m|15m|1h|4h|1d)$"),
+    limit: int = Query(100, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Historical BTC candles — live from Kraken + fallback to DB if available."""
+    db = get_db()
+    col_name = f"btc_candles_{interval}"
+    candles: list[dict[str, Any]] = []
+    # Try DB first (if has recent data within 2 days)
+    try:
+        col = db[col_name]
+        cursor = col.find({}, {"_id": 0}, sort=[("t", -1)]).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        if docs and (datetime.now(UTC) - docs[0].get("t", datetime.min.replace(tzinfo=UTC))).total_seconds() < 172800:
+            docs.reverse()
+            return {"interval": interval, "candles": docs, "count": len(docs), "source": "db"}
+    except Exception:
+        pass
+    # Fallback live fetch
+    live = await fetch_kraken_candles(interval=interval, limit=limit)
+    # Normalize to API shape
+    normalized = [
+        {"t": c["t"].isoformat(), "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"], "volume": c["volume"]}
+        for c in live
+    ]
+    return {"interval": interval, "candles": normalized, "count": len(normalized), "source": "kraken_live"}
+
+
+@router.get("/api/v1/btc/history")
+async def btc_history(
+    interval: str = Query("1h", pattern="^(1m|5m|15m|1h|4h|1d)$"),
+    hours: int = Query(24, ge=1, le=720),
+    limit: int = Query(100, ge=1, le=1000),
+) -> dict[str, Any]:
+    """BTC history from DB for range."""
+    db = get_db()
+    col_name = f"btc_candles_{interval}"
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    col = db[col_name]
+    cursor = col.find({"t": {"$gte": since}}, {"_id": 0}, sort=[("t", 1)]).limit(limit)
+    docs = await cursor.to_list(length=limit)
+    if not docs:
+        # fallback live
+        live = await fetch_kraken_candles(interval=interval, limit=limit)
+        docs = [{"t": c["t"].isoformat(), "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"], "volume": c["volume"]} for c in live]
+        return {"interval": interval, "candles": docs, "count": len(docs), "source": "kraken_live"}
+    # iso format times
+    for d in docs:
+        if isinstance(d.get("t"), datetime):
+            d["t"] = d["t"].isoformat()
+    return {"interval": interval, "candles": docs, "count": len(docs), "source": "db"}

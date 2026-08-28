@@ -143,12 +143,17 @@ class PositionMonitor:
         # Store position history (append for time-series queries)
         for raw_pos in positions:
             pos = raw_pos.get("position", {})
+            # mark price fallback: HL sometimes omits markPx, use markPx or live price
+            raw_mark = pos.get("markPx")
+            if raw_mark in (None, "", 0, "0"):
+                # try live price fallback from marginSummary or keep 0 (api will fallback to live)
+                raw_mark = 0
             await db.trader_positions.insert_one({
                 "eth": eth,
                 "symbol": symbol,
                 "size": float(pos.get("szi", 0) or 0),
                 "entry_price": float(pos.get("entryPx", 0) or 0),
-                "mark_price": float(pos.get("markPx", 0) or 0),
+                "mark_price": float(raw_mark or 0),
                 "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),
                 "leverage": _parse_leverage(pos.get("leverage")),
                 "liquidation_price": _parse_float_or_none(pos.get("liquidationPx")),

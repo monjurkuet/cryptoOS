@@ -66,3 +66,23 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.trader_current_state.create_indexes([
         IndexModel([("eth", ASCENDING)], unique=True),
     ])
+
+    for col in ["btc_candles_1m", "btc_candles_5m", "btc_candles_15m", "btc_candles_1h", "btc_candles_4h", "btc_candles_1d", "eth_candles_1h"]:
+        try:
+            await db[col].create_indexes([
+                IndexModel([("t", ASCENDING)]),
+                IndexModel([("t", DESCENDING)]),
+            ])
+        except Exception as e:
+            msg = str(e).lower()
+            if "duplicate" in msg or "indexkeyspecsconflict" in msg or "code': 86" in msg:
+                try:
+                    await db[col].drop_index("t_1")
+                    await db[col].create_indexes([
+                        IndexModel([("t", ASCENDING)]),
+                        IndexModel([("t", DESCENDING)]),
+                    ])
+                except Exception:
+                    pass
+            elif "duplicate" not in msg:
+                raise
