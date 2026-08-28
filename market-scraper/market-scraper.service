@@ -1,0 +1,29 @@
+[Unit]
+Description=cryptoOS market-scraper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=administrator
+Group=administrator
+WorkingDirectory=/home/administrator/githubrepo/cryptoOS/market-scraper
+ExecStart=/home/administrator/githubrepo/cryptoOS/market-scraper/.venv/bin/python -m market_scraper.main
+EnvironmentFile=/home/administrator/githubrepo/cryptoOS/.env
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/administrator/githubrepo/cryptoOS/market-scraper/.venv/bin:/usr/bin:/bin
+
+# Resource limits
+MemoryMax=768M
+MemoryHigh=600M
+CPUQuota=70%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=market-scraper
+
+[Install]
+WantedBy=multi-user.target
