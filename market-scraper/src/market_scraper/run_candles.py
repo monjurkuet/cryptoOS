@@ -1,0 +1,49 @@
+"""BTC candle ingestion — cron entry point."""
+import asyncio
+import sys
+
+import structlog
+
+from market_scraper.config import get_settings
+from market_scraper.db import close_mongo, connect_mongo
+from market_scraper.services.candle_ingest import ingest_all
+
+
+def _configure_logging() -> None:
+    settings = get_settings()
+    import logging
+
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    structlog.configure(
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer()
+            if settings.log_format == "json"
+            else structlog.dev.ConsoleRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(level),
+        logger_factory=structlog.PrintLoggerFactory(),
+    )
+
+
+async def _run() -> dict[str, int]:
+    _configure_logging()
+    settings = get_settings()
+    await connect_mongo(settings.mongo_url, settings.mongo_db)
+    try:
+        results = await ingest_all(limit=100)
+        return results
+    finally:
+        await close_mongo()
+
+
+def main() -> int:
+    results = asyncio.run(_run())
+    total = sum(results.values())
+    print(f"Candle ingest done: {results} total_upserted={total}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

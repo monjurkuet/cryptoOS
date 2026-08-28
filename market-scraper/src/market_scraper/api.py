@@ -242,9 +242,17 @@ async def btc_candles(
         col = db[col_name]
         cursor = col.find({}, {"_id": 0}, sort=[("t", -1)]).limit(limit)
         docs = await cursor.to_list(length=limit)
-        if docs and (datetime.now(UTC) - docs[0].get("t", datetime.min.replace(tzinfo=UTC))).total_seconds() < 172800:
-            docs.reverse()
-            return {"interval": interval, "candles": docs, "count": len(docs), "source": "db"}
+        if docs:
+            latest = docs[0].get("t")
+            if latest is not None and getattr(latest, "tzinfo", None) is None:
+                latest = latest.replace(tzinfo=UTC)
+            if latest and (datetime.now(UTC) - latest).total_seconds() < 172800:
+                docs.reverse()
+                # Normalize t to iso format for consistency
+                for d in docs:
+                    if isinstance(d.get("t"), datetime) and d["t"].tzinfo is None:
+                        d["t"] = d["t"].replace(tzinfo=UTC)
+                return {"interval": interval, "candles": docs, "count": len(docs), "source": "db"}
     except Exception:
         pass
     # Fallback live fetch
@@ -275,8 +283,10 @@ async def btc_history(
         live = await fetch_kraken_candles(interval=interval, limit=limit)
         docs = [{"t": c["t"].isoformat(), "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"], "volume": c["volume"]} for c in live]
         return {"interval": interval, "candles": docs, "count": len(docs), "source": "kraken_live"}
-    # iso format times
+    # iso format times (handle naive UTC stored by Mongo)
     for d in docs:
         if isinstance(d.get("t"), datetime):
+            if d["t"].tzinfo is None:
+                d["t"] = d["t"].replace(tzinfo=UTC)
             d["t"] = d["t"].isoformat()
     return {"interval": interval, "candles": docs, "count": len(docs), "source": "db"}
